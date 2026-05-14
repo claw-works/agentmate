@@ -14,6 +14,7 @@ type APIKey struct {
 	UserID    string    `json:"user_id"`
 	Name      string    `json:"name"`
 	Prefix    string    `json:"prefix"`
+	Scopes    []string  `json:"scopes" db:"scopes"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -28,5 +29,6 @@ type LoginRequest struct {
 }
 
 type CreateAPIKeyRequest struct {
-	Name string `json:"name" binding:"required"`
+	Name   string   `json:"name" binding:"required"`
+	Scopes []string `json:"scopes"` // 不传则默认空数组（全权限）
 }

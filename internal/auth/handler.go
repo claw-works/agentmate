@@ -58,8 +58,25 @@ func (h *Handler) CreateAPIKey(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	// If authenticated via API key, require manage_keys scope
+	if c.GetString(ContextAuthMethod) == "apikey" {
+		scopes, _ := c.Get(ContextScopes)
+		parentScopes, _ := scopes.([]string)
+		ak := &APIKey{Scopes: parentScopes}
+		if !HasScope(ak, "manage_keys") {
+			c.JSON(http.StatusForbidden, gin.H{"error": "insufficient scope: manage_keys"})
+			return
+		}
+		// New key's scopes cannot exceed parent's scopes
+		if !ScopesSubset(parentScopes, req.Scopes) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "requested scopes exceed current key's scopes"})
+			return
+		}
+	}
+
 	userID := c.GetString(ContextUserID)
-	key, ak, err := h.svc.CreateAPIKey(c.Request.Context(), userID, req.Name)
+	key, ak, err := h.svc.CreateAPIKey(c.Request.Context(), userID, req.Name, req.Scopes)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -78,6 +95,17 @@ func (h *Handler) ListAPIKeys(c *gin.Context) {
 }
 
 func (h *Handler) DeleteAPIKey(c *gin.Context) {
+	// If authenticated via API key, require manage_keys scope
+	if c.GetString(ContextAuthMethod) == "apikey" {
+		scopes, _ := c.Get(ContextScopes)
+		s, _ := scopes.([]string)
+		ak := &APIKey{Scopes: s}
+		if !HasScope(ak, "manage_keys") {
+			c.JSON(http.StatusForbidden, gin.H{"error": "insufficient scope: manage_keys"})
+			return
+		}
+	}
+
 	userID := c.GetString(ContextUserID)
 	keyID := c.Param("id")
 	if err := h.svc.DeleteAPIKey(c.Request.Context(), userID, keyID); err != nil {

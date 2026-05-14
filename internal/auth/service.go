@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -68,7 +69,10 @@ func (s *Service) GetUser(ctx context.Context, userID string) (*User, error) {
 	return &u, nil
 }
 
-func (s *Service) CreateAPIKey(ctx context.Context, userID, name string) (string, *APIKey, error) {
+func (s *Service) CreateAPIKey(ctx context.Context, userID, name string, scopes []string) (string, *APIKey, error) {
+	if scopes == nil {
+		scopes = []string{}
+	}
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return "", nil, err
@@ -79,9 +83,9 @@ func (s *Service) CreateAPIKey(ctx context.Context, userID, name string) (string
 
 	var ak APIKey
 	err := s.pool.QueryRow(ctx,
-		"INSERT INTO api_keys (user_id, name, key_hash, prefix) VALUES ($1, $2, $3, $4) RETURNING id, user_id, name, prefix, created_at",
-		userID, name, hash, prefix,
-	).Scan(&ak.ID, &ak.UserID, &ak.Name, &ak.Prefix, &ak.CreatedAt)
+		"INSERT INTO api_keys (user_id, name, key_hash, prefix, scopes) VALUES ($1, $2, $3, $4, $5) RETURNING id, user_id, name, prefix, scopes, created_at",
+		userID, name, hash, prefix, scopes,
+	).Scan(&ak.ID, &ak.UserID, &ak.Name, &ak.Prefix, &ak.Scopes, &ak.CreatedAt)
 	if err != nil {
 		return "", nil, err
 	}
@@ -90,7 +94,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, userID, name string) (string
 
 func (s *Service) ListAPIKeys(ctx context.Context, userID string) ([]APIKey, error) {
 	rows, err := s.pool.Query(ctx,
-		"SELECT id, user_id, name, prefix, created_at FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC", userID,
+		"SELECT id, user_id, name, prefix, scopes, created_at FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC", userID,
 	)
 	if err != nil {
 		return nil, err
@@ -99,7 +103,7 @@ func (s *Service) ListAPIKeys(ctx context.Context, userID string) ([]APIKey, err
 	var keys []APIKey
 	for rows.Next() {
 		var k APIKey
-		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.Prefix, &k.CreatedAt); err != nil {
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.Prefix, &k.Scopes, &k.CreatedAt); err != nil {
 			return nil, err
 		}
 		keys = append(keys, k)
@@ -127,14 +131,48 @@ func (s *Service) ValidateJWT(tokenStr string) (string, error) {
 	return sub, nil
 }
 
-func (s *Service) ValidateAPIKey(ctx context.Context, key string) (string, error) {
+func (s *Service) ValidateAPIKey(ctx context.Context, key string) (*APIKey, error) {
 	hash := sha256Hash(key)
-	var userID string
-	err := s.pool.QueryRow(ctx, "SELECT user_id FROM api_keys WHERE key_hash = $1", hash).Scan(&userID)
+	var ak APIKey
+	err := s.pool.QueryRow(ctx,
+		"SELECT id, user_id, name, prefix, scopes, created_at FROM api_keys WHERE key_hash = $1", hash,
+	).Scan(&ak.ID, &ak.UserID, &ak.Name, &ak.Prefix, &ak.Scopes, &ak.CreatedAt)
 	if err != nil {
-		return "", errors.New("invalid api key")
+		return nil, errors.New("invalid api key")
 	}
-	return userID, nil
+	return &ak, nil
+}
+
+// HasScope checks if the key has the required scope.
+// Empty scopes means full access. "resource:rw" implies "resource:r".
+func HasScope(key *APIKey, scope string) bool {
+	if len(key.Scopes) == 0 {
+		return true
+	}
+	for _, s := range key.Scopes {
+		if s == scope {
+			return true
+		}
+		// resource:rw implies resource:r
+		if strings.HasSuffix(scope, ":r") && s == strings.TrimSuffix(scope, ":r")+":rw" {
+			return true
+		}
+	}
+	return false
+}
+
+// ScopesSubset checks that all requested scopes are covered by the parent scopes.
+func ScopesSubset(parent, requested []string) bool {
+	if len(parent) == 0 {
+		return true // parent has full access
+	}
+	parentKey := &APIKey{Scopes: parent}
+	for _, s := range requested {
+		if !HasScope(parentKey, s) {
+			return false
+		}
+	}
+	return true
 }
 
 func sha256Hash(s string) string {

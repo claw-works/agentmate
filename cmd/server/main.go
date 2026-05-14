@@ -17,7 +17,7 @@ func main() {
 
 	dbURL := env("DATABASE_URL", "postgres://agentmate:secret@localhost:5432/agentmate?sslmode=disable")
 	jwtSecret := env("JWT_SECRET", "change-me")
-	port := env("SERVER_PORT", "8080")
+	port := env("SERVER_PORT", "26001")
 
 	pool, err := db.NewPool(ctx, dbURL)
 	if err != nil {
@@ -51,19 +51,23 @@ func main() {
 	protected.GET("/auth/apikeys", authHandler.ListAPIKeys)
 	protected.DELETE("/auth/apikeys/:id", authHandler.DeleteAPIKey)
 
-	protected.POST("/todos", todoHandler.Create)
-	protected.GET("/todos", todoHandler.List)
-	protected.GET("/todos/search", todoHandler.Search)
-	protected.GET("/todos/:id", todoHandler.Get)
-	protected.PATCH("/todos/:id", todoHandler.Update)
-	protected.DELETE("/todos/:id", todoHandler.Delete)
+	// Todos - read
+	protected.GET("/todos", auth.RequireScope("todos:r"), todoHandler.List)
+	protected.GET("/todos/search", auth.RequireScope("todos:r"), todoHandler.Search)
+	protected.GET("/todos/:id", auth.RequireScope("todos:r"), todoHandler.Get)
+	// Todos - write
+	protected.POST("/todos", auth.RequireScope("todos:rw"), todoHandler.Create)
+	protected.PATCH("/todos/:id", auth.RequireScope("todos:rw"), todoHandler.Update)
+	protected.DELETE("/todos/:id", auth.RequireScope("todos:rw"), todoHandler.Delete)
 
-	protected.POST("/notes", notesHandler.Create)
-	protected.GET("/notes", notesHandler.List)
-	protected.GET("/notes/search", notesHandler.Search)
-	protected.GET("/notes/:id", notesHandler.Get)
-	protected.PATCH("/notes/:id", notesHandler.Update)
-	protected.DELETE("/notes/:id", notesHandler.Delete)
+	// Notes - read
+	protected.GET("/notes", auth.RequireScope("notes:r"), notesHandler.List)
+	protected.GET("/notes/search", auth.RequireScope("notes:r"), notesHandler.Search)
+	protected.GET("/notes/:id", auth.RequireScope("notes:r"), notesHandler.Get)
+	// Notes - write
+	protected.POST("/notes", auth.RequireScope("notes:rw"), notesHandler.Create)
+	protected.PATCH("/notes/:id", auth.RequireScope("notes:rw"), notesHandler.Update)
+	protected.DELETE("/notes/:id", auth.RequireScope("notes:rw"), notesHandler.Delete)
 
 	log.Printf("starting server on :%s", port)
 	if err := r.Run(":" + port); err != nil {
