@@ -1,0 +1,176 @@
+# Agentmate — LLM Integration Guide
+
+AI-native tool service (Backend as Toolset): todos + notes management via REST API or MCP, multi-tenant, scoped API keys.
+
+## Base URL
+
+```
+http://localhost:26001
+```
+
+## Authentication
+
+Two methods (use one):
+
+1. **API Key** (recommended for agents):
+   - Header: `x-api-key: ak_xxxx`
+   - Or: `Authorization: Bearer ak_xxxx`
+
+2. **JWT**:
+   - Header: `Authorization: Bearer <jwt_token>`
+   - Get token via `POST /auth/login`
+
+### Scopes
+
+API keys can be scoped. Empty scopes = full access.
+
+Available: `todos:r`, `todos:rw`, `notes:r`, `notes:rw`, `manage_keys`
+
+`*:rw` implies `*:r`. JWT users bypass scope checks.
+
+## Response Format
+
+All responses follow:
+
+```json
+// Success
+{"id": "...", "title": "...", ...}
+
+// List
+[{"id": "...", ...}, ...]
+
+// Error
+{"error": "error message"}
+```
+
+HTTP status codes: 200 OK, 201 Created, 400 Bad Request, 401 Unauthorized, 403 Forbidden, 404 Not Found, 500 Internal Error.
+
+## API Endpoints
+
+### Auth (public)
+
+#### POST /auth/register
+```json
+// Request
+{"email": "user@example.com", "password": "password123"}
+// Response 201
+{"id": "uuid", "email": "user@example.com", "created_at": "RFC3339"}
+```
+
+#### POST /auth/login
+```json
+// Request
+{"email": "user@example.com", "password": "password123"}
+// Response 200
+{"token": "jwt_token_string"}
+```
+
+### Auth (authenticated)
+
+#### GET /auth/me
+Response: `{"id", "email", "created_at"}`
+
+#### POST /auth/apikeys
+```json
+// Request
+{"name": "my-agent", "scopes": ["todos:rw", "notes:r"]}
+// Response 201
+{"key": "ak_full_key_string", "api_key": {"id", "name", "prefix", "scopes", "created_at"}}
+```
+
+#### GET /auth/apikeys
+Response: `[{"id", "name", "prefix", "scopes", "created_at"}, ...]`
+
+#### DELETE /auth/apikeys/:id
+Response: `{"ok": true}`
+
+### Todos (authenticated)
+
+#### POST /todos
+Scope: `todos:rw`
+```json
+// Request
+{"title": "Buy milk", "description": "", "priority": "high", "due_date": "2025-12-01T00:00:00Z", "tags": ["shopping"]}
+// Response 201
+{"id", "user_id", "title", "description", "status", "priority", "due_date", "tags", "created_at", "updated_at"}
+```
+
+#### GET /todos
+Scope: `todos:r`. Response: array of todo objects.
+
+#### GET /todos/search?q=keyword
+Scope: `todos:r`. Response: array of matching todos.
+
+#### GET /todos/:id
+Scope: `todos:r`. Response: single todo object.
+
+#### PATCH /todos/:id
+Scope: `todos:rw`
+```json
+// Request (all fields optional)
+{"title": "new title", "status": "done", "priority": "low", "description": "...", "due_date": "...", "tags": [...]}
+// Response 200: updated todo object
+```
+
+#### DELETE /todos/:id
+Scope: `todos:rw`. Response: `{"ok": true}`
+
+### Notes (authenticated)
+
+#### POST /notes
+Scope: `notes:rw`
+```json
+// Request
+{"title": "Meeting notes", "content": "Discussed...", "tags": ["work"]}
+// Response 201
+{"id", "user_id", "title", "content", "tags", "created_at", "updated_at"}
+```
+
+#### GET /notes
+Scope: `notes:r`. Response: array of note objects.
+
+#### GET /notes/search?q=keyword
+Scope: `notes:r`. Response: array of matching notes.
+
+#### GET /notes/:id
+Scope: `notes:r`. Response: single note object.
+
+#### PATCH /notes/:id
+Scope: `notes:rw`
+```json
+// Request (all fields optional)
+{"title": "new title", "content": "updated content", "tags": [...]}
+// Response 200: updated note object
+```
+
+#### DELETE /notes/:id
+Scope: `notes:rw`. Response: `{"ok": true}`
+
+## MCP Integration
+
+Transport: stdio. Set env `AGENTMATE_API_KEY=ak_xxxx` to authenticate.
+
+Tools: `todo_create`, `todo_list`, `todo_get`, `todo_delete`, `note_create`, `note_list`, `note_get`, `note_delete`.
+
+Each tool returns JSON text content with the same shape as REST responses.
+
+## Error Codes
+
+| HTTP | Meaning |
+|------|---------|
+| 400 | Invalid request body / missing required fields |
+| 401 | Missing or invalid credentials |
+| 403 | Insufficient scope for this operation |
+| 404 | Resource not found |
+| 409 | Conflict (e.g. email already exists) |
+| 500 | Internal server error |
+
+## Typical AI Agent Workflow
+
+1. **Authenticate** — Set header `x-api-key: ak_xxxx`
+2. **Create a todo** — `POST /todos` with `{"title": "Task name"}`
+3. **Create a note** — `POST /notes` with `{"title": "Note title", "content": "..."}`
+4. **List with filtering** — `GET /todos` (all) or `GET /todos/search?q=keyword`
+5. **Search notes** — `GET /notes/search?q=keyword`
+6. **Update** — `PATCH /todos/:id` with fields to change
+7. **Delete** — `DELETE /todos/:id` or `DELETE /notes/:id`
