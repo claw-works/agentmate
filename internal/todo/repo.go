@@ -60,7 +60,7 @@ func (r *Repo) List(ctx context.Context, userID string) ([]Todo, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var todos []Todo
+	todos := make([]Todo, 0)
 	for rows.Next() {
 		var t Todo
 		if err := rows.Scan(&t.ID, &t.UserID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.DueDate, &t.Tags, &t.CreatedAt, &t.UpdatedAt); err != nil {
@@ -124,7 +124,7 @@ func (r *Repo) Search(ctx context.Context, userID, query string) ([]Todo, error)
 		return nil, err
 	}
 	defer rows.Close()
-	var todos []Todo
+	todos := make([]Todo, 0)
 	for rows.Next() {
 		var t Todo
 		if err := rows.Scan(&t.ID, &t.UserID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.DueDate, &t.Tags, &t.CreatedAt, &t.UpdatedAt); err != nil {

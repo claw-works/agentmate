@@ -50,7 +50,7 @@ func (r *Repo) List(ctx context.Context, userID string) ([]Note, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var notes []Note
+	notes := make([]Note, 0)
 	for rows.Next() {
 		var n Note
 		if err := rows.Scan(&n.ID, &n.UserID, &n.Title, &n.Content, &n.Tags, &n.CreatedAt, &n.UpdatedAt); err != nil {
@@ -101,7 +101,7 @@ func (r *Repo) Search(ctx context.Context, userID, query string) ([]Note, error)
 		return nil, err
 	}
 	defer rows.Close()
-	var notes []Note
+	notes := make([]Note, 0)
 	for rows.Next() {
 		var n Note
 		if err := rows.Scan(&n.ID, &n.UserID, &n.Title, &n.Content, &n.Tags, &n.CreatedAt, &n.UpdatedAt); err != nil {

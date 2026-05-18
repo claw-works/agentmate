@@ -100,7 +100,7 @@ func (s *Service) ListAPIKeys(ctx context.Context, userID string) ([]APIKey, err
 		return nil, err
 	}
 	defer rows.Close()
-	var keys []APIKey
+	keys := make([]APIKey, 0)
 	for rows.Next() {
 		var k APIKey
 		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.Prefix, &k.Scopes, &k.CreatedAt); err != nil {
