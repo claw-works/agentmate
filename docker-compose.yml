@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: agentmate-postgres
+    environment:
+      POSTGRES_USER: agentmate
+      POSTGRES_PASSWORD: agentmate
+      POSTGRES_DB: agentmate
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentmate -d agentmate"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    image: migrate/migrate:v4.17.1
+    container_name: agentmate-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./migrations:/migrations
+    command:
+      [
+        "-path", "/migrations",
+        "-database", "postgres://agentmate:agentmate@postgres:5432/agentmate?sslmode=disable",
+        "up"
+      ]
+    restart: on-failure
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentmate-server
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "26001:26001"
+    environment:
+      DATABASE_URL: postgres://agentmate:agentmate@postgres:5432/agentmate?sslmode=disable
+      JWT_SECRET: change-me-in-production
+      JWT_EXPIRY: 24h
+      SERVER_PORT: "26001"
+      AGENTMATE_API_KEY: ""
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
