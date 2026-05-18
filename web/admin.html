@@ -9,18 +9,21 @@
 </head>
 <body class="h-full bg-slate-900 text-slate-100" x-data="app()" x-init="init()">
 
-<!-- API Key Modal -->
-<div x-show="!apiKey" class="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+<!-- Login Modal -->
+<div x-show="!token" class="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
     <div class="bg-slate-800 p-6 rounded-lg w-96">
-        <h2 class="text-lg font-semibold mb-4">输入 Admin API Key</h2>
-        <input type="text" x-model="keyInput" placeholder="ak_..." 
+        <h2 class="text-lg font-semibold mb-4">Admin 登录</h2>
+        <input type="email" x-model="emailInput" placeholder="Email"
+               class="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded text-sm focus:outline-none focus:border-blue-500 mb-3">
+        <input type="password" x-model="passwordInput" placeholder="Password" @keyup.enter="login()"
                class="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded text-sm focus:outline-none focus:border-blue-500">
-        <button @click="saveKey()" class="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded text-sm">确认</button>
+        <p x-show="loginError" class="text-red-400 text-sm mt-2" x-text="loginError"></p>
+        <button @click="login()" class="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded text-sm">登录</button>
     </div>
 </div>
 
 <!-- Layout -->
-<div x-show="apiKey" class="h-full flex flex-col">
+<div x-show="token" class="h-full flex flex-col">
     <!-- Header -->
     <header class="bg-slate-800 border-b border-slate-700 px-6 py-3 flex items-center justify-between">
         <h1 class="text-lg font-bold">AgentMate Admin</h1>
@@ -116,36 +119,47 @@
 <script>
 function app() {
     return {
-        apiKey: localStorage.getItem('admin_api_key') || '',
-        keyInput: '',
+        token: localStorage.getItem('admin_token') || '',
+        emailInput: '',
+        passwordInput: '',
+        loginError: '',
         page: 'overview',
         currentUser: '',
         stats: { users: 0, api_keys: 0, todos: 0, notes: 0 },
         users: [],
         apikeys: [],
-        saveKey() {
-            if (this.keyInput) {
-                this.apiKey = this.keyInput;
-                localStorage.setItem('admin_api_key', this.apiKey);
-                this.init();
+        async login() {
+            this.loginError = '';
+            const res = await window.fetch('/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: this.emailInput, password: this.passwordInput })
+            });
+            const data = await res.json();
+            if (!res.ok || !data.token) {
+                this.loginError = data.error || '登录失败';
+                return;
             }
+            this.token = data.token;
+            localStorage.setItem('admin_token', this.token);
+            this.init();
         },
         async fetch(url) {
-            const res = await window.fetch(url, { headers: { 'x-api-key': this.apiKey } });
+            const res = await window.fetch(url, { headers: { 'Authorization': 'Bearer ' + this.token } });
             if (res.status === 401 || res.status === 403) {
-                localStorage.removeItem('admin_api_key');
-                this.apiKey = '';
+                localStorage.removeItem('admin_token');
+                this.token = '';
                 return null;
             }
             return res.json();
         },
         async init() {
-            if (!this.apiKey) return;
+            if (!this.token) return;
             const [stats, users, apikeys, me] = await Promise.all([
                 this.fetch('/admin/api/stats'),
                 this.fetch('/admin/api/users'),
                 this.fetch('/admin/api/apikeys'),
-                window.fetch('/auth/me', { headers: { 'x-api-key': this.apiKey } }).then(r => r.json()),
+                window.fetch('/auth/me', { headers: { 'Authorization': 'Bearer ' + this.token } }).then(r => r.json()),
             ]);
             if (stats) this.stats = stats;
             if (users) this.users = users;
