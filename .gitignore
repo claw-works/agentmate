@@ -3,5 +3,3 @@
 /tmp
 /vendor
 
-# Deployment records contain API keys — never commit to remote
-docs/deployment.md
