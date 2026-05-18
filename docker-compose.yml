@@ -4,7 +4,7 @@ services:
     container_name: agentmate-postgres
     environment:
       POSTGRES_USER: agentmate
-      POSTGRES_PASSWORD: agentmate
+      POSTGRES_PASSWORD: agentmate_secret_2026
       POSTGRES_DB: agentmate
     ports:
       - "5432:5432"
@@ -27,7 +27,7 @@ services:
     command:
       [
         "-path", "/migrations",
-        "-database", "postgres://agentmate:agentmate@postgres:5432/agentmate?sslmode=disable",
+        "-database", "postgres://agentmate:agentmate_secret_2026@postgres:5432/agentmate?sslmode=disable",
         "up"
       ]
     restart: on-failure
@@ -45,8 +45,8 @@ services:
     ports:
       - "26001:26001"
     environment:
-      DATABASE_URL: postgres://agentmate:agentmate@postgres:5432/agentmate?sslmode=disable
-      JWT_SECRET: change-me-in-production
+      DATABASE_URL: postgres://agentmate:agentmate_secret_2026@postgres:5432/agentmate?sslmode=disable
+      JWT_SECRET: agentmate_jwt_secret_2026
       JWT_EXPIRY: 24h
       SERVER_PORT: "26001"
       AGENTMATE_API_KEY: ""

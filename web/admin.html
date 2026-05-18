@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AgentMate Admin</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="h-full bg-slate-900 text-slate-100" x-data="app()" x-init="init()">
+
+<!-- API Key Modal -->
+<div x-show="!apiKey" class="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+    <div class="bg-slate-800 p-6 rounded-lg w-96">
+        <h2 class="text-lg font-semibold mb-4">输入 Admin API Key</h2>
+        <input type="text" x-model="keyInput" placeholder="ak_..." 
+               class="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded text-sm focus:outline-none focus:border-blue-500">
+        <button @click="saveKey()" class="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded text-sm">确认</button>
+    </div>
+</div>
+
+<!-- Layout -->
+<div x-show="apiKey" class="h-full flex flex-col">
+    <!-- Header -->
+    <header class="bg-slate-800 border-b border-slate-700 px-6 py-3 flex items-center justify-between">
+        <h1 class="text-lg font-bold">AgentMate Admin</h1>
+        <span class="text-sm text-slate-400" x-text="currentUser"></span>
+    </header>
+
+    <div class="flex flex-1 overflow-hidden">
+        <!-- Sidebar -->
+        <nav class="w-48 bg-slate-800 border-r border-slate-700 p-4 space-y-1">
+            <button @click="page='overview'" :class="page==='overview' ? 'bg-slate-700' : ''" class="w-full text-left px-3 py-2 rounded text-sm hover:bg-slate-700">概览</button>
+            <button @click="page='users'" :class="page==='users' ? 'bg-slate-700' : ''" class="w-full text-left px-3 py-2 rounded text-sm hover:bg-slate-700">用户</button>
+            <button @click="page='apikeys'" :class="page==='apikeys' ? 'bg-slate-700' : ''" class="w-full text-left px-3 py-2 rounded text-sm hover:bg-slate-700">API Keys</button>
+        </nav>
+
+        <!-- Main -->
+        <main class="flex-1 overflow-auto p-6">
+            <!-- Overview -->
+            <div x-show="page==='overview'">
+                <h2 class="text-xl font-semibold mb-4">概览</h2>
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                    <div class="bg-slate-800 border border-slate-700 rounded-lg p-4">
+                        <div class="text-2xl font-bold" x-text="stats.users"></div>
+                        <div class="text-sm text-slate-400">用户</div>
+                    </div>
+                    <div class="bg-slate-800 border border-slate-700 rounded-lg p-4">
+                        <div class="text-2xl font-bold" x-text="stats.api_keys"></div>
+                        <div class="text-sm text-slate-400">API Keys</div>
+                    </div>
+                    <div class="bg-slate-800 border border-slate-700 rounded-lg p-4">
+                        <div class="text-2xl font-bold" x-text="stats.todos"></div>
+                        <div class="text-sm text-slate-400">Todos</div>
+                    </div>
+                    <div class="bg-slate-800 border border-slate-700 rounded-lg p-4">
+                        <div class="text-2xl font-bold" x-text="stats.notes"></div>
+                        <div class="text-sm text-slate-400">Notes</div>
+                    </div>
+                </div>
+                <div class="bg-slate-800 border border-slate-700 rounded-lg p-4">
+                    <h3 class="font-medium mb-2">服务信息</h3>
+                    <p class="text-sm text-slate-400">Base URL: <span x-text="window.location.origin"></span></p>
+                    <p class="text-sm text-slate-400">Version: 1.0.0</p>
+                </div>
+            </div>
+
+            <!-- Users -->
+            <div x-show="page==='users'">
+                <h2 class="text-xl font-semibold mb-4">用户</h2>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead class="text-left text-slate-400 border-b border-slate-700">
+                            <tr><th class="pb-2">Email</th><th class="pb-2">角色</th><th class="pb-2">注册时间</th></tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="u in users" :key="u.id">
+                                <tr class="border-b border-slate-800">
+                                    <td class="py-2" x-text="u.email"></td>
+                                    <td class="py-2">
+                                        <span :class="u.role==='admin' ? 'bg-purple-600' : 'bg-slate-600'" class="px-2 py-0.5 rounded text-xs" x-text="u.role"></span>
+                                    </td>
+                                    <td class="py-2 text-slate-400" x-text="new Date(u.created_at).toLocaleString()"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- API Keys -->
+            <div x-show="page==='apikeys'">
+                <h2 class="text-xl font-semibold mb-4">API Keys</h2>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead class="text-left text-slate-400 border-b border-slate-700">
+                            <tr><th class="pb-2">名称</th><th class="pb-2">用户</th><th class="pb-2">Key 前缀</th><th class="pb-2">创建时间</th></tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="k in apikeys" :key="k.id">
+                                <tr class="border-b border-slate-800">
+                                    <td class="py-2" x-text="k.name"></td>
+                                    <td class="py-2" x-text="k.user_email"></td>
+                                    <td class="py-2 font-mono text-slate-400" x-text="k.key_prefix"></td>
+                                    <td class="py-2 text-slate-400" x-text="new Date(k.created_at).toLocaleString()"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<script>
+function app() {
+    return {
+        apiKey: localStorage.getItem('admin_api_key') || '',
+        keyInput: '',
+        page: 'overview',
+        currentUser: '',
+        stats: { users: 0, api_keys: 0, todos: 0, notes: 0 },
+        users: [],
+        apikeys: [],
+        saveKey() {
+            if (this.keyInput) {
+                this.apiKey = this.keyInput;
+                localStorage.setItem('admin_api_key', this.apiKey);
+                this.init();
+            }
+        },
+        async fetch(url) {
+            const res = await window.fetch(url, { headers: { 'x-api-key': this.apiKey } });
+            if (res.status === 401 || res.status === 403) {
+                localStorage.removeItem('admin_api_key');
+                this.apiKey = '';
+                return null;
+            }
+            return res.json();
+        },
+        async init() {
+            if (!this.apiKey) return;
+            const [stats, users, apikeys, me] = await Promise.all([
+                this.fetch('/admin/api/stats'),
+                this.fetch('/admin/api/users'),
+                this.fetch('/admin/api/apikeys'),
+                window.fetch('/auth/me', { headers: { 'x-api-key': this.apiKey } }).then(r => r.json()),
+            ]);
+            if (stats) this.stats = stats;
+            if (users) this.users = users;
+            if (apikeys) this.apikeys = apikeys;
+            if (me && me.email) this.currentUser = me.email;
+        }
+    }
+}
+</script>
+</body>
+</html>

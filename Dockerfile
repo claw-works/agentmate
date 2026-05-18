@@ -19,7 +19,8 @@ RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
 COPY --from=builder /app/agentmate .
+COPY --from=builder /app/web ./web
 
-EXPOSE 8080
+EXPOSE 26001
 
 ENTRYPOINT ["/app/agentmate"]

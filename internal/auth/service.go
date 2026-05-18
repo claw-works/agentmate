@@ -31,9 +31,9 @@ func (s *Service) Register(ctx context.Context, email, password string) (*User, 
 	}
 	var u User
 	err = s.pool.QueryRow(ctx,
-		"INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email, password_hash, created_at",
+		"INSERT INTO users (email, password_hash, role) VALUES ($1, $2, 'user') RETURNING id, email, password_hash, role, created_at",
 		email, string(hash),
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
+	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create user: %w", err)
 	}
@@ -43,8 +43,8 @@ func (s *Service) Register(ctx context.Context, email, password string) (*User, 
 func (s *Service) Login(ctx context.Context, email, password string) (string, error) {
 	var u User
 	err := s.pool.QueryRow(ctx,
-		"SELECT id, email, password_hash, created_at FROM users WHERE email = $1", email,
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
+		"SELECT id, email, password_hash, role, created_at FROM users WHERE email = $1", email,
+	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt)
 	if err != nil {
 		return "", errors.New("invalid credentials")
 	}
@@ -61,8 +61,8 @@ func (s *Service) Login(ctx context.Context, email, password string) (string, er
 func (s *Service) GetUser(ctx context.Context, userID string) (*User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx,
-		"SELECT id, email, password_hash, created_at FROM users WHERE id = $1", userID,
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
+		"SELECT id, email, password_hash, role, created_at FROM users WHERE id = $1", userID,
+	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -178,4 +178,14 @@ func ScopesSubset(parent, requested []string) bool {
 func sha256Hash(s string) string {
 	h := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(h[:])
+}
+
+func (s *Service) IsAdmin(ctx context.Context, userID string) bool {
+	var role string
+	err := s.pool.QueryRow(ctx, "SELECT role FROM users WHERE id = $1", userID).Scan(&role)
+	return err == nil && role == "admin"
+}
+
+func (s *Service) Pool() *pgxpool.Pool {
+	return s.pool
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/gin-gonic/gin"
+	"github.com/wellxie/agentmate/internal/admin"
 	"github.com/wellxie/agentmate/internal/auth"
 	"github.com/wellxie/agentmate/internal/db"
 	"github.com/wellxie/agentmate/internal/notes"
@@ -68,6 +69,14 @@ func main() {
 	protected.POST("/notes", auth.RequireScope("notes:rw"), notesHandler.Create)
 	protected.PATCH("/notes/:id", auth.RequireScope("notes:rw"), notesHandler.Update)
 	protected.DELETE("/notes/:id", auth.RequireScope("notes:rw"), notesHandler.Delete)
+
+	// Admin
+	adminHandler := admin.NewHandler(pool)
+	r.StaticFile("/admin", "./web/admin.html")
+	adminAPI := r.Group("/admin/api", admin.Middleware(authSvc))
+	adminAPI.GET("/stats", adminHandler.Stats)
+	adminAPI.GET("/users", adminHandler.Users)
+	adminAPI.GET("/apikeys", adminHandler.APIKeys)
 
 	log.Printf("starting server on :%s", port)
 	if err := r.Run(":" + port); err != nil {
