@@ -18,8 +18,8 @@ func (s *Service) Get(ctx context.Context, userID, id string) (*Note, error) {
 	return s.repo.Get(ctx, userID, id)
 }
 
-func (s *Service) List(ctx context.Context, userID string) ([]Note, error) {
-	return s.repo.List(ctx, userID)
+func (s *Service) List(ctx context.Context, userID string, params ListNotesParams) ([]Note, error) {
+	return s.repo.List(ctx, userID, params)
 }
 
 func (s *Service) Update(ctx context.Context, userID, id string, req UpdateRequest) (*Note, error) {

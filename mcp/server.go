@@ -38,7 +38,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, userID string) *s
 	s.AddTool(mcp.NewTool("todo_list",
 		mcp.WithDescription("List all todos"),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		list, err := todoSvc.List(ctx, userID)
+		list, err := todoSvc.List(ctx, userID, todo.ListTodosParams{})
 		if err != nil {
 			return errResult(err.Error()), nil
 		}
@@ -88,7 +88,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, userID string) *s
 	s.AddTool(mcp.NewTool("note_list",
 		mcp.WithDescription("List all notes"),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		list, err := notesSvc.List(ctx, userID)
+		list, err := notesSvc.List(ctx, userID, notes.ListNotesParams{})
 		if err != nil {
 			return errResult(err.Error()), nil
 		}

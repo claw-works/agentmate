@@ -2,6 +2,7 @@ package todo
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,6 +31,9 @@ func (r *Repo) Create(ctx context.Context, userID string, req CreateRequest) (*T
 	if tags == nil {
 		tags = []string{}
 	}
+	for i, tag := range tags {
+		tags[i] = strings.ToLower(strings.TrimSpace(tag))
+	}
 	err := r.pool.QueryRow(ctx,
 		`INSERT INTO todos (user_id, title, description, priority, due_date, tags)
 		 VALUES ($1, $2, $3, $4, $5, $6)
@@ -51,10 +55,14 @@ func (r *Repo) Get(ctx context.Context, userID, id string) (*Todo, error) {
 	return &t, nil
 }
 
-func (r *Repo) List(ctx context.Context, userID string) ([]Todo, error) {
+type ListTodosParams struct {
+	Tag string
+}
+
+func (r *Repo) List(ctx context.Context, userID string, params ListTodosParams) ([]Todo, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT id, user_id, title, description, status, priority, due_date, tags, created_at, updated_at
-		 FROM todos WHERE user_id = $1 ORDER BY created_at DESC`, userID,
+		 FROM todos WHERE user_id = $1 AND ($2 = '' OR $2 = ANY(tags)) ORDER BY created_at DESC`, userID, params.Tag,
 	)
 	if err != nil {
 		return nil, err
@@ -98,6 +106,9 @@ func (r *Repo) Update(ctx context.Context, userID, id string, req UpdateRequest)
 	tags := req.Tags
 	if tags == nil {
 		tags = existing.Tags
+	}
+	for i, tag := range tags {
+		tags[i] = strings.ToLower(strings.TrimSpace(tag))
 	}
 	var t Todo
 	err = r.pool.QueryRow(ctx,

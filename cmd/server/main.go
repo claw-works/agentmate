@@ -13,6 +13,7 @@ import (
 	"github.com/wellxie/agentmate/internal/db"
 	"github.com/wellxie/agentmate/internal/notes"
 	"github.com/wellxie/agentmate/internal/reports"
+	"github.com/wellxie/agentmate/internal/tags"
 	"github.com/wellxie/agentmate/internal/todo"
 )
 
@@ -66,6 +67,10 @@ func main() {
 	protected.POST("/auth/apikeys", authHandler.CreateAPIKey)
 	protected.GET("/auth/apikeys", authHandler.ListAPIKeys)
 	protected.DELETE("/auth/apikeys/:id", authHandler.DeleteAPIKey)
+
+	// Tags aggregation
+	tagsHandler := tags.NewHandler(pool)
+	protected.GET("/tags", tagsHandler.List)
 
 	// Todos - read
 	protected.GET("/todos", auth.RequireScope("todos:r"), todoHandler.List)

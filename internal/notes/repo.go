@@ -2,6 +2,7 @@ package notes
 
 import (
 	"context"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -18,6 +19,9 @@ func (r *Repo) Create(ctx context.Context, userID string, req CreateRequest) (*N
 	tags := req.Tags
 	if tags == nil {
 		tags = []string{}
+	}
+	for i, tag := range tags {
+		tags[i] = strings.ToLower(strings.TrimSpace(tag))
 	}
 	var n Note
 	err := r.pool.QueryRow(ctx,
@@ -41,10 +45,14 @@ func (r *Repo) Get(ctx context.Context, userID, id string) (*Note, error) {
 	return &n, nil
 }
 
-func (r *Repo) List(ctx context.Context, userID string) ([]Note, error) {
+type ListNotesParams struct {
+	Tag string
+}
+
+func (r *Repo) List(ctx context.Context, userID string, params ListNotesParams) ([]Note, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT id, user_id, title, content, tags, created_at, updated_at
-		 FROM notes WHERE user_id = $1 ORDER BY created_at DESC`, userID,
+		 FROM notes WHERE user_id = $1 AND ($2 = '' OR $2 = ANY(tags)) ORDER BY created_at DESC`, userID, params.Tag,
 	)
 	if err != nil {
 		return nil, err
@@ -75,6 +83,9 @@ func (r *Repo) Update(ctx context.Context, userID, id string, req UpdateRequest)
 	tags := req.Tags
 	if tags == nil {
 		tags = existing.Tags
+	}
+	for i, tag := range tags {
+		tags[i] = strings.ToLower(strings.TrimSpace(tag))
 	}
 	var n Note
 	err = r.pool.QueryRow(ctx,

@@ -42,7 +42,8 @@ func (h *Handler) Get(c *gin.Context) {
 
 func (h *Handler) List(c *gin.Context) {
 	userID := c.GetString(auth.ContextUserID)
-	list, err := h.svc.List(c.Request.Context(), userID)
+	tag := c.Query("tag")
+	list, err := h.svc.List(c.Request.Context(), userID, ListNotesParams{Tag: tag})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

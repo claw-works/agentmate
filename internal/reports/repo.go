@@ -3,6 +3,7 @@ package reports
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -19,6 +20,9 @@ func (r *Repo) Create(ctx context.Context, userID string, req CreateReportReques
 	tags := req.Tags
 	if tags == nil {
 		tags = []string{}
+	}
+	for i, tag := range tags {
+		tags[i] = strings.ToLower(strings.TrimSpace(tag))
 	}
 	format := req.Format
 	if format == "" {
@@ -112,6 +116,9 @@ func (r *Repo) Update(ctx context.Context, userID, id string, req UpdateReportRe
 	tags := req.Tags
 	if tags == nil {
 		tags = existing.Tags
+	}
+	for i, tag := range tags {
+		tags[i] = strings.ToLower(strings.TrimSpace(tag))
 	}
 	var rpt Report
 	err = r.pool.QueryRow(ctx,
