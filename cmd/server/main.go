@@ -12,6 +12,7 @@ import (
 	"github.com/wellxie/agentmate/internal/auth"
 	"github.com/wellxie/agentmate/internal/db"
 	"github.com/wellxie/agentmate/internal/notes"
+	"github.com/wellxie/agentmate/internal/reports"
 	"github.com/wellxie/agentmate/internal/todo"
 )
 
@@ -39,6 +40,10 @@ func main() {
 	notesRepo := notes.NewRepo(pool)
 	notesSvc := notes.NewService(notesRepo)
 	notesHandler := notes.NewHandler(notesSvc)
+
+	reportsRepo := reports.NewRepo(pool)
+	reportsSvc := reports.NewService(reportsRepo)
+	reportsHandler := reports.NewHandler(reportsSvc)
 
 	// Router
 	r := gin.Default()
@@ -79,6 +84,14 @@ func main() {
 	protected.POST("/notes", auth.RequireScope("notes:rw"), notesHandler.Create)
 	protected.PATCH("/notes/:id", auth.RequireScope("notes:rw"), notesHandler.Update)
 	protected.DELETE("/notes/:id", auth.RequireScope("notes:rw"), notesHandler.Delete)
+
+	// Reports - read
+	protected.GET("/reports", auth.RequireScope("reports:r"), reportsHandler.List)
+	protected.GET("/reports/:id", auth.RequireScope("reports:r"), reportsHandler.Get)
+	// Reports - write
+	protected.POST("/reports", auth.RequireScope("reports:rw"), reportsHandler.Create)
+	protected.PATCH("/reports/:id", auth.RequireScope("reports:rw"), reportsHandler.Update)
+	protected.DELETE("/reports/:id", auth.RequireScope("reports:rw"), reportsHandler.Delete)
 
 	// Admin
 	adminHandler := admin.NewHandler(pool)
