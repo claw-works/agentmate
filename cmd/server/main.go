@@ -100,6 +100,7 @@ func main() {
 	adminAPI.GET("/stats", adminHandler.Stats)
 	adminAPI.GET("/users", adminHandler.Users)
 	adminAPI.GET("/apikeys", adminHandler.APIKeys)
+	adminAPI.GET("/reports", adminHandler.Reports)
 
 	log.Printf("starting server on :%s", port)
 	if err := r.Run(":" + port); err != nil {

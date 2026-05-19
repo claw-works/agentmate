@@ -2,6 +2,7 @@ package admin
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -18,16 +19,18 @@ func NewHandler(pool *pgxpool.Pool) *Handler {
 
 func (h *Handler) Stats(c *gin.Context) {
 	ctx := c.Request.Context()
-	var users, apikeys, todos, notesCount int
+	var users, apikeys, todos, notesCount, reportCount int
 	h.pool.QueryRow(ctx, "SELECT COUNT(*) FROM users").Scan(&users)
 	h.pool.QueryRow(ctx, "SELECT COUNT(*) FROM api_keys").Scan(&apikeys)
 	h.pool.QueryRow(ctx, "SELECT COUNT(*) FROM todos").Scan(&todos)
 	h.pool.QueryRow(ctx, "SELECT COUNT(*) FROM notes").Scan(&notesCount)
+	h.pool.QueryRow(ctx, "SELECT COUNT(*) FROM reports").Scan(&reportCount)
 	c.JSON(http.StatusOK, gin.H{
 		"users":    users,
 		"api_keys": apikeys,
 		"todos":    todos,
 		"notes":    notesCount,
+		"reports":  reportCount,
 	})
 }
 
@@ -84,6 +87,46 @@ func (h *Handler) APIKeys(c *gin.Context) {
 			return
 		}
 		list = append(list, k)
+	}
+	c.JSON(http.StatusOK, list)
+}
+
+type reportRow struct {
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	Format    string    `json:"format"`
+	Tags      []string  `json:"tags"`
+	Source    string    `json:"source"`
+	UserEmail string    `json:"user_email"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (h *Handler) Reports(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := h.pool.Query(c.Request.Context(),
+		`SELECT r.id, r.title, r.format, r.tags, r.source, u.email, r.created_at
+		 FROM reports r JOIN users u ON r.user_id = u.id
+		 ORDER BY r.created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	var list []reportRow
+	for rows.Next() {
+		var r reportRow
+		if err := rows.Scan(&r.ID, &r.Title, &r.Format, &r.Tags, &r.Source, &r.UserEmail, &r.CreatedAt); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		list = append(list, r)
+	}
+	if list == nil {
+		list = []reportRow{}
 	}
 	c.JSON(http.StatusOK, list)
 }
