@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: agentmate_secret_2026
       POSTGRES_DB: agentmate
     ports:
-      - "5432:5432"
+      - "15432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
