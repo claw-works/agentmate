@@ -92,6 +92,7 @@ func main() {
 
 	// Reports - read
 	protected.GET("/reports", auth.RequireScope("reports:r"), reportsHandler.List)
+	protected.GET("/reports/sources", auth.RequireScope("reports:r"), reportsHandler.Sources)
 	protected.GET("/reports/:id", auth.RequireScope("reports:r"), reportsHandler.Get)
 	// Reports - write
 	protected.POST("/reports", auth.RequireScope("reports:rw"), reportsHandler.Create)

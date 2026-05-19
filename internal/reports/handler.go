@@ -88,3 +88,13 @@ func (h *Handler) Delete(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
+
+func (h *Handler) Sources(c *gin.Context) {
+	userID := c.GetString(auth.ContextUserID)
+	sources, err := h.svc.ListSources(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, sources)
+}

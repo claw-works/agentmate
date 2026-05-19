@@ -134,3 +134,30 @@ func (r *Repo) Delete(ctx context.Context, userID, id string) error {
 	_, err := r.pool.Exec(ctx, "DELETE FROM reports WHERE id = $1 AND user_id = $2", id, userID)
 	return err
 }
+
+type SourceStat struct {
+	Source string `json:"source"`
+	Count  int    `json:"count"`
+}
+
+func (r *Repo) ListSources(ctx context.Context, userID string) ([]SourceStat, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT source, count(*) as count FROM reports
+		 WHERE user_id = $1 AND source != ''
+		 GROUP BY source ORDER BY count DESC, source`,
+		userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]SourceStat, 0)
+	for rows.Next() {
+		var s SourceStat
+		if err := rows.Scan(&s.Source, &s.Count); err != nil {
+			return nil, err
+		}
+		result = append(result, s)
+	}
+	return result, nil
+}

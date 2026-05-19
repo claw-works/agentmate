@@ -29,3 +29,7 @@ func (s *Service) Update(ctx context.Context, userID, id string, req UpdateRepor
 func (s *Service) Delete(ctx context.Context, userID, id string) error {
 	return s.repo.Delete(ctx, userID, id)
 }
+
+func (s *Service) ListSources(ctx context.Context, userID string) ([]SourceStat, error) {
+	return s.repo.ListSources(ctx, userID)
+}
