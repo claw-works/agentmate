@@ -11,7 +11,16 @@ import (
 	"github.com/wellxie/agentmate/internal/todo"
 )
 
-func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *reports.Service, userID string) *server.MCPServer {
+type contextKey string
+
+const UserIDKey contextKey = "user_id"
+
+func userIDFromCtx(ctx context.Context) (string, bool) {
+	id, ok := ctx.Value(UserIDKey).(string)
+	return id, ok && id != ""
+}
+
+func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *reports.Service) *server.MCPServer {
 	s := server.NewMCPServer("agentmate", "0.1.0")
 
 	// ─── Todo tools ───
@@ -23,6 +32,10 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		mcp.WithString("priority", mcp.Description("low/medium/high")),
 		mcp.WithString("due_date", mcp.Description("RFC3339 date")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
 		args := req.Params.Arguments
 		r := todo.CreateRequest{
 			Title:       strArg(args, "title"),
@@ -42,6 +55,10 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		mcp.WithString("tag", mcp.Description("Filter by tag")),
 		mcp.WithString("status", mcp.Description("Filter by status")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
 		args := req.Params.Arguments
 		list, err := todoSvc.List(ctx, userID, todo.ListTodosParams{
 			Tag:    strArg(args, "tag"),
@@ -57,6 +74,10 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		mcp.WithDescription("Get a todo by ID"),
 		mcp.WithString("id", mcp.Required()),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
 		t, err := todoSvc.Get(ctx, userID, strArg(req.Params.Arguments, "id"))
 		if err != nil {
 			return errResult(err.Error()), nil
@@ -73,6 +94,10 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		mcp.WithString("priority", mcp.Description("low/medium/high")),
 		mcp.WithString("due_date", mcp.Description("RFC3339 date")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
 		args := req.Params.Arguments
 		r := todo.UpdateRequest{}
 		if v := strArg(args, "title"); v != "" {
@@ -101,6 +126,10 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		mcp.WithDescription("Delete a todo"),
 		mcp.WithString("id", mcp.Required()),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
 		err := todoSvc.Delete(ctx, userID, strArg(req.Params.Arguments, "id"))
 		if err != nil {
 			return errResult(err.Error()), nil
@@ -112,6 +141,10 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		mcp.WithDescription("Search todos by keyword"),
 		mcp.WithString("q", mcp.Required(), mcp.Description("Search query")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
 		list, err := todoSvc.Search(ctx, userID, strArg(req.Params.Arguments, "q"))
 		if err != nil {
 			return errResult(err.Error()), nil
@@ -126,6 +159,10 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		mcp.WithString("title", mcp.Required()),
 		mcp.WithString("content", mcp.Description("Note content")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
 		args := req.Params.Arguments
 		r := notes.CreateRequest{
 			Title:   strArg(args, "title"),
@@ -142,6 +179,10 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		mcp.WithDescription("List all notes"),
 		mcp.WithString("tag", mcp.Description("Filter by tag")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
 		args := req.Params.Arguments
 		list, err := notesSvc.List(ctx, userID, notes.ListNotesParams{Tag: strArg(args, "tag")})
 		if err != nil {
@@ -154,6 +195,10 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		mcp.WithDescription("Get a note by ID"),
 		mcp.WithString("id", mcp.Required()),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
 		n, err := notesSvc.Get(ctx, userID, strArg(req.Params.Arguments, "id"))
 		if err != nil {
 			return errResult(err.Error()), nil
@@ -167,6 +212,10 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		mcp.WithString("title", mcp.Description("New title")),
 		mcp.WithString("content", mcp.Description("New content")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
 		args := req.Params.Arguments
 		r := notes.UpdateRequest{}
 		if v := strArg(args, "title"); v != "" {
@@ -186,6 +235,10 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		mcp.WithDescription("Delete a note"),
 		mcp.WithString("id", mcp.Required()),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
 		err := notesSvc.Delete(ctx, userID, strArg(req.Params.Arguments, "id"))
 		if err != nil {
 			return errResult(err.Error()), nil
@@ -197,6 +250,10 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		mcp.WithDescription("Search notes by keyword"),
 		mcp.WithString("q", mcp.Required(), mcp.Description("Search query")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
 		list, err := notesSvc.Search(ctx, userID, strArg(req.Params.Arguments, "q"))
 		if err != nil {
 			return errResult(err.Error()), nil
@@ -213,6 +270,10 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		mcp.WithString("format", mcp.Description("md or html")),
 		mcp.WithString("source", mcp.Description("Source identifier")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
 		args := req.Params.Arguments
 		r := reports.CreateReportRequest{
 			Title:   strArg(args, "title"),
@@ -235,6 +296,10 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		mcp.WithNumber("limit", mcp.Description("Max results")),
 		mcp.WithNumber("offset", mcp.Description("Offset")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
 		args := req.Params.Arguments
 		params := reports.ListReportsParams{
 			Source: strArg(args, "source"),
@@ -253,6 +318,10 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		mcp.WithDescription("Get a report by ID"),
 		mcp.WithString("id", mcp.Required()),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
 		rpt, err := reportsSvc.Get(ctx, userID, strArg(req.Params.Arguments, "id"))
 		if err != nil {
 			return errResult(err.Error()), nil
@@ -266,6 +335,10 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		mcp.WithString("title", mcp.Description("New title")),
 		mcp.WithString("source", mcp.Description("New source")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
 		args := req.Params.Arguments
 		r := reports.UpdateReportRequest{}
 		if v := strArg(args, "title"); v != "" {
@@ -286,6 +359,10 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		mcp.WithDescription("Delete a report"),
 		mcp.WithString("id", mcp.Required()),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
 		err := reportsSvc.Delete(ctx, userID, strArg(req.Params.Arguments, "id"))
 		if err != nil {
 			return errResult(err.Error()), nil
@@ -297,6 +374,10 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		mcp.WithDescription("Search reports by keyword"),
 		mcp.WithString("q", mcp.Required(), mcp.Description("Search query")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
 		list, err := reportsSvc.List(ctx, userID, reports.ListReportsParams{Search: strArg(req.Params.Arguments, "q")})
 		if err != nil {
 			return errResult(err.Error()), nil

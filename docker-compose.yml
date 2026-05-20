@@ -51,8 +51,6 @@ services:
       JWT_EXPIRY: 24h
       SERVER_PORT: "26001"
       MCP_PORT: "26002"
-      MCP_USER_ID: "${MCP_USER_ID:-}"   # Set to your user_id to enable MCP server
-      AGENTMATE_API_KEY: ""
     restart: unless-stopped
 
 volumes:

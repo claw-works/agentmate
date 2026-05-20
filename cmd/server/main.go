@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -113,11 +115,29 @@ func main() {
 	adminAPI.GET("/usage", adminHandler.Usage)
 
 	// MCP Server
-	mcpPort := env("MCP_PORT", "26002")
-	mcpUserID := env("MCP_USER_ID", "")
-	if mcpUserID != "" {
-		mcpSrv := mcp.NewServer(todoSvc, notesSvc, reportsSvc, mcpUserID)
-		sseSrv := mcpserver.NewSSEServer(mcpSrv)
+	if mcpPort := env("MCP_PORT", ""); mcpPort != "" {
+		mcpSrv := mcp.NewServer(todoSvc, notesSvc, reportsSvc)
+		sseSrv := mcpserver.NewSSEServer(mcpSrv,
+			mcpserver.WithSSEContextFunc(func(ctx context.Context, r *http.Request) context.Context {
+				apiKey := r.URL.Query().Get("api_key")
+				if apiKey == "" {
+					apiKey = r.Header.Get("X-Api-Key")
+				}
+				if apiKey == "" {
+					if bearer := r.Header.Get("Authorization"); strings.HasPrefix(bearer, "Bearer ") {
+						apiKey = strings.TrimPrefix(bearer, "Bearer ")
+					}
+				}
+				if apiKey == "" {
+					return ctx
+				}
+				ak, err := authSvc.ValidateAPIKey(ctx, apiKey)
+				if err != nil {
+					return ctx
+				}
+				return context.WithValue(ctx, mcp.UserIDKey, ak.UserID)
+			}),
+		)
 		go func() {
 			log.Printf("starting MCP SSE server on :%s", mcpPort)
 			if err := sseSrv.Start(":" + mcpPort); err != nil {
