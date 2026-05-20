@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -115,30 +114,15 @@ func main() {
 	adminAPI.GET("/reports", adminHandler.Reports)
 	adminAPI.GET("/usage", adminHandler.Usage)
 
-	// MCP Server
-	if mcpPort := env("MCP_PORT", ""); mcpPort != "" {
+	// MCP Server (Streamable HTTP, mounted on /mcp)
+	{
 		mcpSrv := mcp.NewServer(todoSvc, notesSvc, reportsSvc)
 
-		// session -> userID mapping, populated during SSE GET, read during message POST
-		var sessionUsers sync.Map
-
-		sseSrv := mcpserver.NewSSEServer(mcpSrv,
-			mcpserver.WithSSEContextFunc(func(ctx context.Context, r *http.Request) context.Context {
-				// Look up userID stored by the middleware during the SSE GET
-				sessionID := r.URL.Query().Get("sessionId")
-				if userID, ok := sessionUsers.Load(sessionID); ok {
-					return context.WithValue(ctx, mcp.UserIDKey, userID.(string))
-				}
-				return ctx
-			}),
-		)
-
-		mcpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Auth on SSE connection (GET /sse)
-			if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/sse") {
-				apiKey := r.URL.Query().Get("api_key")
+		httpSrv := mcpserver.NewStreamableHTTPServer(mcpSrv,
+			mcpserver.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
+				apiKey := r.Header.Get("X-Api-Key")
 				if apiKey == "" {
-					apiKey = r.Header.Get("X-Api-Key")
+					apiKey = r.URL.Query().Get("api_key")
 				}
 				if apiKey == "" {
 					if bearer := r.Header.Get("Authorization"); strings.HasPrefix(bearer, "Bearer ") {
@@ -146,30 +130,17 @@ func main() {
 					}
 				}
 				if apiKey == "" {
-					http.Error(w, "missing api_key", http.StatusUnauthorized)
-					return
+					return ctx
 				}
-				ak, err := authSvc.ValidateAPIKey(r.Context(), apiKey)
+				ak, err := authSvc.ValidateAPIKey(ctx, apiKey)
 				if err != nil {
-					http.Error(w, "invalid api_key", http.StatusUnauthorized)
-					return
+					return ctx
 				}
-				// Capture the sessionId from the response to map it to the user.
-				// mcp-go writes the session endpoint as the first SSE event, so we
-				// wrap the ResponseWriter to sniff the sessionId.
-				sw := &sessionCapture{ResponseWriter: w, userID: ak.UserID, store: &sessionUsers}
-				sseSrv.ServeHTTP(sw, r)
-				return
-			}
-			sseSrv.ServeHTTP(w, r)
-		})
+				return context.WithValue(ctx, mcp.UserIDKey, ak.UserID)
+			}),
+		)
 
-		go func() {
-			log.Printf("starting MCP SSE server on :%s", mcpPort)
-			if err := http.ListenAndServe(":"+mcpPort, mcpHandler); err != nil {
-				log.Printf("mcp server error: %v", err)
-			}
-		}()
+		r.Any("/mcp", gin.WrapH(httpSrv))
 	}
 
 	log.Printf("starting server on :%s", port)
@@ -183,34 +154,4 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-// sessionCapture wraps http.ResponseWriter to extract the sessionId from the
-// first SSE event written by mcp-go, then stores the userID mapping.
-type sessionCapture struct {
-	http.ResponseWriter
-	userID  string
-	store   *sync.Map
-	captured bool
-}
-
-func (sc *sessionCapture) Write(b []byte) (int, error) {
-	if !sc.captured {
-		sc.captured = true
-		// First write is: "event: endpoint\ndata: ...?sessionId=<uuid>\r\n\r\n"
-		if s := string(b); strings.Contains(s, "sessionId=") {
-			parts := strings.SplitAfter(s, "sessionId=")
-			if len(parts) > 1 {
-				sessionID := strings.TrimRight(parts[1], "\r\n")
-				sc.store.Store(sessionID, sc.userID)
-			}
-		}
-	}
-	return sc.ResponseWriter.Write(b)
-}
-
-func (sc *sessionCapture) Flush() {
-	if f, ok := sc.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
 }

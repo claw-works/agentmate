@@ -36,7 +36,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		if !ok {
 			return errResult("unauthorized"), nil
 		}
-		args := req.Params.Arguments
+		args := req.GetArguments()
 		r := todo.CreateRequest{
 			Title:       strArg(args, "title"),
 			Description: strArg(args, "description"),
@@ -59,7 +59,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		if !ok {
 			return errResult("unauthorized"), nil
 		}
-		args := req.Params.Arguments
+		args := req.GetArguments()
 		list, err := todoSvc.List(ctx, userID, todo.ListTodosParams{
 			Tag:    strArg(args, "tag"),
 			Status: strArg(args, "status"),
@@ -78,7 +78,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		if !ok {
 			return errResult("unauthorized"), nil
 		}
-		t, err := todoSvc.Get(ctx, userID, strArg(req.Params.Arguments, "id"))
+		t, err := todoSvc.Get(ctx, userID, strArg(req.GetArguments(), "id"))
 		if err != nil {
 			return errResult(err.Error()), nil
 		}
@@ -98,7 +98,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		if !ok {
 			return errResult("unauthorized"), nil
 		}
-		args := req.Params.Arguments
+		args := req.GetArguments()
 		r := todo.UpdateRequest{}
 		if v := strArg(args, "title"); v != "" {
 			r.Title = &v
@@ -130,7 +130,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		if !ok {
 			return errResult("unauthorized"), nil
 		}
-		err := todoSvc.Delete(ctx, userID, strArg(req.Params.Arguments, "id"))
+		err := todoSvc.Delete(ctx, userID, strArg(req.GetArguments(), "id"))
 		if err != nil {
 			return errResult(err.Error()), nil
 		}
@@ -145,7 +145,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		if !ok {
 			return errResult("unauthorized"), nil
 		}
-		list, err := todoSvc.Search(ctx, userID, strArg(req.Params.Arguments, "q"))
+		list, err := todoSvc.Search(ctx, userID, strArg(req.GetArguments(), "q"))
 		if err != nil {
 			return errResult(err.Error()), nil
 		}
@@ -163,7 +163,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		if !ok {
 			return errResult("unauthorized"), nil
 		}
-		args := req.Params.Arguments
+		args := req.GetArguments()
 		r := notes.CreateRequest{
 			Title:   strArg(args, "title"),
 			Content: strArg(args, "content"),
@@ -183,7 +183,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		if !ok {
 			return errResult("unauthorized"), nil
 		}
-		args := req.Params.Arguments
+		args := req.GetArguments()
 		list, err := notesSvc.List(ctx, userID, notes.ListNotesParams{Tag: strArg(args, "tag")})
 		if err != nil {
 			return errResult(err.Error()), nil
@@ -199,7 +199,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		if !ok {
 			return errResult("unauthorized"), nil
 		}
-		n, err := notesSvc.Get(ctx, userID, strArg(req.Params.Arguments, "id"))
+		n, err := notesSvc.Get(ctx, userID, strArg(req.GetArguments(), "id"))
 		if err != nil {
 			return errResult(err.Error()), nil
 		}
@@ -216,7 +216,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		if !ok {
 			return errResult("unauthorized"), nil
 		}
-		args := req.Params.Arguments
+		args := req.GetArguments()
 		r := notes.UpdateRequest{}
 		if v := strArg(args, "title"); v != "" {
 			r.Title = &v
@@ -239,7 +239,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		if !ok {
 			return errResult("unauthorized"), nil
 		}
-		err := notesSvc.Delete(ctx, userID, strArg(req.Params.Arguments, "id"))
+		err := notesSvc.Delete(ctx, userID, strArg(req.GetArguments(), "id"))
 		if err != nil {
 			return errResult(err.Error()), nil
 		}
@@ -254,7 +254,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		if !ok {
 			return errResult("unauthorized"), nil
 		}
-		list, err := notesSvc.Search(ctx, userID, strArg(req.Params.Arguments, "q"))
+		list, err := notesSvc.Search(ctx, userID, strArg(req.GetArguments(), "q"))
 		if err != nil {
 			return errResult(err.Error()), nil
 		}
@@ -274,7 +274,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		if !ok {
 			return errResult("unauthorized"), nil
 		}
-		args := req.Params.Arguments
+		args := req.GetArguments()
 		r := reports.CreateReportRequest{
 			Title:   strArg(args, "title"),
 			Content: strArg(args, "content"),
@@ -300,7 +300,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		if !ok {
 			return errResult("unauthorized"), nil
 		}
-		args := req.Params.Arguments
+		args := req.GetArguments()
 		params := reports.ListReportsParams{
 			Source: strArg(args, "source"),
 			Tag:    strArg(args, "tag"),
@@ -322,7 +322,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		if !ok {
 			return errResult("unauthorized"), nil
 		}
-		rpt, err := reportsSvc.Get(ctx, userID, strArg(req.Params.Arguments, "id"))
+		rpt, err := reportsSvc.Get(ctx, userID, strArg(req.GetArguments(), "id"))
 		if err != nil {
 			return errResult(err.Error()), nil
 		}
@@ -339,7 +339,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		if !ok {
 			return errResult("unauthorized"), nil
 		}
-		args := req.Params.Arguments
+		args := req.GetArguments()
 		r := reports.UpdateReportRequest{}
 		if v := strArg(args, "title"); v != "" {
 			r.Title = &v
@@ -363,7 +363,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		if !ok {
 			return errResult("unauthorized"), nil
 		}
-		err := reportsSvc.Delete(ctx, userID, strArg(req.Params.Arguments, "id"))
+		err := reportsSvc.Delete(ctx, userID, strArg(req.GetArguments(), "id"))
 		if err != nil {
 			return errResult(err.Error()), nil
 		}
@@ -378,7 +378,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		if !ok {
 			return errResult("unauthorized"), nil
 		}
-		list, err := reportsSvc.List(ctx, userID, reports.ListReportsParams{Search: strArg(req.Params.Arguments, "q")})
+		list, err := reportsSvc.List(ctx, userID, reports.ListReportsParams{Search: strArg(req.GetArguments(), "q")})
 		if err != nil {
 			return errResult(err.Error()), nil
 		}

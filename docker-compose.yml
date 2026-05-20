@@ -44,13 +44,11 @@ services:
         condition: service_completed_successfully
     ports:
       - "26001:26001"
-      - "26002:26002"
     environment:
       DATABASE_URL: postgres://agentmate:agentmate_secret_2026@postgres:5432/agentmate?sslmode=disable
       JWT_SECRET: agentmate_jwt_secret_2026
       JWT_EXPIRY: 24h
       SERVER_PORT: "26001"
-      MCP_PORT: "26002"
     restart: unless-stopped
 
 volumes:
