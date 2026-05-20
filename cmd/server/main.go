@@ -13,6 +13,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/wellxie/agentmate/internal/admin"
 	"github.com/wellxie/agentmate/internal/auth"
+	"github.com/wellxie/agentmate/internal/bookmarks"
 	"github.com/wellxie/agentmate/internal/db"
 	"github.com/wellxie/agentmate/internal/middleware"
 	"github.com/wellxie/agentmate/internal/notes"
@@ -50,6 +51,10 @@ func main() {
 	reportsRepo := reports.NewRepo(pool)
 	reportsSvc := reports.NewService(reportsRepo)
 	reportsHandler := reports.NewHandler(reportsSvc)
+
+	bookmarksRepo := bookmarks.NewRepo(pool)
+	bookmarksSvc := bookmarks.NewService(bookmarksRepo)
+	bookmarksHandler := bookmarks.NewHandler(bookmarksSvc)
 
 	// Router
 	r := gin.Default()
@@ -103,6 +108,14 @@ func main() {
 	protected.POST("/reports", auth.RequireScope("reports:rw"), reportsHandler.Create)
 	protected.PATCH("/reports/:id", auth.RequireScope("reports:rw"), reportsHandler.Update)
 	protected.DELETE("/reports/:id", auth.RequireScope("reports:rw"), reportsHandler.Delete)
+
+	// Bookmarks - read
+	protected.GET("/bookmarks", auth.RequireScope("bookmarks:r"), bookmarksHandler.List)
+	protected.GET("/bookmarks/:id", auth.RequireScope("bookmarks:r"), bookmarksHandler.Get)
+	// Bookmarks - write
+	protected.POST("/bookmarks", auth.RequireScope("bookmarks:rw"), bookmarksHandler.Create)
+	protected.PATCH("/bookmarks/:id", auth.RequireScope("bookmarks:rw"), bookmarksHandler.Update)
+	protected.DELETE("/bookmarks/:id", auth.RequireScope("bookmarks:rw"), bookmarksHandler.Delete)
 
 	// Admin
 	adminHandler := admin.NewHandler(pool)
