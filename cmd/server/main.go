@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/wellxie/agentmate/internal/admin"
 	"github.com/wellxie/agentmate/internal/auth"
 	"github.com/wellxie/agentmate/internal/db"
@@ -16,6 +17,7 @@ import (
 	"github.com/wellxie/agentmate/internal/reports"
 	"github.com/wellxie/agentmate/internal/tags"
 	"github.com/wellxie/agentmate/internal/todo"
+	"github.com/wellxie/agentmate/mcp"
 )
 
 func main() {
@@ -109,6 +111,20 @@ func main() {
 	adminAPI.GET("/apikeys", adminHandler.APIKeys)
 	adminAPI.GET("/reports", adminHandler.Reports)
 	adminAPI.GET("/usage", adminHandler.Usage)
+
+	// MCP Server
+	mcpPort := env("MCP_PORT", "26002")
+	mcpUserID := env("MCP_USER_ID", "")
+	if mcpUserID != "" {
+		mcpSrv := mcp.NewServer(todoSvc, notesSvc, reportsSvc, mcpUserID)
+		sseSrv := mcpserver.NewSSEServer(mcpSrv)
+		go func() {
+			log.Printf("starting MCP SSE server on :%s", mcpPort)
+			if err := sseSrv.Start(":" + mcpPort); err != nil {
+				log.Printf("mcp server error: %v", err)
+			}
+		}()
+	}
 
 	log.Printf("starting server on :%s", port)
 	if err := r.Run(":" + port); err != nil {
