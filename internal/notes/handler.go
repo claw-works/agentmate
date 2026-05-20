@@ -2,6 +2,7 @@ package notes
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/wellxie/agentmate/internal/auth"
@@ -43,12 +44,19 @@ func (h *Handler) Get(c *gin.Context) {
 func (h *Handler) List(c *gin.Context) {
 	userID := c.GetString(auth.ContextUserID)
 	tag := c.Query("tag")
-	list, err := h.svc.List(c.Request.Context(), userID, ListNotesParams{Tag: tag})
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	params := ListNotesParams{Tag: tag, Limit: limit, Offset: offset}
+	total, _ := h.svc.Count(c.Request.Context(), userID, params)
+	list, err := h.svc.List(c.Request.Context(), userID, params)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, list)
+	c.JSON(http.StatusOK, gin.H{"items": list, "total": total, "limit": limit, "offset": offset})
 }
 
 func (h *Handler) Update(c *gin.Context) {

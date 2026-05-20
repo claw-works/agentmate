@@ -46,13 +46,29 @@ func (r *Repo) Get(ctx context.Context, userID, id string) (*Note, error) {
 }
 
 type ListNotesParams struct {
-	Tag string
+	Tag    string
+	Limit  int
+	Offset int
+}
+
+func (r *Repo) Count(ctx context.Context, userID string, params ListNotesParams) (int, error) {
+	var count int
+	err := r.pool.QueryRow(ctx,
+		`SELECT count(*) FROM notes WHERE user_id = $1 AND ($2 = '' OR $2 = ANY(tags))`,
+		userID, params.Tag,
+	).Scan(&count)
+	return count, err
 }
 
 func (r *Repo) List(ctx context.Context, userID string, params ListNotesParams) ([]Note, error) {
+	limit := params.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
 	rows, err := r.pool.Query(ctx,
 		`SELECT id, user_id, title, content, tags, created_at, updated_at
-		 FROM notes WHERE user_id = $1 AND ($2 = '' OR $2 = ANY(tags)) ORDER BY created_at DESC`, userID, params.Tag,
+		 FROM notes WHERE user_id = $1 AND ($2 = '' OR $2 = ANY(tags))
+		 ORDER BY created_at DESC LIMIT $3 OFFSET $4`, userID, params.Tag, limit, params.Offset,
 	)
 	if err != nil {
 		return nil, err

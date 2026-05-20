@@ -1,6 +1,7 @@
-# Agentmate — LLM Integration Guide
+# AgentMate — AI-native Backend as Toolset
 
-AI-native tool service (Backend as Toolset): todos + notes management via REST API or MCP, multi-tenant, scoped API keys.
+AgentMate exposes personal productivity tools (Todos, Notes, Reports) as structured APIs
+for any AI Agent to consume via REST or MCP. No UI — pure API product.
 
 ## Base URL
 
@@ -10,167 +11,175 @@ http://localhost:26001
 
 ## Authentication
 
-Two methods (use one):
+Two methods, both resolve to a `user_id`:
 
-1. **API Key** (recommended for agents):
-   - Header: `x-api-key: ak_xxxx`
-   - Or: `Authorization: Bearer ak_xxxx`
+1. **JWT** (interactive users):
+   - `POST /auth/login` → returns `{"token": "<jwt>"}`
+   - Header: `Authorization: Bearer <jwt>`
 
-2. **JWT**:
-   - Header: `Authorization: Bearer <jwt_token>`
-   - Get token via `POST /auth/login`
+2. **API Key** (agents):
+   - Header: `X-Api-Key: ak_<key>` OR `Authorization: Bearer ak_<key>`
+   - Create keys at `POST /auth/apikeys` (requires JWT)
 
-### Scopes
+## Scopes
 
-API keys can be scoped. Empty scopes = full access.
-
-Available: `todos:r`, `todos:rw`, `notes:r`, `notes:rw`, `manage_keys`
-
-`*:rw` implies `*:r`. JWT users bypass scope checks.
+API Keys support optional scopes: `todos:r`, `todos:rw`, `notes:r`, `notes:rw`,
+`reports:r`, `reports:rw`, `manage_keys`. Empty scopes = full access.
 
 ## Response Format
 
-All responses follow:
-
+All endpoints return:
 ```json
-// Success
-{"id": "...", "title": "...", ...}
-
-// List
-[{"id": "...", ...}, ...]
-
-// Error
-{"error": "error message"}
+{"code": 0, "data": <payload>, "message": "ok"}
+{"code": 40001, "data": null, "message": "unauthorized"}
+{"code": 40400, "data": null, "message": "not found"}
 ```
 
-HTTP status codes: 200 OK, 201 Created, 400 Bad Request, 401 Unauthorized, 403 Forbidden, 404 Not Found, 500 Internal Error.
+Note: Some list endpoints return bare arrays directly (not wrapped).
 
-## API Endpoints
+---
 
-### Auth (public)
+## Auth Endpoints
 
-#### POST /auth/register
-```json
-// Request
-{"email": "user@example.com", "password": "password123"}
-// Response 201
-{"id": "uuid", "email": "user@example.com", "created_at": "RFC3339"}
+```
+POST /auth/register        body: {email, password}
+POST /auth/login           body: {email, password} → {token}
+GET  /auth/me              → {id, email, role}
+POST /auth/apikeys         body: {name, scopes?, expires_at?} → {id, key, name}
+GET  /auth/apikeys         → [{id, name, key_prefix, created_at, scopes}]
+DELETE /auth/apikeys/:id
 ```
 
-#### POST /auth/login
-```json
-// Request
-{"email": "user@example.com", "password": "password123"}
-// Response 200
-{"token": "jwt_token_string"}
+---
+
+## Todos
+
+```
+POST   /todos              body: {title*, description, priority(low/medium/high), due_date, tags[]}
+GET    /todos              ?status=pending|in_progress|done &priority=low|medium|high &tag=xxx &limit=20 &offset=0
+GET    /todos/search       ?q=<text>
+GET    /todos/:id
+PATCH  /todos/:id          body: {title, description, status, priority, due_date, tags}
+DELETE /todos/:id
 ```
 
-### Auth (authenticated)
+Todo status values: `pending` | `in_progress` | `done`
 
-#### GET /auth/me
-Response: `{"id", "email", "created_at"}`
+---
 
-#### POST /auth/apikeys
-```json
-// Request
-{"name": "my-agent", "scopes": ["todos:rw", "notes:r"]}
-// Response 201
-{"key": "ak_full_key_string", "api_key": {"id", "name", "prefix", "scopes", "created_at"}}
+## Notes
+
+```
+POST   /notes              body: {title*, content, tags[]}
+GET    /notes              ?tag=xxx &limit=20 &offset=0
+GET    /notes/search       ?q=<text>
+GET    /notes/:id
+PATCH  /notes/:id          body: {title, content, tags}
+DELETE /notes/:id
 ```
 
-#### GET /auth/apikeys
-Response: `[{"id", "name", "prefix", "scopes", "created_at"}, ...]`
+---
 
-#### DELETE /auth/apikeys/:id
-Response: `{"ok": true}`
+## Reports
 
-### Todos (authenticated)
+Reports store Agent-generated content (Markdown or HTML).
 
-#### POST /todos
-Scope: `todos:rw`
-```json
-// Request
-{"title": "Buy milk", "description": "", "priority": "high", "due_date": "2025-12-01T00:00:00Z", "tags": ["shopping"]}
-// Response 201
-{"id", "user_id", "title", "description", "status", "priority", "due_date", "tags", "created_at", "updated_at"}
+```
+POST   /reports            body: {title*, content, format(md/html), tags[], source, source_key_id auto-injected}
+GET    /reports            ?source=xxx &tag=xxx &limit=20 &offset=0
+GET    /reports/sources    → [{source, count}]   ← for sidebar filtering
+GET    /reports/search     ?q=<text>              ← full-text search (title+content)
+GET    /reports/:id        ← includes full content field
+PATCH  /reports/:id        body: {title, tags, source}  ← content immutable
+DELETE /reports/:id
 ```
 
-#### GET /todos
-Scope: `todos:r`. Response: array of todo objects.
+**source naming convention**:
+- Recurring tasks: descriptive name e.g. `github-trending-daily`, `heguan-weekly`
+- One-off reports: `adhoc`
 
-#### GET /todos/search?q=keyword
-Scope: `todos:r`. Response: array of matching todos.
+`source_key_id` is auto-injected from the calling API Key — no need to pass it.
+List responses omit `content` for performance; use GET /:id for full content.
 
-#### GET /todos/:id
-Scope: `todos:r`. Response: single todo object.
+---
 
-#### PATCH /todos/:id
-Scope: `todos:rw`
-```json
-// Request (all fields optional)
-{"title": "new title", "status": "done", "priority": "low", "description": "...", "due_date": "...", "tags": [...]}
-// Response 200: updated todo object
+## Tags
+
+```
+GET /tags                  ?module=todos|notes|reports|all (default: all)
 ```
 
-#### DELETE /todos/:id
-Scope: `todos:rw`. Response: `{"ok": true}`
-
-### Notes (authenticated)
-
-#### POST /notes
-Scope: `notes:rw`
+Returns aggregated tag counts per module:
 ```json
-// Request
-{"title": "Meeting notes", "content": "Discussed...", "tags": ["work"]}
-// Response 201
-{"id", "user_id", "title", "content", "tags", "created_at", "updated_at"}
+{
+  "todos": [{"tag": "dev", "count": 3}, ...],
+  "notes": [...],
+  "reports": [...]
+}
 ```
 
-#### GET /notes
-Scope: `notes:r`. Response: array of note objects.
+All tags are stored lowercase. Pass tags as lowercase strings when creating/updating.
 
-#### GET /notes/search?q=keyword
-Scope: `notes:r`. Response: array of matching notes.
+---
 
-#### GET /notes/:id
-Scope: `notes:r`. Response: single note object.
+## Typical Agent Workflow
 
-#### PATCH /notes/:id
-Scope: `notes:rw`
-```json
-// Request (all fields optional)
-{"title": "new title", "content": "updated content", "tags": [...]}
-// Response 200: updated note object
+### 1. Authenticate
+```bash
+# Using API Key (recommended for agents)
+curl http://localhost:26001/todos \
+  -H "X-Api-Key: ak_your_key"
 ```
 
-#### DELETE /notes/:id
-Scope: `notes:rw`. Response: `{"ok": true}`
+### 2. Create a Todo
+```bash
+curl -X POST http://localhost:26001/todos \
+  -H "X-Api-Key: ak_your_key" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Task title","priority":"medium","tags":["work"]}'
+```
 
-## MCP Integration
+### 3. Save a Report
+```bash
+curl -X POST http://localhost:26001/reports \
+  -H "X-Api-Key: ak_your_key" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"GitHub Trending 2026-05-20","content":"# Trending\n...","format":"md","source":"github-trending-daily","tags":["github","daily"]}'
+```
 
-Transport: stdio. Set env `AGENTMATE_API_KEY=ak_xxxx` to authenticate.
+### 4. Filter by Source
+```bash
+curl "http://localhost:26001/reports?source=github-trending-daily" \
+  -H "X-Api-Key: ak_your_key"
+```
 
-Tools: `todo_create`, `todo_list`, `todo_get`, `todo_delete`, `note_create`, `note_list`, `note_get`, `note_delete`.
+### 5. Search Across Content
+```bash
+curl "http://localhost:26001/reports/search?q=kubernetes" \
+  -H "X-Api-Key: ak_your_key"
+```
 
-Each tool returns JSON text content with the same shape as REST responses.
+---
+
+## MCP Server
+
+AgentMate also runs as an MCP server (stdio transport).
+Configure with env var: `AGENTMATE_API_KEY=ak_your_key`
+
+Available MCP tools:
+- `todo_create`, `todo_list`, `todo_get`, `todo_update`, `todo_delete`, `todo_search`
+- `note_create`, `note_list`, `note_get`, `note_update`, `note_delete`, `note_search`
+- `report_create`, `report_list`, `report_get`, `report_update`, `report_delete`, `report_search`
+
+---
 
 ## Error Codes
 
-| HTTP | Meaning |
+| Code | Meaning |
 |------|---------|
-| 400 | Invalid request body / missing required fields |
-| 401 | Missing or invalid credentials |
-| 403 | Insufficient scope for this operation |
-| 404 | Resource not found |
-| 409 | Conflict (e.g. email already exists) |
-| 500 | Internal server error |
-
-## Typical AI Agent Workflow
-
-1. **Authenticate** — Set header `x-api-key: ak_xxxx`
-2. **Create a todo** — `POST /todos` with `{"title": "Task name"}`
-3. **Create a note** — `POST /notes` with `{"title": "Note title", "content": "..."}`
-4. **List with filtering** — `GET /todos` (all) or `GET /todos/search?q=keyword`
-5. **Search notes** — `GET /notes/search?q=keyword`
-6. **Update** — `PATCH /todos/:id` with fields to change
-7. **Delete** — `DELETE /todos/:id` or `DELETE /notes/:id`
+| 0 | Success |
+| 40001 | Unauthorized (missing or invalid credentials) |
+| 40301 | Forbidden (insufficient scope) |
+| 40400 | Not found |
+| 40000 | Bad request |
+| 50000 | Internal server error |

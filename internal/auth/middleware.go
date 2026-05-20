@@ -8,8 +8,9 @@ import (
 )
 
 const (
-	ContextUserID    = "user_id"
-	ContextScopes    = "scopes"
+	ContextUserID     = "user_id"
+	ContextKeyID      = "key_id"
+	ContextScopes     = "scopes"
 	ContextAuthMethod = "auth_method"
 )
 
@@ -23,6 +24,7 @@ func Middleware(svc *Service) gin.HandlerFunc {
 				return
 			}
 			c.Set(ContextUserID, ak.UserID)
+			c.Set(ContextKeyID, ak.ID)
 			c.Set(ContextScopes, ak.Scopes)
 			c.Set(ContextAuthMethod, "apikey")
 			c.Next()
@@ -45,6 +47,7 @@ func Middleware(svc *Service) gin.HandlerFunc {
 				return
 			}
 			c.Set(ContextUserID, ak.UserID)
+			c.Set(ContextKeyID, ak.ID)
 			c.Set(ContextScopes, ak.Scopes)
 			c.Set(ContextAuthMethod, "apikey")
 			c.Next()

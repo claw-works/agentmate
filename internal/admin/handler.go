@@ -130,3 +130,46 @@ func (h *Handler) Reports(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, list)
 }
+
+type usageRow struct {
+	KeyID      string     `json:"key_id"`
+	KeyName    string     `json:"key_name"`
+	KeyPrefix  string     `json:"key_prefix"`
+	UserEmail  string     `json:"user_email"`
+	TotalCalls int        `json:"total_calls"`
+	TodayCalls int        `json:"today_calls"`
+	LastUsedAt *time.Time `json:"last_used_at"`
+}
+
+func (h *Handler) Usage(c *gin.Context) {
+	rows, err := h.pool.Query(c.Request.Context(),
+		`SELECT
+			ak.id, ak.name, ak.prefix,
+			u.email,
+			count(l.id) as total_calls,
+			count(l.id) FILTER (WHERE l.created_at > now() - interval '24 hours') as today_calls,
+			max(l.created_at) as last_used_at
+		FROM api_keys ak
+		JOIN users u ON ak.user_id = u.id
+		LEFT JOIN api_logs l ON l.key_id = ak.id
+		GROUP BY ak.id, ak.name, ak.prefix, u.email
+		ORDER BY total_calls DESC`)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	var list []usageRow
+	for rows.Next() {
+		var r usageRow
+		if err := rows.Scan(&r.KeyID, &r.KeyName, &r.KeyPrefix, &r.UserEmail, &r.TotalCalls, &r.TodayCalls, &r.LastUsedAt); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		list = append(list, r)
+	}
+	if list == nil {
+		list = []usageRow{}
+	}
+	c.JSON(http.StatusOK, list)
+}

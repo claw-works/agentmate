@@ -50,6 +50,30 @@ func (r *Repo) Get(ctx context.Context, userID, id string) (*Report, error) {
 	return &rpt, nil
 }
 
+func (r *Repo) Count(ctx context.Context, userID string, params ListReportsParams) (int, error) {
+	query := `SELECT count(*) FROM reports WHERE user_id = $1`
+	args := []any{userID}
+	argIdx := 2
+	if params.Tag != "" {
+		query += fmt.Sprintf(" AND $%d = ANY(tags)", argIdx)
+		args = append(args, params.Tag)
+		argIdx++
+	}
+	if params.Source != "" {
+		query += fmt.Sprintf(" AND source = $%d", argIdx)
+		args = append(args, params.Source)
+		argIdx++
+	}
+	if params.Search != "" {
+		query += fmt.Sprintf(" AND to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(content, '')) @@ plainto_tsquery('simple', $%d)", argIdx)
+		args = append(args, params.Search)
+		argIdx++
+	}
+	var count int
+	err := r.pool.QueryRow(ctx, query, args...).Scan(&count)
+	return count, err
+}
+
 func (r *Repo) List(ctx context.Context, userID string, params ListReportsParams) ([]Report, error) {
 	query := `SELECT id, user_id, title, format, tags, source, source_key_id, created_at, updated_at FROM reports WHERE user_id = $1`
 	args := []any{userID}

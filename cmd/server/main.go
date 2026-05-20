@@ -11,6 +11,7 @@ import (
 	"github.com/wellxie/agentmate/internal/admin"
 	"github.com/wellxie/agentmate/internal/auth"
 	"github.com/wellxie/agentmate/internal/db"
+	"github.com/wellxie/agentmate/internal/middleware"
 	"github.com/wellxie/agentmate/internal/notes"
 	"github.com/wellxie/agentmate/internal/reports"
 	"github.com/wellxie/agentmate/internal/tags"
@@ -62,7 +63,7 @@ func main() {
 	r.POST("/auth/login", authHandler.Login)
 
 	// Protected routes
-	protected := r.Group("/", auth.Middleware(authSvc))
+	protected := r.Group("/", auth.Middleware(authSvc), middleware.APILogger(pool))
 	protected.GET("/auth/me", authHandler.Me)
 	protected.POST("/auth/apikeys", authHandler.CreateAPIKey)
 	protected.GET("/auth/apikeys", authHandler.ListAPIKeys)
@@ -107,6 +108,7 @@ func main() {
 	adminAPI.GET("/users", adminHandler.Users)
 	adminAPI.GET("/apikeys", adminHandler.APIKeys)
 	adminAPI.GET("/reports", adminHandler.Reports)
+	adminAPI.GET("/usage", adminHandler.Usage)
 
 	log.Printf("starting server on :%s", port)
 	if err := r.Run(":" + port); err != nil {

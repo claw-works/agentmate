@@ -18,6 +18,10 @@ func (s *Service) Get(ctx context.Context, userID, id string) (*Todo, error) {
 	return s.repo.Get(ctx, userID, id)
 }
 
+func (s *Service) Count(ctx context.Context, userID string, params ListTodosParams) (int, error) {
+	return s.repo.Count(ctx, userID, params)
+}
+
 func (s *Service) List(ctx context.Context, userID string, params ListTodosParams) ([]Todo, error) {
 	return s.repo.List(ctx, userID, params)
 }

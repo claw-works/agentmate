@@ -57,12 +57,16 @@ func (h *Handler) List(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if params.Limit <= 0 || params.Limit > 100 {
+		params.Limit = 20
+	}
+	total, _ := h.svc.Count(c.Request.Context(), userID, params)
 	list, err := h.svc.List(c.Request.Context(), userID, params)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, list)
+	c.JSON(http.StatusOK, gin.H{"items": list, "total": total, "limit": params.Limit, "offset": params.Offset})
 }
 
 func (h *Handler) Update(c *gin.Context) {
