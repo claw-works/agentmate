@@ -3,9 +3,12 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"strconv"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/wellxie/agentmate/internal/bookmarks"
 	"github.com/wellxie/agentmate/internal/notes"
 	"github.com/wellxie/agentmate/internal/reports"
 	"github.com/wellxie/agentmate/internal/todo"
@@ -20,7 +23,7 @@ func userIDFromCtx(ctx context.Context) (string, bool) {
 	return id, ok && id != ""
 }
 
-func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *reports.Service) *server.MCPServer {
+func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *reports.Service, bookmarksSvc *bookmarks.Service) *server.MCPServer {
 	s := server.NewMCPServer("agentmate", "0.1.0")
 
 	// ─── Todo tools ───
@@ -385,6 +388,165 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		return jsonResult(list)
 	})
 
+	// ─── Bookmarks tools ───
+
+	s.AddTool(mcp.NewTool("bookmark_save",
+		mcp.WithDescription("Save a new bookmark"),
+		mcp.WithString("url", mcp.Required(), mcp.Description("URL to bookmark")),
+		mcp.WithString("title", mcp.Description("Title")),
+		mcp.WithString("summary", mcp.Description("Summary")),
+		mcp.WithString("tags", mcp.Description("Comma-separated tags")),
+		mcp.WithString("source", mcp.Description("Source identifier")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		r := bookmarks.CreateRequest{
+			URL:     strArg(args, "url"),
+			Title:   strArg(args, "title"),
+			Summary: strArg(args, "summary"),
+			Source:  strArg(args, "source"),
+		}
+		if t := strArg(args, "tags"); t != "" {
+			r.Tags = splitTags(t)
+		}
+		b, err := bookmarksSvc.Create(ctx, userID, r)
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(b)
+	})
+
+	s.AddTool(mcp.NewTool("bookmark_list",
+		mcp.WithDescription("List bookmarks with optional filters"),
+		mcp.WithString("is_read", mcp.Description("Filter by read status: true/false")),
+		mcp.WithString("tag", mcp.Description("Filter by tag")),
+		mcp.WithString("source", mcp.Description("Filter by source")),
+		mcp.WithString("limit", mcp.Description("Max results")),
+		mcp.WithString("offset", mcp.Description("Offset")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		params := bookmarks.ListParams{
+			Tag: strArg(args, "tag"),
+		}
+		if v := strArg(args, "is_read"); v != "" {
+			b := v == "true"
+			params.IsRead = &b
+		}
+		if v := strArg(args, "limit"); v != "" {
+			params.Limit, _ = strconv.Atoi(v)
+		}
+		if v := strArg(args, "offset"); v != "" {
+			params.Offset, _ = strconv.Atoi(v)
+		}
+		list, err := bookmarksSvc.List(ctx, userID, params)
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(list)
+	})
+
+	s.AddTool(mcp.NewTool("bookmark_get",
+		mcp.WithDescription("Get a bookmark by ID"),
+		mcp.WithString("id", mcp.Required()),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
+		b, err := bookmarksSvc.Get(ctx, userID, strArg(req.GetArguments(), "id"))
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(b)
+	})
+
+	s.AddTool(mcp.NewTool("bookmark_update",
+		mcp.WithDescription("Update a bookmark"),
+		mcp.WithString("id", mcp.Required(), mcp.Description("Bookmark ID")),
+		mcp.WithString("title", mcp.Description("New title")),
+		mcp.WithString("summary", mcp.Description("New summary")),
+		mcp.WithString("tags", mcp.Description("Comma-separated tags")),
+		mcp.WithString("is_read", mcp.Description("true/false")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		r := bookmarks.UpdateRequest{}
+		if v := strArg(args, "title"); v != "" {
+			r.Title = &v
+		}
+		if v := strArg(args, "summary"); v != "" {
+			r.Summary = &v
+		}
+		if v := strArg(args, "tags"); v != "" {
+			r.Tags = splitTags(v)
+		}
+		if v := strArg(args, "is_read"); v != "" {
+			b := v == "true"
+			r.IsRead = &b
+		}
+		bm, err := bookmarksSvc.Update(ctx, userID, strArg(args, "id"), r)
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(bm)
+	})
+
+	s.AddTool(mcp.NewTool("bookmark_mark_read",
+		mcp.WithDescription("Mark a bookmark as read"),
+		mcp.WithString("id", mcp.Required()),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
+		isRead := true
+		bm, err := bookmarksSvc.Update(ctx, userID, strArg(req.GetArguments(), "id"), bookmarks.UpdateRequest{IsRead: &isRead})
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(bm)
+	})
+
+	s.AddTool(mcp.NewTool("bookmark_delete",
+		mcp.WithDescription("Delete a bookmark"),
+		mcp.WithString("id", mcp.Required()),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
+		err := bookmarksSvc.Delete(ctx, userID, strArg(req.GetArguments(), "id"))
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return mcp.NewToolResultText("deleted"), nil
+	})
+
+	s.AddTool(mcp.NewTool("bookmark_search",
+		mcp.WithDescription("Search bookmarks by keyword"),
+		mcp.WithString("q", mcp.Required(), mcp.Description("Search query")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
+		list, err := bookmarksSvc.List(ctx, userID, bookmarks.ListParams{Search: strArg(req.GetArguments(), "q")})
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(list)
+	})
+
 	return s
 }
 
@@ -428,4 +590,15 @@ func jsonResult(v interface{}) (*mcp.CallToolResult, error) {
 		return errResult(err.Error()), nil
 	}
 	return mcp.NewToolResultText(string(b)), nil
+}
+
+func splitTags(s string) []string {
+	parts := strings.Split(s, ",")
+	tags := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			tags = append(tags, t)
+		}
+	}
+	return tags
 }
