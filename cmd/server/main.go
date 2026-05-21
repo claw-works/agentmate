@@ -15,6 +15,7 @@ import (
 	"github.com/wellxie/agentmate/internal/auth"
 	"github.com/wellxie/agentmate/internal/bookmarks"
 	"github.com/wellxie/agentmate/internal/db"
+	"github.com/wellxie/agentmate/internal/expenses"
 	"github.com/wellxie/agentmate/internal/middleware"
 	"github.com/wellxie/agentmate/internal/notes"
 	"github.com/wellxie/agentmate/internal/reports"
@@ -55,6 +56,10 @@ func main() {
 	bookmarksRepo := bookmarks.NewRepo(pool)
 	bookmarksSvc := bookmarks.NewService(bookmarksRepo)
 	bookmarksHandler := bookmarks.NewHandler(bookmarksSvc)
+
+	expensesRepo := expenses.NewRepo(pool)
+	expensesSvc := expenses.NewService(expensesRepo)
+	expensesHandler := expenses.NewHandler(expensesSvc)
 
 	// Router
 	r := gin.Default()
@@ -116,6 +121,15 @@ func main() {
 	protected.POST("/bookmarks", auth.RequireScope("bookmarks:rw"), bookmarksHandler.Create)
 	protected.PATCH("/bookmarks/:id", auth.RequireScope("bookmarks:rw"), bookmarksHandler.Update)
 	protected.DELETE("/bookmarks/:id", auth.RequireScope("bookmarks:rw"), bookmarksHandler.Delete)
+
+	// Expenses - read
+	protected.GET("/expenses", auth.RequireScope("expenses:r"), expensesHandler.List)
+	protected.GET("/expenses/summary", auth.RequireScope("expenses:r"), expensesHandler.Summary)
+	protected.GET("/expenses/:id", auth.RequireScope("expenses:r"), expensesHandler.Get)
+	// Expenses - write
+	protected.POST("/expenses", auth.RequireScope("expenses:rw"), expensesHandler.Create)
+	protected.PATCH("/expenses/:id", auth.RequireScope("expenses:rw"), expensesHandler.Update)
+	protected.DELETE("/expenses/:id", auth.RequireScope("expenses:rw"), expensesHandler.Delete)
 
 	// Admin
 	adminHandler := admin.NewHandler(pool)
