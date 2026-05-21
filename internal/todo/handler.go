@@ -3,6 +3,7 @@ package todo
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/wellxie/agentmate/internal/auth"
@@ -43,14 +44,14 @@ func (h *Handler) Get(c *gin.Context) {
 
 func (h *Handler) List(c *gin.Context) {
 	userID := c.GetString(auth.ContextUserID)
-	tag := c.Query("tag")
+	tags := parseTags(c)
 	status := c.Query("status")
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
-	params := ListTodosParams{Tag: tag, Status: status, Limit: limit, Offset: offset}
+	params := ListTodosParams{Tags: tags, Status: status, Limit: limit, Offset: offset}
 	total, _ := h.svc.Count(c.Request.Context(), userID, params)
 	todos, err := h.svc.List(c.Request.Context(), userID, params)
 	if err != nil {
@@ -93,4 +94,24 @@ func (h *Handler) Search(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, todos)
+}
+
+func parseTags(c *gin.Context) []string {
+	tags := c.QueryArray("tags")
+	if tag := c.Query("tag"); tag != "" {
+		tags = append(tags, tag)
+	}
+	var result []string
+	for _, t := range tags {
+		for _, s := range strings.Split(t, ",") {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				result = append(result, s)
+			}
+		}
+	}
+	if result == nil {
+		result = []string{}
+	}
+	return result
 }

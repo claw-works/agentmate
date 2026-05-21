@@ -64,7 +64,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		}
 		args := req.GetArguments()
 		list, err := todoSvc.List(ctx, userID, todo.ListTodosParams{
-			Tag:    strArg(args, "tag"),
+			Tags:   splitTags(strArg(args, "tag")),
 			Status: strArg(args, "status"),
 		})
 		if err != nil {
@@ -187,7 +187,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 			return errResult("unauthorized"), nil
 		}
 		args := req.GetArguments()
-		list, err := notesSvc.List(ctx, userID, notes.ListNotesParams{Tag: strArg(args, "tag")})
+		list, err := notesSvc.List(ctx, userID, notes.ListNotesParams{Tags: splitTags(strArg(args, "tag"))})
 		if err != nil {
 			return errResult(err.Error()), nil
 		}
@@ -433,7 +433,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		}
 		args := req.GetArguments()
 		params := bookmarks.ListParams{
-			Tag: strArg(args, "tag"),
+			Tags: splitTags(strArg(args, "tag")),
 		}
 		if v := strArg(args, "is_read"); v != "" {
 			b := v == "true"

@@ -3,6 +3,7 @@ package bookmarks
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/wellxie/agentmate/internal/auth"
@@ -43,7 +44,7 @@ func (h *Handler) Get(c *gin.Context) {
 
 func (h *Handler) List(c *gin.Context) {
 	userID := c.GetString(auth.ContextUserID)
-	tag := c.Query("tag")
+	tags := parseTags(c)
 	search := c.Query("q")
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
@@ -55,7 +56,7 @@ func (h *Handler) List(c *gin.Context) {
 		b := v == "true" || v == "1"
 		isRead = &b
 	}
-	params := ListParams{Tag: tag, IsRead: isRead, Search: search, Limit: limit, Offset: offset}
+	params := ListParams{Tags: tags, IsRead: isRead, Search: search, Limit: limit, Offset: offset}
 	total, _ := h.svc.Count(c.Request.Context(), userID, params)
 	list, err := h.svc.List(c.Request.Context(), userID, params)
 	if err != nil {
@@ -87,4 +88,24 @@ func (h *Handler) Delete(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func parseTags(c *gin.Context) []string {
+	tags := c.QueryArray("tags")
+	if tag := c.Query("tag"); tag != "" {
+		tags = append(tags, tag)
+	}
+	var result []string
+	for _, t := range tags {
+		for _, s := range strings.Split(t, ",") {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				result = append(result, s)
+			}
+		}
+	}
+	if result == nil {
+		result = []string{}
+	}
+	return result
 }

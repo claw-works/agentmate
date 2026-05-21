@@ -56,7 +56,7 @@ func (r *Repo) Get(ctx context.Context, userID, id string) (*Todo, error) {
 }
 
 type ListTodosParams struct {
-	Tag    string
+	Tags   []string
 	Status string
 	Limit  int
 	Offset int
@@ -65,8 +65,8 @@ type ListTodosParams struct {
 func (r *Repo) Count(ctx context.Context, userID string, params ListTodosParams) (int, error) {
 	var count int
 	err := r.pool.QueryRow(ctx,
-		`SELECT count(*) FROM todos WHERE user_id = $1 AND ($2 = '' OR $2 = ANY(tags)) AND ($3 = '' OR status = $3)`,
-		userID, params.Tag, params.Status,
+		`SELECT count(*) FROM todos WHERE user_id = $1 AND ($2::text[] = '{}' OR tags && $2::text[]) AND ($3 = '' OR status = $3)`,
+		userID, params.Tags, params.Status,
 	).Scan(&count)
 	return count, err
 }
@@ -78,8 +78,8 @@ func (r *Repo) List(ctx context.Context, userID string, params ListTodosParams) 
 	}
 	rows, err := r.pool.Query(ctx,
 		`SELECT id, user_id, title, description, status, priority, due_date, tags, created_at, updated_at
-		 FROM todos WHERE user_id = $1 AND ($2 = '' OR $2 = ANY(tags)) AND ($3 = '' OR status = $3)
-		 ORDER BY created_at DESC LIMIT $4 OFFSET $5`, userID, params.Tag, params.Status, limit, params.Offset,
+		 FROM todos WHERE user_id = $1 AND ($2::text[] = '{}' OR tags && $2::text[]) AND ($3 = '' OR status = $3)
+		 ORDER BY created_at DESC LIMIT $4 OFFSET $5`, userID, params.Tags, params.Status, limit, params.Offset,
 	)
 	if err != nil {
 		return nil, err
