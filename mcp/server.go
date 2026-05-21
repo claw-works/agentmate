@@ -30,7 +30,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	// ─── Todo tools ───
 
 	s.AddTool(mcp.NewTool("todo_create",
-		mcp.WithDescription("Create a new todo"),
+		mcp.WithDescription("Create a tracked task with status lifecycle (pending → in_progress → done). Use when the user wants to track something actionable with progress. NOT for quick notes or ideas without action needed."),
 		mcp.WithString("title", mcp.Required(), mcp.Description("Title")),
 		mcp.WithString("description", mcp.Description("Description")),
 		mcp.WithString("priority", mcp.Description("low/medium/high")),
@@ -55,7 +55,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("todo_list",
-		mcp.WithDescription("List todos with optional filters"),
+		mcp.WithDescription("List actionable tasks. Filter by status (pending/in_progress/done), priority, or tags."),
 		mcp.WithString("tag", mcp.Description("Filter by tag")),
 		mcp.WithString("status", mcp.Description("Filter by status")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -75,7 +75,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("todo_get",
-		mcp.WithDescription("Get a todo by ID"),
+		mcp.WithDescription("Get a single task by ID."),
 		mcp.WithString("id", mcp.Required()),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userID, ok := userIDFromCtx(ctx)
@@ -90,7 +90,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("todo_update",
-		mcp.WithDescription("Update a todo"),
+		mcp.WithDescription("Update a task's status, priority, or details. Use to mark tasks in_progress or done."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("Todo ID")),
 		mcp.WithString("title", mcp.Description("New title")),
 		mcp.WithString("description", mcp.Description("New description")),
@@ -127,7 +127,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("todo_delete",
-		mcp.WithDescription("Delete a todo"),
+		mcp.WithDescription("Permanently delete a task."),
 		mcp.WithString("id", mcp.Required()),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userID, ok := userIDFromCtx(ctx)
@@ -142,7 +142,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("todo_search",
-		mcp.WithDescription("Search todos by keyword"),
+		mcp.WithDescription("Search tasks by keyword across title and description."),
 		mcp.WithString("q", mcp.Required(), mcp.Description("Search query")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userID, ok := userIDFromCtx(ctx)
@@ -159,7 +159,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	// ─── Notes tools ───
 
 	s.AddTool(mcp.NewTool("note_create",
-		mcp.WithDescription("Create a new note"),
+		mcp.WithDescription("Save a quick note, idea, or unstructured text. No status tracking. Use for thoughts, meeting notes, observations. NOT for tasks that need to be completed, NOT for URLs to save, NOT for financial records."),
 		mcp.WithString("title", mcp.Required()),
 		mcp.WithString("content", mcp.Description("Note content")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -180,7 +180,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("note_list",
-		mcp.WithDescription("List all notes"),
+		mcp.WithDescription("List notes. Filter by tag."),
 		mcp.WithString("tag", mcp.Description("Filter by tag")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userID, ok := userIDFromCtx(ctx)
@@ -196,7 +196,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("note_get",
-		mcp.WithDescription("Get a note by ID"),
+		mcp.WithDescription("Get a single note by ID."),
 		mcp.WithString("id", mcp.Required()),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userID, ok := userIDFromCtx(ctx)
@@ -211,7 +211,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("note_update",
-		mcp.WithDescription("Update a note"),
+		mcp.WithDescription("Edit a note's title, content, or tags."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("Note ID")),
 		mcp.WithString("title", mcp.Description("New title")),
 		mcp.WithString("content", mcp.Description("New content")),
@@ -236,7 +236,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("note_delete",
-		mcp.WithDescription("Delete a note"),
+		mcp.WithDescription("Delete a note."),
 		mcp.WithString("id", mcp.Required()),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userID, ok := userIDFromCtx(ctx)
@@ -251,7 +251,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("note_search",
-		mcp.WithDescription("Search notes by keyword"),
+		mcp.WithDescription("Search notes by keyword."),
 		mcp.WithString("q", mcp.Required(), mcp.Description("Search query")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userID, ok := userIDFromCtx(ctx)
@@ -268,7 +268,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	// ─── Reports tools ───
 
 	s.AddTool(mcp.NewTool("report_create",
-		mcp.WithDescription("Create a new report"),
+		mcp.WithDescription("Save an Agent-generated report in Markdown or HTML format. Use for structured output from automated tasks (e.g., daily GitHub trending, weekly summaries, analysis results). NOT for casual notes. Always set source to identify which agent/task generated it."),
 		mcp.WithString("title", mcp.Required(), mcp.Description("Report title")),
 		mcp.WithString("content", mcp.Description("Report content")),
 		mcp.WithString("format", mcp.Description("md or html")),
@@ -294,7 +294,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("report_list",
-		mcp.WithDescription("List reports"),
+		mcp.WithDescription("List reports. Filter by source (e.g. 'github-trending-daily') or tag."),
 		mcp.WithString("source", mcp.Description("Filter by source")),
 		mcp.WithString("tag", mcp.Description("Filter by tag")),
 		mcp.WithNumber("limit", mcp.Description("Max results")),
@@ -319,7 +319,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("report_get",
-		mcp.WithDescription("Get a report by ID"),
+		mcp.WithDescription("Get full report content by ID."),
 		mcp.WithString("id", mcp.Required()),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userID, ok := userIDFromCtx(ctx)
@@ -334,7 +334,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("report_update",
-		mcp.WithDescription("Update a report"),
+		mcp.WithDescription("Update report metadata (title, tags, source). Content is immutable."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("Report ID")),
 		mcp.WithString("title", mcp.Description("New title")),
 		mcp.WithString("source", mcp.Description("New source")),
@@ -360,7 +360,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("report_delete",
-		mcp.WithDescription("Delete a report"),
+		mcp.WithDescription("Delete a report."),
 		mcp.WithString("id", mcp.Required()),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userID, ok := userIDFromCtx(ctx)
@@ -375,7 +375,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("report_search",
-		mcp.WithDescription("Search reports by keyword"),
+		mcp.WithDescription("Full-text search across report titles and content."),
 		mcp.WithString("q", mcp.Required(), mcp.Description("Search query")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userID, ok := userIDFromCtx(ctx)
@@ -392,7 +392,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	// ─── Bookmarks tools ───
 
 	s.AddTool(mcp.NewTool("bookmark_save",
-		mcp.WithDescription("Save a new bookmark"),
+		mcp.WithDescription("Save a URL with optional title, summary, and tags. Use when the user wants to save a link for later reading. Has read/unread tracking. NOT for notes without a URL, NOT for tasks."),
 		mcp.WithString("url", mcp.Required(), mcp.Description("URL to bookmark")),
 		mcp.WithString("title", mcp.Description("Title")),
 		mcp.WithString("summary", mcp.Description("Summary")),
@@ -421,7 +421,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("bookmark_list",
-		mcp.WithDescription("List bookmarks with optional filters"),
+		mcp.WithDescription("List saved bookmarks. Filter by read status, tag, or source."),
 		mcp.WithString("is_read", mcp.Description("Filter by read status: true/false")),
 		mcp.WithString("tag", mcp.Description("Filter by tag")),
 		mcp.WithString("source", mcp.Description("Filter by source")),
@@ -454,7 +454,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("bookmark_get",
-		mcp.WithDescription("Get a bookmark by ID"),
+		mcp.WithDescription("Get a single bookmark by ID."),
 		mcp.WithString("id", mcp.Required()),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userID, ok := userIDFromCtx(ctx)
@@ -469,7 +469,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("bookmark_update",
-		mcp.WithDescription("Update a bookmark"),
+		mcp.WithDescription("Update a bookmark's title, summary, tags, or read status."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("Bookmark ID")),
 		mcp.WithString("title", mcp.Description("New title")),
 		mcp.WithString("summary", mcp.Description("New summary")),
@@ -503,7 +503,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("bookmark_mark_read",
-		mcp.WithDescription("Mark a bookmark as read"),
+		mcp.WithDescription("Mark a bookmark as read. Shortcut for updating read status."),
 		mcp.WithString("id", mcp.Required()),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userID, ok := userIDFromCtx(ctx)
@@ -519,7 +519,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("bookmark_delete",
-		mcp.WithDescription("Delete a bookmark"),
+		mcp.WithDescription("Delete a bookmark."),
 		mcp.WithString("id", mcp.Required()),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userID, ok := userIDFromCtx(ctx)
@@ -534,7 +534,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("bookmark_search",
-		mcp.WithDescription("Search bookmarks by keyword"),
+		mcp.WithDescription("Search bookmarks by keyword across URL, title, and summary."),
 		mcp.WithString("q", mcp.Required(), mcp.Description("Search query")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userID, ok := userIDFromCtx(ctx)
@@ -551,7 +551,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	// ─── Expenses tools ───
 
 	s.AddTool(mcp.NewTool("expense_add",
-		mcp.WithDescription("Add a new expense"),
+		mcp.WithDescription("Record a financial expense with amount, currency, and optional tags. Use for tracking spending and purchases. NOT for tasks, notes, or non-financial records."),
 		mcp.WithString("amount", mcp.Required(), mcp.Description("Amount as float string")),
 		mcp.WithString("currency", mcp.Description("Currency code, default CNY")),
 		mcp.WithString("description", mcp.Description("Description")),
@@ -586,7 +586,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("expense_list",
-		mcp.WithDescription("List expenses with optional filters"),
+		mcp.WithDescription("List expenses. Filter by tags, date range, or pagination."),
 		mcp.WithString("tags", mcp.Description("Comma-separated tags")),
 		mcp.WithString("start", mcp.Description("Start date RFC3339")),
 		mcp.WithString("end", mcp.Description("End date RFC3339")),
@@ -617,7 +617,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("expense_summary",
-		mcp.WithDescription("Get expense summary with by_tag and by_month breakdowns"),
+		mcp.WithDescription("Get aggregated expense statistics with breakdowns by tag and by month. Use for spending analysis and budget reviews."),
 		mcp.WithString("start", mcp.Description("Start date RFC3339")),
 		mcp.WithString("end", mcp.Description("End date RFC3339")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -638,7 +638,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("expense_search",
-		mcp.WithDescription("Search expenses by keyword"),
+		mcp.WithDescription("Search expenses by keyword in description."),
 		mcp.WithString("q", mcp.Required(), mcp.Description("Search query")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userID, ok := userIDFromCtx(ctx)
@@ -653,7 +653,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("expense_update",
-		mcp.WithDescription("Update an expense"),
+		mcp.WithDescription("Update an expense's amount, description, tags, or date."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("Expense ID")),
 		mcp.WithString("amount", mcp.Description("New amount as float string")),
 		mcp.WithString("description", mcp.Description("New description")),
@@ -690,7 +690,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("expense_delete",
-		mcp.WithDescription("Delete an expense"),
+		mcp.WithDescription("Delete an expense record."),
 		mcp.WithString("id", mcp.Required()),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userID, ok := userIDFromCtx(ctx)
