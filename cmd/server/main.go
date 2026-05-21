@@ -143,7 +143,7 @@ func main() {
 
 	// MCP Server (Streamable HTTP, mounted on /mcp)
 	{
-		mcpSrv := mcp.NewServer(todoSvc, notesSvc, reportsSvc, bookmarksSvc)
+		mcpSrv := mcp.NewServer(todoSvc, notesSvc, reportsSvc, bookmarksSvc, expensesSvc)
 
 		httpSrv := mcpserver.NewStreamableHTTPServer(mcpSrv,
 			mcpserver.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {

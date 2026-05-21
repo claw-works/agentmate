@@ -9,6 +9,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/wellxie/agentmate/internal/bookmarks"
+	"github.com/wellxie/agentmate/internal/expenses"
 	"github.com/wellxie/agentmate/internal/notes"
 	"github.com/wellxie/agentmate/internal/reports"
 	"github.com/wellxie/agentmate/internal/todo"
@@ -23,7 +24,7 @@ func userIDFromCtx(ctx context.Context) (string, bool) {
 	return id, ok && id != ""
 }
 
-func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *reports.Service, bookmarksSvc *bookmarks.Service) *server.MCPServer {
+func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *reports.Service, bookmarksSvc *bookmarks.Service, expensesSvc *expenses.Service) *server.MCPServer {
 	s := server.NewMCPServer("agentmate", "0.1.0")
 
 	// ─── Todo tools ───
@@ -545,6 +546,162 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 			return errResult(err.Error()), nil
 		}
 		return jsonResult(list)
+	})
+
+	// ─── Expenses tools ───
+
+	s.AddTool(mcp.NewTool("expense_add",
+		mcp.WithDescription("Add a new expense"),
+		mcp.WithString("amount", mcp.Required(), mcp.Description("Amount as float string")),
+		mcp.WithString("currency", mcp.Description("Currency code, default CNY")),
+		mcp.WithString("description", mcp.Description("Description")),
+		mcp.WithString("tags", mcp.Description("Comma-separated tags")),
+		mcp.WithString("source", mcp.Description("Source identifier")),
+		mcp.WithString("happened_at", mcp.Description("RFC3339 datetime")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		amount, err := strconv.ParseFloat(strArg(args, "amount"), 64)
+		if err != nil {
+			return errResult("invalid amount"), nil
+		}
+		r := expenses.CreateRequest{
+			Amount:      amount,
+			Currency:    strArg(args, "currency"),
+			Description: strArg(args, "description"),
+			Source:      strArg(args, "source"),
+			HappenedAt:  strArg(args, "happened_at"),
+		}
+		if t := strArg(args, "tags"); t != "" {
+			r.Tags = splitTags(t)
+		}
+		e, err := expensesSvc.Create(ctx, userID, r)
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(e)
+	})
+
+	s.AddTool(mcp.NewTool("expense_list",
+		mcp.WithDescription("List expenses with optional filters"),
+		mcp.WithString("tags", mcp.Description("Comma-separated tags")),
+		mcp.WithString("start", mcp.Description("Start date RFC3339")),
+		mcp.WithString("end", mcp.Description("End date RFC3339")),
+		mcp.WithString("limit", mcp.Description("Max results")),
+		mcp.WithString("offset", mcp.Description("Offset")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		params := expenses.ListParams{
+			Tags:  splitTags(strArg(args, "tags")),
+			Start: strArg(args, "start"),
+			End:   strArg(args, "end"),
+		}
+		if v := strArg(args, "limit"); v != "" {
+			params.Limit, _ = strconv.Atoi(v)
+		}
+		if v := strArg(args, "offset"); v != "" {
+			params.Offset, _ = strconv.Atoi(v)
+		}
+		list, err := expensesSvc.List(ctx, userID, params)
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(list)
+	})
+
+	s.AddTool(mcp.NewTool("expense_summary",
+		mcp.WithDescription("Get expense summary with by_tag and by_month breakdowns"),
+		mcp.WithString("start", mcp.Description("Start date RFC3339")),
+		mcp.WithString("end", mcp.Description("End date RFC3339")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		params := expenses.ListParams{
+			Start: strArg(args, "start"),
+			End:   strArg(args, "end"),
+		}
+		summary, err := expensesSvc.Summary(ctx, userID, params)
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(summary)
+	})
+
+	s.AddTool(mcp.NewTool("expense_search",
+		mcp.WithDescription("Search expenses by keyword"),
+		mcp.WithString("q", mcp.Required(), mcp.Description("Search query")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
+		list, err := expensesSvc.List(ctx, userID, expenses.ListParams{Search: strArg(req.GetArguments(), "q")})
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(list)
+	})
+
+	s.AddTool(mcp.NewTool("expense_update",
+		mcp.WithDescription("Update an expense"),
+		mcp.WithString("id", mcp.Required(), mcp.Description("Expense ID")),
+		mcp.WithString("amount", mcp.Description("New amount as float string")),
+		mcp.WithString("description", mcp.Description("New description")),
+		mcp.WithString("tags", mcp.Description("Comma-separated tags")),
+		mcp.WithString("happened_at", mcp.Description("RFC3339 datetime")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		r := expenses.UpdateRequest{}
+		if v := strArg(args, "amount"); v != "" {
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				return errResult("invalid amount"), nil
+			}
+			r.Amount = &f
+		}
+		if v := strArg(args, "description"); v != "" {
+			r.Description = &v
+		}
+		if v := strArg(args, "tags"); v != "" {
+			r.Tags = splitTags(v)
+		}
+		if v := strArg(args, "happened_at"); v != "" {
+			r.HappenedAt = &v
+		}
+		e, err := expensesSvc.Update(ctx, userID, strArg(args, "id"), r)
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(e)
+	})
+
+	s.AddTool(mcp.NewTool("expense_delete",
+		mcp.WithDescription("Delete an expense"),
+		mcp.WithString("id", mcp.Required()),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
+		err := expensesSvc.Delete(ctx, userID, strArg(req.GetArguments(), "id"))
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return mcp.NewToolResultText("deleted"), nil
 	})
 
 	return s
