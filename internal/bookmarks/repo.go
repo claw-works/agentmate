@@ -59,7 +59,7 @@ func (r *Repo) Count(ctx context.Context, userID string, params ListParams) (int
 	err := r.pool.QueryRow(ctx,
 		`SELECT count(*) FROM bookmarks
 		 WHERE user_id = $1
-		   AND ($2::text[] = '{}' OR tags && $2::text[])
+		   AND ($2::text[] = '{}' OR tags @> $2::text[])
 		   AND ($3::boolean IS NULL OR is_read = $3)
 		   AND ($4 = '' OR to_tsvector('simple', coalesce(title,'') || ' ' || coalesce(summary,'') || ' ' || url) @@ plainto_tsquery('simple', $4))`,
 		userID, params.Tags, params.IsRead, params.Search,
@@ -76,7 +76,7 @@ func (r *Repo) List(ctx context.Context, userID string, params ListParams) ([]Bo
 		`SELECT id, user_id, url, title, summary, tags, source, is_read, read_at, created_at, updated_at
 		 FROM bookmarks
 		 WHERE user_id = $1
-		   AND ($2::text[] = '{}' OR tags && $2::text[])
+		   AND ($2::text[] = '{}' OR tags @> $2::text[])
 		   AND ($3::boolean IS NULL OR is_read = $3)
 		   AND ($4 = '' OR to_tsvector('simple', coalesce(title,'') || ' ' || coalesce(summary,'') || ' ' || url) @@ plainto_tsquery('simple', $4))
 		 ORDER BY created_at DESC LIMIT $5 OFFSET $6`,

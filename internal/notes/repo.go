@@ -54,7 +54,7 @@ type ListNotesParams struct {
 func (r *Repo) Count(ctx context.Context, userID string, params ListNotesParams) (int, error) {
 	var count int
 	err := r.pool.QueryRow(ctx,
-		`SELECT count(*) FROM notes WHERE user_id = $1 AND ($2::text[] = '{}' OR tags && $2::text[])`,
+		`SELECT count(*) FROM notes WHERE user_id = $1 AND ($2::text[] = '{}' OR tags @> $2::text[])`,
 		userID, params.Tags,
 	).Scan(&count)
 	return count, err
@@ -67,7 +67,7 @@ func (r *Repo) List(ctx context.Context, userID string, params ListNotesParams) 
 	}
 	rows, err := r.pool.Query(ctx,
 		`SELECT id, user_id, title, content, tags, created_at, updated_at
-		 FROM notes WHERE user_id = $1 AND ($2::text[] = '{}' OR tags && $2::text[])
+		 FROM notes WHERE user_id = $1 AND ($2::text[] = '{}' OR tags @> $2::text[])
 		 ORDER BY created_at DESC LIMIT $3 OFFSET $4`, userID, params.Tags, limit, params.Offset,
 	)
 	if err != nil {
