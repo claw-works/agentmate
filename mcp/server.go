@@ -265,6 +265,23 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		return jsonResult(list)
 	})
 
+	s.AddTool(mcp.NewTool("note_append",
+		mcp.WithDescription("Append new content to an existing note without overwriting. Use for adding updates, follow-ups, or incremental entries to a note."),
+		mcp.WithString("id", mcp.Required(), mcp.Description("Note ID")),
+		mcp.WithString("content", mcp.Required(), mcp.Description("Content to append")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := userIDFromCtx(ctx)
+		if !ok {
+			return errResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		n, err := notesSvc.Append(ctx, strArg(args, "id"), userID, strArg(args, "content"))
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(n)
+	})
+
 	// ─── Reports tools ───
 
 	s.AddTool(mcp.NewTool("report_create",

@@ -103,6 +103,7 @@ func main() {
 	// Notes - write
 	protected.POST("/notes", auth.RequireScope("notes:rw"), notesHandler.Create)
 	protected.PATCH("/notes/:id", auth.RequireScope("notes:rw"), notesHandler.Update)
+	protected.PATCH("/notes/:id/append", auth.RequireScope("notes:rw"), notesHandler.Append)
 	protected.DELETE("/notes/:id", auth.RequireScope("notes:rw"), notesHandler.Delete)
 
 	// Reports - read

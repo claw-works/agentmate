@@ -75,6 +75,24 @@ func (h *Handler) Update(c *gin.Context) {
 	c.JSON(http.StatusOK, n)
 }
 
+func (h *Handler) Append(c *gin.Context) {
+	userID := c.GetString(auth.ContextUserID)
+	id := c.Param("id")
+	var req struct {
+		Content string `json:"content" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"code": 40000, "message": err.Error()})
+		return
+	}
+	n, err := h.svc.Append(c.Request.Context(), id, userID, req.Content)
+	if err != nil {
+		c.JSON(500, gin.H{"code": 50000, "message": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"code": 0, "data": n, "message": "ok"})
+}
+
 func (h *Handler) Delete(c *gin.Context) {
 	userID := c.GetString(auth.ContextUserID)
 	if err := h.svc.Delete(c.Request.Context(), userID, c.Param("id")); err != nil {

@@ -113,6 +113,21 @@ func (r *Repo) Update(ctx context.Context, userID, id string, req UpdateRequest)
 	return &n, err
 }
 
+func (r *Repo) Append(ctx context.Context, id, userID, content string) (*Note, error) {
+	var n Note
+	err := r.pool.QueryRow(ctx,
+		`UPDATE notes
+		 SET content = content || $3, updated_at = now()
+		 WHERE id = $1 AND user_id = $2
+		 RETURNING id, user_id, title, content, tags, created_at, updated_at`,
+		id, userID, content,
+	).Scan(&n.ID, &n.UserID, &n.Title, &n.Content, &n.Tags, &n.CreatedAt, &n.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &n, nil
+}
+
 func (r *Repo) Delete(ctx context.Context, userID, id string) error {
 	_, err := r.pool.Exec(ctx, "DELETE FROM notes WHERE id = $1 AND user_id = $2", id, userID)
 	return err

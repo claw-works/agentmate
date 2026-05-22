@@ -30,6 +30,10 @@ func (s *Service) Update(ctx context.Context, userID, id string, req UpdateReque
 	return s.repo.Update(ctx, userID, id, req)
 }
 
+func (s *Service) Append(ctx context.Context, id, userID, content string) (*Note, error) {
+	return s.repo.Append(ctx, id, userID, content)
+}
+
 func (s *Service) Delete(ctx context.Context, userID, id string) error {
 	return s.repo.Delete(ctx, userID, id)
 }
