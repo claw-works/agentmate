@@ -396,6 +396,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		mcp.WithString("url", mcp.Required(), mcp.Description("URL to bookmark")),
 		mcp.WithString("title", mcp.Description("Title")),
 		mcp.WithString("summary", mcp.Description("Summary")),
+		mcp.WithString("content", mcp.Description("Full page content (Markdown or plain text), extracted by the agent from the webpage")),
 		mcp.WithString("tags", mcp.Description("Comma-separated tags")),
 		mcp.WithString("source", mcp.Description("Source identifier")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -408,6 +409,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 			URL:     strArg(args, "url"),
 			Title:   strArg(args, "title"),
 			Summary: strArg(args, "summary"),
+			Content: strArg(args, "content"),
 			Source:  strArg(args, "source"),
 		}
 		if t := strArg(args, "tags"); t != "" {
