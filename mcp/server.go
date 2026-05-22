@@ -471,12 +471,13 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 	})
 
 	s.AddTool(mcp.NewTool("bookmark_update",
-		mcp.WithDescription("Update a bookmark's title, summary, tags, or read status."),
+		mcp.WithDescription("Update a bookmark's title, summary, content, tags, or read status."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("Bookmark ID")),
 		mcp.WithString("title", mcp.Description("New title")),
 		mcp.WithString("summary", mcp.Description("New summary")),
 		mcp.WithString("tags", mcp.Description("Comma-separated tags")),
 		mcp.WithString("is_read", mcp.Description("true/false")),
+		mcp.WithString("content", mcp.Description("Full page content")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userID, ok := userIDFromCtx(ctx)
 		if !ok {
@@ -489,6 +490,9 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 		}
 		if v := strArg(args, "summary"); v != "" {
 			r.Summary = &v
+		}
+		if v := strArg(args, "content"); v != "" {
+			r.Content = &v
 		}
 		if v := strArg(args, "tags"); v != "" {
 			r.Tags = splitTags(v)
