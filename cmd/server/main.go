@@ -19,6 +19,7 @@ import (
 	"github.com/wellxie/agentmate/internal/middleware"
 	"github.com/wellxie/agentmate/internal/notes"
 	"github.com/wellxie/agentmate/internal/reports"
+	"github.com/wellxie/agentmate/internal/skills"
 	"github.com/wellxie/agentmate/internal/tags"
 	"github.com/wellxie/agentmate/internal/todo"
 	"github.com/wellxie/agentmate/mcp"
@@ -60,6 +61,10 @@ func main() {
 	expensesRepo := expenses.NewRepo(pool)
 	expensesSvc := expenses.NewService(expensesRepo)
 	expensesHandler := expenses.NewHandler(expensesSvc)
+
+	skillsRepo := skills.NewRepo(pool)
+	skillsSvc := skills.NewService(skillsRepo)
+	skillsHandler := skills.NewHandler(skillsSvc)
 
 	// Router
 	r := gin.Default()
@@ -131,6 +136,17 @@ func main() {
 	protected.POST("/expenses", auth.RequireScope("expenses:rw"), expensesHandler.Create)
 	protected.PATCH("/expenses/:id", auth.RequireScope("expenses:rw"), expensesHandler.Update)
 	protected.DELETE("/expenses/:id", auth.RequireScope("expenses:rw"), expensesHandler.Delete)
+
+	// Skills - read
+	protected.GET("/skills/logs", auth.RequireScope("skills:r"), skillsHandler.ListLogs)
+	protected.GET("/skills/versions", auth.RequireScope("skills:r"), skillsHandler.ListVersions)
+	protected.GET("/skills/versions/active", auth.RequireScope("skills:r"), skillsHandler.GetActiveVersion)
+	protected.GET("/skills/stats", auth.RequireScope("skills:r"), skillsHandler.GetStats)
+	protected.GET("/skills/signals", auth.RequireScope("skills:r"), skillsHandler.GetSignals)
+	// Skills - write
+	protected.POST("/skills/logs", auth.RequireScope("skills:rw"), skillsHandler.CreateLog)
+	protected.POST("/skills/versions", auth.RequireScope("skills:rw"), skillsHandler.CreateVersion)
+	protected.POST("/skills/versions/:id/activate", auth.RequireScope("skills:rw"), skillsHandler.ActivateVersion)
 
 	// Admin
 	adminHandler := admin.NewHandler(pool)
