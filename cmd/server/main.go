@@ -187,6 +187,9 @@ func main() {
 		r.Any("/mcp", gin.WrapH(httpSrv))
 	}
 
+	// Skills MCP Server (independent endpoint)
+	r.Any("/mcp/skills", gin.WrapH(skills.NewMCPServer(skillsSvc, authSvc)))
+
 	log.Printf("starting server on :%s", port)
 	if err := r.Run(":" + port); err != nil {
 		log.Fatal(err)
