@@ -118,8 +118,12 @@ External Agents (REST / MCP)
 | Todos | `/todos` | CRUD + tag filter + search |
 | Notes | `/notes` | CRUD + tag filter + search |
 | Reports | `/reports` | CRUD + source/tag filter + full-text search |
+| Bookmarks | `/bookmarks` | CRUD + read status + tag/search filters |
+| Expenses | `/expenses` | CRUD + summary + tag/date filters |
+| Skills | `/skills` | Skill logs, versions, stats, signals |
 | Tags | `/tags` | Aggregated tag counts across modules |
 | Admin | `/admin/*` | Stats, user management, API key management, usage |
+| MCP | `/mcp`, `/mcp/skills` | Streamable HTTP tool endpoints using API key auth and scopes |
 
 ## Database Migrations
 

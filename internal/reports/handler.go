@@ -26,9 +26,10 @@ func (h *Handler) Create(c *gin.Context) {
 	// Capture source_key_id if authenticated via API key
 	var sourceKeyID *string
 	if c.GetString(auth.ContextAuthMethod) == "apikey" {
-		if kid, exists := c.Get("api_key_id"); exists {
-			s := kid.(string)
-			sourceKeyID = &s
+		if kid, exists := c.Get(auth.ContextKeyID); exists {
+			if s, ok := kid.(string); ok && s != "" {
+				sourceKeyID = &s
+			}
 		}
 	}
 

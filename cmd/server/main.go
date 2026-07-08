@@ -180,7 +180,9 @@ func main() {
 				if err != nil {
 					return ctx
 				}
-				return context.WithValue(ctx, mcp.UserIDKey, ak.UserID)
+				ctx = context.WithValue(ctx, mcp.UserIDKey, ak.UserID)
+				ctx = context.WithValue(ctx, mcp.APIKeyIDKey, ak.ID)
+				return context.WithValue(ctx, mcp.APIKeyScopesKey, ak.Scopes)
 			}),
 		)
 

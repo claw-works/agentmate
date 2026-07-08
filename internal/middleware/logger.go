@@ -13,15 +13,21 @@ func APILogger(pool *pgxpool.Pool) gin.HandlerFunc {
 		start := time.Now()
 		c.Next()
 
+		latency := int(time.Since(start).Milliseconds())
+		userID, _ := c.Get("user_id")
+		keyID, _ := c.Get("key_id")
+		method := c.Request.Method
+		path := c.FullPath()
+		if path == "" {
+			path = c.Request.URL.Path
+		}
+		statusCode := c.Writer.Status()
+
 		go func() {
-			latency := int(time.Since(start).Milliseconds())
-			userID, _ := c.Get("user_id")
-			keyID, _ := c.Get("key_id")
 			pool.Exec(context.Background(),
 				`INSERT INTO api_logs (user_id, key_id, method, path, status_code, latency_ms)
 				 VALUES ($1, $2, $3, $4, $5, $6)`,
-				userID, keyID, c.Request.Method, c.FullPath(),
-				c.Writer.Status(), latency,
+				userID, keyID, method, path, statusCode, latency,
 			)
 		}()
 	}

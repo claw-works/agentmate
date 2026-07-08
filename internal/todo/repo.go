@@ -2,6 +2,7 @@ package todo
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -20,7 +21,10 @@ func (r *Repo) Create(ctx context.Context, userID string, req CreateRequest) (*T
 	var t Todo
 	var dueDate *time.Time
 	if req.DueDate != "" {
-		d, _ := time.Parse(time.RFC3339, req.DueDate)
+		d, err := time.Parse(time.RFC3339, req.DueDate)
+		if err != nil {
+			return nil, fmt.Errorf("invalid due_date: %w", err)
+		}
 		dueDate = &d
 	}
 	priority := req.Priority
@@ -115,8 +119,13 @@ func (r *Repo) Update(ctx context.Context, userID, id string, req UpdateRequest)
 	}
 	var dueDate *time.Time
 	if req.DueDate != nil {
-		d, _ := time.Parse(time.RFC3339, *req.DueDate)
-		dueDate = &d
+		if *req.DueDate != "" {
+			d, err := time.Parse(time.RFC3339, *req.DueDate)
+			if err != nil {
+				return nil, fmt.Errorf("invalid due_date: %w", err)
+			}
+			dueDate = &d
+		}
 	} else {
 		dueDate = existing.DueDate
 	}

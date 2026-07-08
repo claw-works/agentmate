@@ -8,6 +8,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	agentauth "github.com/wellxie/agentmate/internal/auth"
 	"github.com/wellxie/agentmate/internal/bookmarks"
 	"github.com/wellxie/agentmate/internal/expenses"
 	"github.com/wellxie/agentmate/internal/notes"
@@ -17,7 +18,46 @@ import (
 
 type contextKey string
 
-const UserIDKey contextKey = "user_id"
+const (
+	UserIDKey       contextKey = "user_id"
+	APIKeyIDKey     contextKey = "api_key_id"
+	APIKeyScopesKey contextKey = "api_key_scopes"
+)
+
+var toolScopes = map[string]string{
+	"todo_create":        "todos:rw",
+	"todo_list":          "todos:r",
+	"todo_get":           "todos:r",
+	"todo_update":        "todos:rw",
+	"todo_delete":        "todos:rw",
+	"todo_search":        "todos:r",
+	"note_create":        "notes:rw",
+	"note_list":          "notes:r",
+	"note_get":           "notes:r",
+	"note_update":        "notes:rw",
+	"note_delete":        "notes:rw",
+	"note_search":        "notes:r",
+	"note_append":        "notes:rw",
+	"report_create":      "reports:rw",
+	"report_list":        "reports:r",
+	"report_get":         "reports:r",
+	"report_update":      "reports:rw",
+	"report_delete":      "reports:rw",
+	"report_search":      "reports:r",
+	"bookmark_save":      "bookmarks:rw",
+	"bookmark_list":      "bookmarks:r",
+	"bookmark_get":       "bookmarks:r",
+	"bookmark_update":    "bookmarks:rw",
+	"bookmark_mark_read": "bookmarks:rw",
+	"bookmark_delete":    "bookmarks:rw",
+	"bookmark_search":    "bookmarks:r",
+	"expense_add":        "expenses:rw",
+	"expense_list":       "expenses:r",
+	"expense_summary":    "expenses:r",
+	"expense_search":     "expenses:r",
+	"expense_update":     "expenses:rw",
+	"expense_delete":     "expenses:rw",
+}
 
 func userIDFromCtx(ctx context.Context) (string, bool) {
 	id, ok := ctx.Value(UserIDKey).(string)
@@ -25,7 +65,7 @@ func userIDFromCtx(ctx context.Context) (string, bool) {
 }
 
 func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *reports.Service, bookmarksSvc *bookmarks.Service, expensesSvc *expenses.Service) *server.MCPServer {
-	s := server.NewMCPServer("agentmate", "0.1.0")
+	s := server.NewMCPServer("agentmate", "0.1.0", server.WithToolHandlerMiddleware(scopeMiddleware(toolScopes)))
 
 	// ─── Todo tools ───
 
@@ -303,7 +343,7 @@ func NewServer(todoSvc *todo.Service, notesSvc *notes.Service, reportsSvc *repor
 			Source:  strArg(args, "source"),
 			Tags:    strSliceArg(args, "tags"),
 		}
-		rpt, err := reportsSvc.Create(ctx, userID, r, nil)
+		rpt, err := reportsSvc.Create(ctx, userID, r, apiKeyIDFromCtx(ctx))
 		if err != nil {
 			return errResult(err.Error()), nil
 		}
@@ -756,6 +796,41 @@ func strSliceArg(args map[string]interface{}, key string) []string {
 		}
 	}
 	return result
+}
+
+func apiKeyIDFromCtx(ctx context.Context) *string {
+	id, ok := ctx.Value(APIKeyIDKey).(string)
+	if !ok || id == "" {
+		return nil
+	}
+	return &id
+}
+
+func scopesFromCtx(ctx context.Context) ([]string, bool) {
+	scopes, ok := ctx.Value(APIKeyScopesKey).([]string)
+	return scopes, ok
+}
+
+func scopeMiddleware(requiredScopes map[string]string) server.ToolHandlerMiddleware {
+	return func(next server.ToolHandlerFunc) server.ToolHandlerFunc {
+		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if _, ok := userIDFromCtx(ctx); !ok {
+				return errResult("unauthorized"), nil
+			}
+			scopes, ok := scopesFromCtx(ctx)
+			if !ok {
+				return errResult("unauthorized"), nil
+			}
+			required, ok := requiredScopes[req.Params.Name]
+			if !ok {
+				return errResult("missing scope policy for tool: " + req.Params.Name), nil
+			}
+			if !agentauth.HasScope(&agentauth.APIKey{Scopes: scopes}, required) {
+				return errResult("insufficient scope: " + required), nil
+			}
+			return next(ctx, req)
+		}
+	}
 }
 
 func errResult(msg string) *mcp.CallToolResult {

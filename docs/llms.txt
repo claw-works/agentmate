@@ -24,7 +24,8 @@ Two methods, both resolve to a `user_id`:
 ## Scopes
 
 API Keys support optional scopes: `todos:r`, `todos:rw`, `notes:r`, `notes:rw`,
-`reports:r`, `reports:rw`, `manage_keys`. Empty scopes = full access.
+`reports:r`, `reports:rw`, `bookmarks:r`, `bookmarks:rw`, `expenses:r`,
+`expenses:rw`, `skills:r`, `skills:rw`, `manage_keys`. Empty scopes = full access.
 
 ## Response Format
 
@@ -163,13 +164,23 @@ curl "http://localhost:26001/reports/search?q=kubernetes" \
 
 ## MCP Server
 
-AgentMate also runs as an MCP server (stdio transport).
-Configure with env var: `AGENTMATE_API_KEY=ak_your_key`
+AgentMate also exposes Streamable HTTP MCP servers on the main API port:
+
+```
+POST /mcp          # todos, notes, reports, bookmarks, expenses
+POST /mcp/skills   # skill logs and versions
+```
+
+Authenticate with `X-Api-Key: ak_your_key`, `Authorization: Bearer ak_your_key`,
+or `?api_key=ak_your_key`. MCP tool calls enforce the same API key scopes as REST.
 
 Available MCP tools:
 - `todo_create`, `todo_list`, `todo_get`, `todo_update`, `todo_delete`, `todo_search`
-- `note_create`, `note_list`, `note_get`, `note_update`, `note_delete`, `note_search`
+- `note_create`, `note_list`, `note_get`, `note_update`, `note_delete`, `note_search`, `note_append`
 - `report_create`, `report_list`, `report_get`, `report_update`, `report_delete`, `report_search`
+- `bookmark_save`, `bookmark_list`, `bookmark_get`, `bookmark_update`, `bookmark_mark_read`, `bookmark_delete`, `bookmark_search`
+- `expense_add`, `expense_list`, `expense_summary`, `expense_search`, `expense_update`, `expense_delete`
+- `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_stats`, `skill_signals`
 
 ---
 

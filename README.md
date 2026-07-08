@@ -86,6 +86,14 @@ Available scopes:
 | `todos:rw` | Read & write todos (implies `todos:r`) |
 | `notes:r` | Read notes |
 | `notes:rw` | Read & write notes (implies `notes:r`) |
+| `reports:r` | Read reports |
+| `reports:rw` | Read & write reports (implies `reports:r`) |
+| `bookmarks:r` | Read bookmarks |
+| `bookmarks:rw` | Read & write bookmarks (implies `bookmarks:r`) |
+| `expenses:r` | Read expenses |
+| `expenses:rw` | Read & write expenses (implies `expenses:r`) |
+| `skills:r` | Read skill logs and versions |
+| `skills:rw` | Read & write skill logs and versions (implies `skills:r`) |
 | `manage_keys` | Create/delete API keys |
 
 Empty scopes array `[]` means **full access**.
@@ -146,9 +154,22 @@ curl -X POST -H "x-api-key: ak_xxxx" http://localhost:26001/todos # ✗ 403 insu
 
 ## MCP Integration
 
-The MCP server runs via stdio transport. Set the `AGENTMATE_API_KEY` environment variable to a valid API key to authenticate.
+The MCP servers run over Streamable HTTP on the main API port:
 
-Available tools: `todo_create`, `todo_list`, `todo_get`, `todo_delete`, `note_create`, `note_list`, `note_get`, `note_delete`.
+- `POST /mcp` — todos, notes, reports, bookmarks, expenses
+- `POST /mcp/skills` — skill logs and skill versions
+
+Authenticate with a valid API key via `X-Api-Key`, `Authorization: Bearer ak_xxx`, or `?api_key=ak_xxx`. MCP tool calls enforce the same API key scopes as REST.
+
+Available `/mcp` tools:
+- `todo_create`, `todo_list`, `todo_get`, `todo_update`, `todo_delete`, `todo_search`
+- `note_create`, `note_list`, `note_get`, `note_update`, `note_delete`, `note_search`, `note_append`
+- `report_create`, `report_list`, `report_get`, `report_update`, `report_delete`, `report_search`
+- `bookmark_save`, `bookmark_list`, `bookmark_get`, `bookmark_update`, `bookmark_mark_read`, `bookmark_delete`, `bookmark_search`
+- `expense_add`, `expense_list`, `expense_summary`, `expense_search`, `expense_update`, `expense_delete`
+
+Available `/mcp/skills` tools:
+- `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_stats`, `skill_signals`
 
 ## Roadmap
 

@@ -13,11 +13,22 @@ import (
 )
 
 type userIDKeyType struct{}
+type scopesKeyType struct{}
 
 var skillUserIDKey = userIDKeyType{}
+var skillScopesKey = scopesKeyType{}
+
+var skillToolScopes = map[string]string{
+	"skill_log_add":            "skills:rw",
+	"skill_version_publish":    "skills:rw",
+	"skill_version_get_active": "skills:r",
+	"skill_stats":              "skills:r",
+	"skill_signals":            "skills:r",
+	"skill_logs_list":          "skills:r",
+}
 
 func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
-	s := server.NewMCPServer("agentmate-skills", "0.1.0")
+	s := server.NewMCPServer("agentmate-skills", "0.1.0", server.WithToolHandlerMiddleware(skillScopeMiddleware(skillToolScopes)))
 
 	// skill_log_add
 	s.AddTool(mcp.NewTool("skill_log_add",
@@ -209,7 +220,8 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 			if err != nil {
 				return ctx
 			}
-			return context.WithValue(ctx, skillUserIDKey, ak.UserID)
+			ctx = context.WithValue(ctx, skillUserIDKey, ak.UserID)
+			return context.WithValue(ctx, skillScopesKey, ak.Scopes)
 		}),
 	)
 
@@ -219,6 +231,33 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 func skillUserIDFromCtx(ctx context.Context) (string, bool) {
 	id, ok := ctx.Value(skillUserIDKey).(string)
 	return id, ok && id != ""
+}
+
+func skillScopesFromCtx(ctx context.Context) ([]string, bool) {
+	scopes, ok := ctx.Value(skillScopesKey).([]string)
+	return scopes, ok
+}
+
+func skillScopeMiddleware(requiredScopes map[string]string) server.ToolHandlerMiddleware {
+	return func(next server.ToolHandlerFunc) server.ToolHandlerFunc {
+		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if _, ok := skillUserIDFromCtx(ctx); !ok {
+				return skillErrResult("unauthorized"), nil
+			}
+			scopes, ok := skillScopesFromCtx(ctx)
+			if !ok {
+				return skillErrResult("unauthorized"), nil
+			}
+			required, ok := requiredScopes[req.Params.Name]
+			if !ok {
+				return skillErrResult("missing scope policy for tool: " + req.Params.Name), nil
+			}
+			if !auth.HasScope(&auth.APIKey{Scopes: scopes}, required) {
+				return skillErrResult("insufficient scope: " + required), nil
+			}
+			return next(ctx, req)
+		}
+	}
 }
 
 func skillStrArg(args map[string]interface{}, key string) string {
