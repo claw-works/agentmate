@@ -18,6 +18,7 @@ type Config struct {
 	EmbeddingAPIKey    string
 	EmbeddingModel     string
 	EmbeddingDimension int
+	EmbeddingFormat    string
 
 	CheapLLMBaseURL            string
 	CheapLLMChatCompletionsURL string
@@ -36,10 +37,11 @@ func ConfigFromEnv() Config {
 		QdrantVectorName: env("QDRANT_VECTOR_NAME", DefaultVectorName),
 		QdrantDistance:   env("QDRANT_DISTANCE", DefaultDistance),
 
-		EmbeddingBaseURL:   strings.TrimRight(env("EMBEDDING_BASE_URL", "https://api.openai.com/v1"), "/"),
+		EmbeddingBaseURL:   strings.TrimRight(env("EMBEDDING_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"), "/"),
 		EmbeddingAPIKey:    os.Getenv("EMBEDDING_API_KEY"),
-		EmbeddingModel:     env("EMBEDDING_MODEL", "text-embedding-3-small"),
-		EmbeddingDimension: envInt("EMBEDDING_DIMENSION", 1536),
+		EmbeddingModel:     env("EMBEDDING_MODEL", "text-embedding-v4"),
+		EmbeddingDimension: envInt("EMBEDDING_DIMENSION", 1024),
+		EmbeddingFormat:    env("EMBEDDING_ENCODING_FORMAT", "float"),
 
 		CheapLLMBaseURL:            cheapLLMBaseURL,
 		CheapLLMChatCompletionsURL: env("CHEAP_LLM_CHAT_COMPLETIONS_URL", cheapLLMBaseURL+"/chat/completions"),

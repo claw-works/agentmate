@@ -14,18 +14,22 @@ type Embedder interface {
 }
 
 type OpenAIEmbeddingClient struct {
-	baseURL string
-	apiKey  string
-	model   string
-	client  *http.Client
+	baseURL        string
+	apiKey         string
+	model          string
+	dimension      int
+	encodingFormat string
+	client         *http.Client
 }
 
 func NewOpenAIEmbeddingClient(cfg Config) *OpenAIEmbeddingClient {
 	return &OpenAIEmbeddingClient{
-		baseURL: cfg.EmbeddingBaseURL,
-		apiKey:  cfg.EmbeddingAPIKey,
-		model:   cfg.EmbeddingModel,
-		client:  &http.Client{Timeout: cfg.Timeout},
+		baseURL:        cfg.EmbeddingBaseURL,
+		apiKey:         cfg.EmbeddingAPIKey,
+		model:          cfg.EmbeddingModel,
+		dimension:      cfg.EmbeddingDimension,
+		encodingFormat: cfg.EmbeddingFormat,
+		client:         &http.Client{Timeout: cfg.Timeout},
 	}
 }
 
@@ -40,10 +44,17 @@ func (c *OpenAIEmbeddingClient) Embed(ctx context.Context, texts []string) ([][]
 	if len(texts) == 0 {
 		return [][]float32{}, nil
 	}
-	body, err := json.Marshal(map[string]any{
+	requestBody := map[string]any{
 		"model": c.model,
 		"input": texts,
-	})
+	}
+	if c.dimension > 0 {
+		requestBody["dimensions"] = c.dimension
+	}
+	if c.encodingFormat != "" {
+		requestBody["encoding_format"] = c.encodingFormat
+	}
+	body, err := json.Marshal(requestBody)
 	if err != nil {
 		return nil, err
 	}
