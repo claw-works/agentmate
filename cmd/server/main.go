@@ -146,13 +146,19 @@ func main() {
 
 	// Skills - read
 	protected.GET("/skills/logs", auth.RequireScope("skills:r"), skillsHandler.ListLogs)
+	protected.GET("/skills/sources", auth.RequireScope("skills:r"), skillsHandler.ListSources)
+	protected.GET("/skills/sources/:id", auth.RequireScope("skills:r"), skillsHandler.GetSource)
+	protected.GET("/skills/sources/:id/revisions", auth.RequireScope("skills:r"), skillsHandler.ListSourceRevisions)
 	protected.GET("/skills/versions", auth.RequireScope("skills:r"), skillsHandler.ListVersions)
 	protected.GET("/skills/versions/active", auth.RequireScope("skills:r"), skillsHandler.GetActiveVersion)
+	protected.GET("/skills/versions/:id/files", auth.RequireScope("skills:r"), skillsHandler.ListVersionFiles)
 	protected.GET("/skills/stats", auth.RequireScope("skills:r"), skillsHandler.GetStats)
 	protected.GET("/skills/signals", auth.RequireScope("skills:r"), skillsHandler.GetSignals)
 	protected.POST("/skills/search", auth.RequireScope("skills:r"), skillsHandler.Search)
 	// Skills - write
 	protected.POST("/skills/logs", auth.RequireScope("skills:rw"), skillsHandler.CreateLog)
+	protected.POST("/skills/sources", auth.RequireScope("skills:rw"), skillsHandler.CreateSource)
+	protected.POST("/skills/sources/:id/snapshots", auth.RequireScope("skills:rw"), skillsHandler.SubmitLocalSnapshot)
 	protected.POST("/skills/versions", auth.RequireScope("skills:rw"), skillsHandler.CreateVersion)
 	protected.POST("/skills/versions/:id/activate", auth.RequireScope("skills:rw"), skillsHandler.ActivateVersion)
 	protected.POST("/skills/index", auth.RequireScope("skills:rw"), skillsHandler.IndexActiveVersions)

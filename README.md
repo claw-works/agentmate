@@ -115,10 +115,47 @@ Empty scopes array `[]` means **full access**.
 - `DELETE /notes/:id` — Delete (scope: `notes:rw`)
 
 ### Skills (authenticated)
+- `POST /skills/sources` — Register or update a skill source (`git` or `local`) (scope: `skills:rw`)
+- `GET /skills/sources` — List skill sources (scope: `skills:r`)
+- `GET /skills/sources/:id/revisions` — List source revisions (scope: `skills:r`)
+- `POST /skills/sources/:id/snapshots` — Push a local skill package snapshot (scope: `skills:rw`)
 - `POST /skills/index` — Index active skill versions into retrieval (scope: `skills:rw`)
 - `POST /skills/search` — Semantic search across indexed active skills (scope: `skills:r`)
 - `GET /skills/versions/active?skill_name=` — Get active skill version (scope: `skills:r`)
+- `GET /skills/versions/:id/files` — List files captured for a skill version (scope: `skills:r`)
 - `POST /skills/versions/:id/activate` — Activate a skill version (scope: `skills:rw`)
+
+Skill sources keep registry metadata and deterministic file snapshots. Git sources are registered as server-pull sources; local sources are client-push sources where the client sends a package snapshot. `SKILL.md` remains the compatibility content for `skill_versions`, while additional files are tracked as revision file metadata and indexable text snapshots.
+
+```bash
+# Register a local source.
+curl -X POST http://localhost:26001/skills/sources \
+  -H "Authorization: Bearer <jwt_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "personal-domain-web",
+    "type": "local",
+    "repository_url": "file:///Users/me/.agents/skills",
+    "package_path": "domain-web"
+  }'
+
+# Push a local snapshot. Omit sha256/package_hash to let the server derive them
+# from supplied text content.
+curl -X POST http://localhost:26001/skills/sources/<source_id>/snapshots \
+  -H "Authorization: Bearer <jwt_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "activate": true,
+    "index": true,
+    "files": [
+      {
+        "path": "SKILL.md",
+        "mime_type": "text/markdown",
+        "content": "---\nname: domain-web\ndescription: Build web services\n---\n\n# Instructions\n..."
+      }
+    ]
+  }'
+```
 
 ## Authentication
 

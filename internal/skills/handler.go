@@ -58,6 +58,78 @@ func (h *Handler) ListLogs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": list, "total": total, "limit": limit, "offset": offset})
 }
 
+// ─── Skill Sources ───
+
+func (h *Handler) CreateSource(c *gin.Context) {
+	var req CreateSkillSourceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	userID := c.GetString(auth.ContextUserID)
+	source, err := h.svc.CreateSource(c.Request.Context(), userID, req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, source)
+}
+
+func (h *Handler) ListSources(c *gin.Context) {
+	userID := c.GetString(auth.ContextUserID)
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	params := SkillSourceListParams{
+		Type:   c.Query("type"),
+		Status: c.Query("status"),
+		Limit:  limit,
+		Offset: offset,
+	}
+	sources, err := h.svc.ListSources(c.Request.Context(), userID, params)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": sources, "limit": limit, "offset": offset})
+}
+
+func (h *Handler) GetSource(c *gin.Context) {
+	userID := c.GetString(auth.ContextUserID)
+	source, err := h.svc.GetSource(c.Request.Context(), userID, c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.JSON(http.StatusOK, source)
+}
+
+func (h *Handler) ListSourceRevisions(c *gin.Context) {
+	userID := c.GetString(auth.ContextUserID)
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	revisions, err := h.svc.ListSourceRevisions(c.Request.Context(), userID, c.Param("id"), limit, offset)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": revisions, "limit": limit, "offset": offset})
+}
+
+func (h *Handler) SubmitLocalSnapshot(c *gin.Context) {
+	var req SubmitLocalSnapshotRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	userID := c.GetString(auth.ContextUserID)
+	resp, err := h.svc.SubmitLocalSnapshot(c.Request.Context(), userID, c.Param("id"), req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, resp)
+}
+
 // ─── Skill Versions ───
 
 func (h *Handler) CreateVersion(c *gin.Context) {
@@ -118,6 +190,16 @@ func (h *Handler) ActivateVersion(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, v)
+}
+
+func (h *Handler) ListVersionFiles(c *gin.Context) {
+	userID := c.GetString(auth.ContextUserID)
+	files, err := h.svc.ListVersionFiles(c.Request.Context(), userID, c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": files})
 }
 
 func (h *Handler) IndexActiveVersions(c *gin.Context) {

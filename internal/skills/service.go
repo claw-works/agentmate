@@ -2,8 +2,12 @@ package skills
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"path"
+	"sort"
 	"strings"
 	"time"
 
@@ -57,6 +61,120 @@ func (s *Service) GetSkillStats(ctx context.Context, userID, skillName string) (
 
 func (s *Service) SkillSignals(ctx context.Context, userID, skillName string, limit int) ([]SkillLog, error) {
 	return s.repo.SkillSignals(ctx, userID, skillName, limit)
+}
+
+func (s *Service) CreateSource(ctx context.Context, userID string, req CreateSkillSourceRequest) (*SkillSource, error) {
+	normalized, err := normalizeSourceRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.UpsertSource(ctx, userID, normalized)
+}
+
+func (s *Service) ListSources(ctx context.Context, userID string, params SkillSourceListParams) ([]SkillSource, error) {
+	params.Type = strings.TrimSpace(strings.ToLower(params.Type))
+	params.Status = strings.TrimSpace(strings.ToLower(params.Status))
+	return s.repo.ListSources(ctx, userID, params)
+}
+
+func (s *Service) GetSource(ctx context.Context, userID, id string) (*SkillSource, error) {
+	return s.repo.GetSource(ctx, userID, id)
+}
+
+func (s *Service) ListSourceRevisions(ctx context.Context, userID, sourceID string, limit, offset int) ([]SkillSourceRevision, error) {
+	if _, err := s.repo.GetSource(ctx, userID, sourceID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListSourceRevisions(ctx, userID, sourceID, limit, offset)
+}
+
+func (s *Service) ListVersionFiles(ctx context.Context, userID, versionID string) ([]SkillVersionFile, error) {
+	return s.repo.ListVersionFiles(ctx, userID, versionID)
+}
+
+func (s *Service) SubmitLocalSnapshot(ctx context.Context, userID, sourceID string, req SubmitLocalSnapshotRequest) (*SubmitLocalSnapshotResponse, error) {
+	source, err := s.repo.GetSource(ctx, userID, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	if source.Type != "local" {
+		return nil, fmt.Errorf("snapshots are only supported for local sources")
+	}
+
+	files, skillContent, packageHash, treeHash, err := normalizeSnapshotFiles(req)
+	if err != nil {
+		return nil, err
+	}
+	meta := extractSkillMetadata(skillContent)
+	skillName := strings.TrimSpace(req.SkillName)
+	if skillName == "" {
+		skillName = meta["name"]
+	}
+	if skillName == "" {
+		skillName = source.Name
+	}
+	if skillName == "" {
+		skillName = "local-skill"
+	}
+	version := strings.TrimSpace(req.Version)
+	if version == "" {
+		version = "snap-" + shortHash(packageHash)
+	}
+	if len(version) > 20 {
+		return nil, fmt.Errorf("version must be 20 characters or fewer")
+	}
+	if len(skillName) > 100 {
+		return nil, fmt.Errorf("skill_name must be 100 characters or fewer")
+	}
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID == "" {
+		agentID = "agentmate-skill-sync"
+	}
+	changeSummary := strings.TrimSpace(req.ChangeSummary)
+	if changeSummary == "" {
+		changeSummary = "Imported local skill snapshot " + shortHash(packageHash)
+	}
+	snapshotID := strings.TrimSpace(req.SnapshotID)
+	if snapshotID == "" {
+		snapshotID = packageHash
+	}
+
+	activate := boolDefault(req.Activate, true)
+	versionReq := CreateVersionRequest{
+		SkillName:     skillName,
+		Version:       version,
+		Content:       skillContent,
+		AgentID:       agentID,
+		ChangeSummary: changeSummary,
+		Activate:      activate,
+	}
+	revisionIn := SkillSourceRevision{
+		LocalSnapshotID: snapshotID,
+		TreeHash:        treeHash,
+		PackageHash:     packageHash,
+	}
+	revision, skillVersion, storedFiles, err := s.repo.IngestLocalSnapshot(ctx, userID, source, versionReq, revisionIn, files)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &SubmitLocalSnapshotResponse{
+		Source:   source,
+		Revision: revision,
+		Version:  skillVersion,
+		Files:    storedFiles,
+	}
+	if boolDefault(req.Index, true) {
+		indexResp, err := s.IndexActiveVersions(ctx, userID, skillName)
+		if err != nil {
+			indexResp = &IndexSkillsResponse{
+				Indexed: []IndexedSkill{},
+				Errors:  []IndexError{{SkillName: skillName, Error: err.Error()}},
+			}
+		}
+		resp.Index = indexResp
+	}
+	return resp, nil
 }
 
 func (s *Service) IndexActiveVersions(ctx context.Context, userID, skillName string) (*IndexSkillsResponse, error) {
@@ -179,22 +297,193 @@ func skillIndexContent(version SkillVersion) string {
 	return strings.Join(parts, "\n\n")
 }
 
+func normalizeSourceRequest(req CreateSkillSourceRequest) (CreateSkillSourceRequest, error) {
+	req.Type = strings.TrimSpace(strings.ToLower(req.Type))
+	req.RepositoryURL = strings.TrimSpace(req.RepositoryURL)
+	req.PackagePath = normalizeOptionalRelativePath(req.PackagePath)
+	req.DefaultRef = strings.TrimSpace(req.DefaultRef)
+	req.SyncMode = strings.TrimSpace(strings.ToLower(req.SyncMode))
+	req.Visibility = strings.TrimSpace(strings.ToLower(req.Visibility))
+	req.Status = strings.TrimSpace(strings.ToLower(req.Status))
+	req.Name = strings.TrimSpace(req.Name)
+
+	if req.Type != "git" && req.Type != "local" {
+		return req, fmt.Errorf("type must be git or local")
+	}
+	if req.RepositoryURL == "" {
+		return req, fmt.Errorf("repository_url required")
+	}
+	if req.PackagePath == ".." || strings.HasPrefix(req.PackagePath, "../") || path.IsAbs(req.PackagePath) {
+		return req, fmt.Errorf("package_path must be relative")
+	}
+	if req.Type == "git" {
+		if req.SyncMode == "" {
+			req.SyncMode = "server_pull"
+		}
+		if req.DefaultRef == "" {
+			req.DefaultRef = "main"
+		}
+	} else if req.SyncMode == "" {
+		req.SyncMode = "client_push"
+	}
+	if req.Type == "git" && req.SyncMode != "server_pull" {
+		return req, fmt.Errorf("git sources must use server_pull sync_mode")
+	}
+	if req.Type == "local" && req.SyncMode != "client_push" {
+		return req, fmt.Errorf("local sources must use client_push sync_mode")
+	}
+	if req.Visibility == "" {
+		req.Visibility = "private"
+	}
+	if req.Visibility != "private" && req.Visibility != "shared" && req.Visibility != "public" {
+		return req, fmt.Errorf("visibility must be private, shared, or public")
+	}
+	if req.Status == "" {
+		req.Status = "active"
+	}
+	if req.Status != "active" && req.Status != "disabled" && req.Status != "error" {
+		return req, fmt.Errorf("status must be active, disabled, or error")
+	}
+	if req.Name == "" {
+		req.Name = inferSourceName(req)
+	}
+	return req, nil
+}
+
+func normalizeSnapshotFiles(req SubmitLocalSnapshotRequest) ([]SkillVersionFile, string, string, string, error) {
+	const maxFiles = 300
+	const maxSnapshotContentBytes = 8 * 1024 * 1024
+
+	if len(req.Files) == 0 {
+		return nil, "", "", "", fmt.Errorf("files required")
+	}
+	if len(req.Files) > maxFiles {
+		return nil, "", "", "", fmt.Errorf("too many files: max %d", maxFiles)
+	}
+
+	seen := make(map[string]struct{}, len(req.Files))
+	files := make([]SkillVersionFile, 0, len(req.Files))
+	var skillContent string
+	totalContentBytes := 0
+
+	for _, input := range req.Files {
+		normalizedPath, err := normalizeSnapshotPath(input.Path)
+		if err != nil {
+			return nil, "", "", "", err
+		}
+		if _, ok := seen[normalizedPath]; ok {
+			return nil, "", "", "", fmt.Errorf("duplicate file path: %s", normalizedPath)
+		}
+		seen[normalizedPath] = struct{}{}
+
+		content := input.Content
+		contentBytes := []byte(content)
+		totalContentBytes += len(contentBytes)
+		if totalContentBytes > maxSnapshotContentBytes {
+			return nil, "", "", "", fmt.Errorf("snapshot text content is too large")
+		}
+
+		sha := strings.TrimSpace(strings.ToLower(input.SHA256))
+		if sha == "" && content != "" {
+			sha = sha256HexString(content)
+		}
+		if sha == "" {
+			return nil, "", "", "", fmt.Errorf("sha256 required for %s when content is omitted", normalizedPath)
+		}
+		if !isSHA256Hex(sha) {
+			return nil, "", "", "", fmt.Errorf("invalid sha256 for %s", normalizedPath)
+		}
+		if content != "" && sha != sha256HexString(content) {
+			return nil, "", "", "", fmt.Errorf("sha256 mismatch for %s", normalizedPath)
+		}
+
+		size := input.SizeBytes
+		if size == 0 {
+			size = input.Size
+		}
+		if size == 0 && content != "" {
+			size = int64(len(contentBytes))
+		}
+		if size < 0 {
+			return nil, "", "", "", fmt.Errorf("size_bytes must be non-negative for %s", normalizedPath)
+		}
+
+		mimeType := strings.TrimSpace(input.MimeType)
+		if mimeType == "" {
+			mimeType = inferMimeType(normalizedPath)
+		}
+		kind := strings.TrimSpace(input.Kind)
+		if kind == "" {
+			kind = inferFileKind(normalizedPath)
+		}
+		indexable := input.Indexable || (content != "" && isIndexableText(normalizedPath, mimeType))
+		contentSnapshot := ""
+		if indexable {
+			contentSnapshot = content
+		}
+		if normalizedPath == "SKILL.md" {
+			if content == "" {
+				return nil, "", "", "", fmt.Errorf("SKILL.md content required")
+			}
+			indexable = true
+			contentSnapshot = content
+			skillContent = content
+		}
+		files = append(files, SkillVersionFile{
+			Path:            normalizedPath,
+			Kind:            kind,
+			SHA256:          sha,
+			SizeBytes:       size,
+			MimeType:        mimeType,
+			Indexable:       indexable,
+			ContentSnapshot: contentSnapshot,
+		})
+	}
+	if skillContent == "" {
+		return nil, "", "", "", fmt.Errorf("root SKILL.md required")
+	}
+
+	packageHash := strings.TrimSpace(strings.ToLower(req.PackageHash))
+	if packageHash == "" {
+		packageHash = computePackageHash(files)
+	} else if !isSHA256Hex(packageHash) {
+		return nil, "", "", "", fmt.Errorf("invalid package_hash")
+	}
+	treeHash := strings.TrimSpace(strings.ToLower(req.TreeHash))
+	if treeHash == "" {
+		treeHash = packageHash
+	} else if !isSHA256Hex(treeHash) {
+		return nil, "", "", "", fmt.Errorf("invalid tree_hash")
+	}
+	return files, skillContent, packageHash, treeHash, nil
+}
+
 func extractSkillDescription(content string) string {
+	return extractSkillMetadata(content)["description"]
+}
+
+func extractSkillMetadata(content string) map[string]string {
+	values := map[string]string{}
 	lines := strings.Split(content, "\n")
 	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
-		return ""
+		return values
 	}
 	for _, line := range lines[1:] {
 		line = strings.TrimSpace(line)
 		if line == "---" {
 			break
 		}
-		if strings.HasPrefix(line, "description:") {
-			value := strings.TrimSpace(strings.TrimPrefix(line, "description:"))
-			return strings.Trim(value, `"'`)
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
 		}
+		key = strings.TrimSpace(strings.ToLower(key))
+		if key != "name" && key != "description" {
+			continue
+		}
+		values[key] = strings.Trim(strings.TrimSpace(value), `"'`)
 	}
-	return ""
+	return values
 }
 
 func trimForEmbedding(content string) string {
@@ -226,4 +515,125 @@ func stringMeta(metadata map[string]any, key, fallback string) string {
 		return s
 	}
 	return fallback
+}
+
+func normalizeOptionalRelativePath(value string) string {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
+	if value == "" {
+		return ""
+	}
+	cleaned := path.Clean(value)
+	if cleaned == "." {
+		return ""
+	}
+	return cleaned
+}
+
+func normalizeSnapshotPath(value string) (string, error) {
+	cleaned := normalizeOptionalRelativePath(value)
+	if cleaned == "" {
+		return "", fmt.Errorf("file path required")
+	}
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") || path.IsAbs(cleaned) {
+		return "", fmt.Errorf("file path must be relative: %s", value)
+	}
+	return cleaned, nil
+}
+
+func inferSourceName(req CreateSkillSourceRequest) string {
+	if req.PackagePath != "" {
+		return path.Base(req.PackagePath)
+	}
+	repository := strings.TrimSuffix(strings.TrimRight(req.RepositoryURL, "/"), ".git")
+	if repository != "" {
+		base := path.Base(repository)
+		if base != "." && base != "/" {
+			return base
+		}
+	}
+	return req.Type + "-skill-source"
+}
+
+func inferFileKind(filePath string) string {
+	base := strings.ToLower(path.Base(filePath))
+	ext := strings.ToLower(path.Ext(filePath))
+	switch {
+	case base == "skill.md":
+		return "instruction"
+	case ext == ".md" || ext == ".mdx" || ext == ".txt":
+		return "document"
+	case ext == ".go" || ext == ".py" || ext == ".js" || ext == ".ts" || ext == ".tsx" || ext == ".rs" || ext == ".sh":
+		return "code"
+	default:
+		return "file"
+	}
+}
+
+func inferMimeType(filePath string) string {
+	switch strings.ToLower(path.Ext(filePath)) {
+	case ".md", ".mdx":
+		return "text/markdown"
+	case ".txt":
+		return "text/plain"
+	case ".json":
+		return "application/json"
+	case ".yaml", ".yml":
+		return "application/yaml"
+	case ".go", ".py", ".js", ".ts", ".tsx", ".rs", ".sh":
+		return "text/plain"
+	default:
+		return ""
+	}
+}
+
+func isIndexableText(filePath, mimeType string) bool {
+	if strings.HasPrefix(strings.ToLower(mimeType), "text/") {
+		return true
+	}
+	switch strings.ToLower(path.Ext(filePath)) {
+	case ".md", ".mdx", ".txt", ".json", ".yaml", ".yml", ".go", ".py", ".js", ".ts", ".tsx", ".rs", ".sh":
+		return true
+	default:
+		return false
+	}
+}
+
+func computePackageHash(files []SkillVersionFile) string {
+	lines := make([]string, 0, len(files))
+	for _, file := range files {
+		lines = append(lines, fmt.Sprintf("%s\x00%s\x00%d", file.Path, file.SHA256, file.SizeBytes))
+	}
+	sort.Strings(lines)
+	return sha256HexString(strings.Join(lines, "\n"))
+}
+
+func sha256HexString(value string) string {
+	hash := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(hash[:])
+}
+
+func isSHA256Hex(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func shortHash(value string) string {
+	if len(value) <= 12 {
+		return value
+	}
+	return value[:12]
+}
+
+func boolDefault(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
 }
