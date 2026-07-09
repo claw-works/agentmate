@@ -167,6 +167,29 @@ func (r *Repo) GetActiveVersion(ctx context.Context, userID, skillName string) (
 	return &v, nil
 }
 
+func (r *Repo) ListActiveVersions(ctx context.Context, userID, skillName string) ([]SkillVersion, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT id, user_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at
+		 FROM skill_versions
+		 WHERE user_id = $1 AND is_active = true AND ($2 = '' OR skill_name = $2)
+		 ORDER BY skill_name, published_at DESC`,
+		userID, skillName,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]SkillVersion, 0)
+	for rows.Next() {
+		var v SkillVersion
+		if err := rows.Scan(&v.ID, &v.UserID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, v)
+	}
+	return items, rows.Err()
+}
+
 func (r *Repo) ActivateVersion(ctx context.Context, userID, id string) (*SkillVersion, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -205,10 +228,10 @@ func (r *Repo) ActivateVersion(ctx context.Context, userID, id string) (*SkillVe
 // ─── Stats (for SkillEvolver) ───
 
 type SkillStats struct {
-	SkillName    string  `json:"skill_name"`
-	TotalRuns    int     `json:"total_runs"`
-	SuccessRate  float64 `json:"success_rate"`
-	FailureRate  float64 `json:"failure_rate"`
+	SkillName      string  `json:"skill_name"`
+	TotalRuns      int     `json:"total_runs"`
+	SuccessRate    float64 `json:"success_rate"`
+	FailureRate    float64 `json:"failure_rate"`
 	CorrectionRate float64 `json:"correction_rate"`
 }
 

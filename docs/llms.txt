@@ -123,6 +123,20 @@ All tags are stored lowercase. Pass tags as lowercase strings when creating/upda
 
 ---
 
+## Skills
+
+```
+POST /skills/index         body: {skill_name?}      # index active skills into retrieval
+POST /skills/search        body: {query*, top_k?, include_content?}
+GET  /skills/versions/active ?skill_name=<name>
+POST /skills/versions/:id/activate
+```
+
+`/skills/search` returns ranked active skill cards from the vector retrieval store.
+Run `/skills/index` after publishing or activating skills until background indexing is added.
+
+---
+
 ## Typical Agent Workflow
 
 ### 1. Authenticate
@@ -168,7 +182,7 @@ AgentMate also exposes Streamable HTTP MCP servers on the main API port:
 
 ```
 POST /mcp          # todos, notes, reports, bookmarks, expenses
-POST /mcp/skills   # skill logs and versions
+POST /mcp/skills   # skill logs, versions, search, and indexing
 ```
 
 Authenticate with `X-Api-Key: ak_your_key`, `Authorization: Bearer ak_your_key`,
@@ -180,7 +194,7 @@ Available MCP tools:
 - `report_create`, `report_list`, `report_get`, `report_update`, `report_delete`, `report_search`
 - `bookmark_save`, `bookmark_list`, `bookmark_get`, `bookmark_update`, `bookmark_mark_read`, `bookmark_delete`, `bookmark_search`
 - `expense_add`, `expense_list`, `expense_summary`, `expense_search`, `expense_update`, `expense_delete`
-- `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_stats`, `skill_signals`
+- `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active`
 
 ---
 

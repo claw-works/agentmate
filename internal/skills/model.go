@@ -73,3 +73,49 @@ type VersionListParams struct {
 	Limit     int
 	Offset    int
 }
+
+type IndexSkillsRequest struct {
+	SkillName string `json:"skill_name"`
+}
+
+type IndexSkillsResponse struct {
+	Indexed []IndexedSkill `json:"indexed"`
+	Errors  []IndexError   `json:"errors"`
+}
+
+type IndexedSkill struct {
+	SkillName  string `json:"skill_name"`
+	Version    string `json:"version"`
+	VersionID  string `json:"version_id"`
+	DocumentID string `json:"document_id"`
+}
+
+type IndexError struct {
+	SkillName string `json:"skill_name"`
+	Error     string `json:"error"`
+}
+
+type SearchSkillsRequest struct {
+	Query          string `json:"query" binding:"required"`
+	TopK           int    `json:"top_k"`
+	IncludeContent bool   `json:"include_content"`
+}
+
+type SearchSkillsResponse struct {
+	Items []SkillSearchItem `json:"items"`
+	Total int               `json:"total"`
+}
+
+type SkillSearchItem struct {
+	SkillName     string    `json:"skill_name"`
+	Version       string    `json:"version"`
+	VersionID     string    `json:"version_id"`
+	Title         string    `json:"title"`
+	Description   string    `json:"description"`
+	Score         float64   `json:"score"`
+	Rank          int       `json:"rank"`
+	DocumentID    string    `json:"document_id"`
+	Content       string    `json:"content,omitempty"`
+	PublishedAt   time.Time `json:"published_at,omitempty"`
+	ChangeSummary string    `json:"change_summary,omitempty"`
+}

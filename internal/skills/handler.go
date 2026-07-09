@@ -1,6 +1,8 @@
 package skills
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -116,6 +118,36 @@ func (h *Handler) ActivateVersion(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, v)
+}
+
+func (h *Handler) IndexActiveVersions(c *gin.Context) {
+	var req IndexSkillsRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	userID := c.GetString(auth.ContextUserID)
+	result, err := h.svc.IndexActiveVersions(c.Request.Context(), userID, req.SkillName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func (h *Handler) Search(c *gin.Context) {
+	var req SearchSkillsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	userID := c.GetString(auth.ContextUserID)
+	result, err := h.svc.Search(c.Request.Context(), userID, req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 func (h *Handler) GetStats(c *gin.Context) {

@@ -25,6 +25,8 @@ var skillToolScopes = map[string]string{
 	"skill_stats":              "skills:r",
 	"skill_signals":            "skills:r",
 	"skill_logs_list":          "skills:r",
+	"skill_search":             "skills:r",
+	"skill_index_active":       "skills:rw",
 }
 
 func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
@@ -173,6 +175,46 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		return skillJsonResult(signals)
 	})
 
+	// skill_search
+	s.AddTool(mcp.NewTool("skill_search",
+		mcp.WithDescription("Search active skill versions semantically. Use to find the best skill for a task without loading every skill into context."),
+		mcp.WithString("query", mcp.Required(), mcp.Description("User task or capability needed")),
+		mcp.WithNumber("top_k", mcp.Description("Max results (default 5, max 20)")),
+		mcp.WithBoolean("include_content", mcp.Description("Return indexed content for selected skills")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := skillUserIDFromCtx(ctx)
+		if !ok {
+			return skillErrResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		searchReq := SearchSkillsRequest{
+			Query:          skillStrArg(args, "query"),
+			TopK:           skillIntArg(args, "top_k"),
+			IncludeContent: skillBoolArg(args, "include_content"),
+		}
+		result, err := svc.Search(ctx, userID, searchReq)
+		if err != nil {
+			return skillErrResult(err.Error()), nil
+		}
+		return skillJsonResult(result)
+	})
+
+	// skill_index_active
+	s.AddTool(mcp.NewTool("skill_index_active",
+		mcp.WithDescription("Index active skill versions into the retrieval store. Optionally restrict to one skill_name."),
+		mcp.WithString("skill_name", mcp.Description("Optional skill name to reindex")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userID, ok := skillUserIDFromCtx(ctx)
+		if !ok {
+			return skillErrResult("unauthorized"), nil
+		}
+		result, err := svc.IndexActiveVersions(ctx, userID, skillStrArg(req.GetArguments(), "skill_name"))
+		if err != nil {
+			return skillErrResult(err.Error()), nil
+		}
+		return skillJsonResult(result)
+	})
+
 	// skill_logs_list
 	s.AddTool(mcp.NewTool("skill_logs_list",
 		mcp.WithDescription("List skill execution logs. Filter by skill_name, agent_id, or outcome."),
@@ -268,6 +310,11 @@ func skillStrArg(args map[string]interface{}, key string) string {
 func skillIntArg(args map[string]interface{}, key string) int {
 	v, _ := args[key].(float64)
 	return int(v)
+}
+
+func skillBoolArg(args map[string]interface{}, key string) bool {
+	v, _ := args[key].(bool)
+	return v
 }
 
 func skillErrResult(msg string) *mcp.CallToolResult {

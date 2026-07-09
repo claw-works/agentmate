@@ -19,6 +19,7 @@ import (
 	"github.com/wellxie/agentmate/internal/middleware"
 	"github.com/wellxie/agentmate/internal/notes"
 	"github.com/wellxie/agentmate/internal/reports"
+	"github.com/wellxie/agentmate/internal/retrieval"
 	"github.com/wellxie/agentmate/internal/skills"
 	"github.com/wellxie/agentmate/internal/tags"
 	"github.com/wellxie/agentmate/internal/todo"
@@ -62,8 +63,14 @@ func main() {
 	expensesSvc := expenses.NewService(expensesRepo)
 	expensesHandler := expenses.NewHandler(expensesSvc)
 
+	retrievalCfg := retrieval.ConfigFromEnv()
+	retrievalRepo := retrieval.NewRepo(pool)
+	retrievalStore := retrieval.NewQdrantClient(retrievalCfg)
+	retrievalEmbedder := retrieval.NewOpenAIEmbeddingClient(retrievalCfg)
+	retrievalSvc := retrieval.NewService(retrievalRepo, retrievalStore, retrievalEmbedder)
+
 	skillsRepo := skills.NewRepo(pool)
-	skillsSvc := skills.NewService(skillsRepo)
+	skillsSvc := skills.NewService(skillsRepo, retrievalSvc)
 	skillsHandler := skills.NewHandler(skillsSvc)
 
 	// Router
@@ -143,10 +150,12 @@ func main() {
 	protected.GET("/skills/versions/active", auth.RequireScope("skills:r"), skillsHandler.GetActiveVersion)
 	protected.GET("/skills/stats", auth.RequireScope("skills:r"), skillsHandler.GetStats)
 	protected.GET("/skills/signals", auth.RequireScope("skills:r"), skillsHandler.GetSignals)
+	protected.POST("/skills/search", auth.RequireScope("skills:r"), skillsHandler.Search)
 	// Skills - write
 	protected.POST("/skills/logs", auth.RequireScope("skills:rw"), skillsHandler.CreateLog)
 	protected.POST("/skills/versions", auth.RequireScope("skills:rw"), skillsHandler.CreateVersion)
 	protected.POST("/skills/versions/:id/activate", auth.RequireScope("skills:rw"), skillsHandler.ActivateVersion)
+	protected.POST("/skills/index", auth.RequireScope("skills:rw"), skillsHandler.IndexActiveVersions)
 
 	// Admin
 	adminHandler := admin.NewHandler(pool)

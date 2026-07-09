@@ -114,6 +114,12 @@ Empty scopes array `[]` means **full access**.
 - `PATCH /notes/:id` — Update (scope: `notes:rw`)
 - `DELETE /notes/:id` — Delete (scope: `notes:rw`)
 
+### Skills (authenticated)
+- `POST /skills/index` — Index active skill versions into retrieval (scope: `skills:rw`)
+- `POST /skills/search` — Semantic search across indexed active skills (scope: `skills:r`)
+- `GET /skills/versions/active?skill_name=` — Get active skill version (scope: `skills:r`)
+- `POST /skills/versions/:id/activate` — Activate a skill version (scope: `skills:rw`)
+
 ## Authentication
 
 ### JWT
@@ -169,7 +175,7 @@ Available `/mcp` tools:
 - `expense_add`, `expense_list`, `expense_summary`, `expense_search`, `expense_update`, `expense_delete`
 
 Available `/mcp/skills` tools:
-- `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_stats`, `skill_signals`
+- `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active`
 
 ## Roadmap
 
