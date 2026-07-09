@@ -201,10 +201,25 @@ func main() {
 	// Skills MCP Server (independent endpoint)
 	r.Any("/mcp/skills", gin.WrapH(skills.NewMCPServer(skillsSvc, authSvc)))
 
-	log.Printf("starting server on :%s", port)
+	printBanner(port)
 	if err := r.Run(":" + port); err != nil {
 		log.Fatal(err)
 	}
+}
+
+const banner = `
+ _   _ _____ _     _     ___
+| | | | ____| |   | |   / _ \
+| |_| |  _| | |   | |  | | | |
+|  _  | |___| |___| |__| |_| |
+|_| |_|_____|_____|_____\___/
+
+      agentmate is running
+`
+
+func printBanner(port string) {
+	log.Print(banner)
+	log.Printf("listening on http://localhost:%s", port)
 }
 
 func env(key, fallback string) string {
