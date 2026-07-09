@@ -19,10 +19,16 @@ type Config struct {
 	EmbeddingModel     string
 	EmbeddingDimension int
 
+	CheapLLMBaseURL            string
+	CheapLLMChatCompletionsURL string
+	CheapLLMAPIKey             string
+	CheapLLMModel              string
+
 	Timeout time.Duration
 }
 
 func ConfigFromEnv() Config {
+	cheapLLMBaseURL := strings.TrimRight(env("CHEAP_LLM_BASE_URL", "https://api.deepseek.com"), "/")
 	return Config{
 		QdrantURL:        env("QDRANT_URL", "http://localhost:6333"),
 		QdrantAPIKey:     os.Getenv("QDRANT_API_KEY"),
@@ -34,6 +40,11 @@ func ConfigFromEnv() Config {
 		EmbeddingAPIKey:    os.Getenv("EMBEDDING_API_KEY"),
 		EmbeddingModel:     env("EMBEDDING_MODEL", "text-embedding-3-small"),
 		EmbeddingDimension: envInt("EMBEDDING_DIMENSION", 1536),
+
+		CheapLLMBaseURL:            cheapLLMBaseURL,
+		CheapLLMChatCompletionsURL: env("CHEAP_LLM_CHAT_COMPLETIONS_URL", cheapLLMBaseURL+"/chat/completions"),
+		CheapLLMAPIKey:             os.Getenv("CHEAP_LLM_API_KEY"),
+		CheapLLMModel:              env("CHEAP_LLM_MODEL", "deepseek-v4-flash"),
 
 		Timeout: time.Duration(envInt("RETRIEVAL_TIMEOUT_SECONDS", 15)) * time.Second,
 	}
