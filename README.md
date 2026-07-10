@@ -33,47 +33,47 @@ AI-native tool service platform (Backend as Toolset). Pure API product, no UI. A
 
 ## Quick Start
 
-### Docker Compose (recommended)
+Local dev/deployment (git pull + build + run, backed by the shared `base`
+Postgres/Qdrant infrastructure) is managed from `infra/agentmate/deploy` — see
+that directory's `README.md` for the full setup. Summary:
 
 ```bash
-docker compose up --build
-# Server runs at http://localhost:26001
+cd infra/agentmate/deploy
+cp agentmate.env.example agentmate.env   # fill in AGENTMATE_SRC_DIR, secrets, etc.
+nohup bash run.sh >> nohup.log 2>&1 &
+# Server runs at http://0.0.0.0:26001
 ```
 
-### Manual
+### Manual (without infra scripts)
 
 ```bash
-# 1. Start PostgreSQL
-docker run -d --name agentmate-pg -p 5432:5432 \
-  -e POSTGRES_USER=agentmate -e POSTGRES_PASSWORD=secret -e POSTGRES_DB=agentmate \
-  postgres:16
+# 1. Run migrations against your PostgreSQL instance
+migrate -path migrations -database "$DATABASE_URL" up
 
-# 2. Run migrations
-migrate -path migrations -database "postgres://agentmate:secret@localhost:5432/agentmate?sslmode=disable" up
-
-# 3. Start server
+# 2. Start server
 cp .env.example .env
 go run ./cmd/server
-
-# Server runs at http://localhost:26001
 ```
 
 ## API Endpoints
 
+All REST endpoints are mounted under `/api` (kept separate from the frontend's
+page routes when served from the same origin, see `infra/agentmate`).
+
 ### Auth (public)
-- `POST /auth/register` — Register a new user
-- `POST /auth/login` — Login, returns JWT
+- `POST /api/auth/register` — Register a new user
+- `POST /api/auth/login` — Login, returns JWT
 
 ### Auth (authenticated)
-- `GET /auth/me` — Current user info
-- `POST /auth/apikeys` — Create API Key (accepts optional `scopes` field)
-- `GET /auth/apikeys` — List API Keys
-- `DELETE /auth/apikeys/:id` — Delete API Key
+- `GET /api/auth/me` — Current user info
+- `POST /api/auth/apikeys` — Create API Key (accepts optional `scopes` field)
+- `GET /api/auth/apikeys` — List API Keys
+- `DELETE /api/auth/apikeys/:id` — Delete API Key
 
 #### Create API Key with Scopes
 
 ```bash
-curl -X POST http://localhost:26001/auth/apikeys \
+curl -X POST http://localhost:26001/api/auth/apikeys \
   -H "Authorization: Bearer <jwt_token>" \
   -H "Content-Type: application/json" \
   -d '{"name": "my-agent", "scopes": ["todos:rw", "notes:r"]}'
@@ -99,37 +99,37 @@ Available scopes:
 Empty scopes array `[]` means **full access**.
 
 ### Todos (authenticated)
-- `POST /todos` — Create (scope: `todos:rw`)
-- `GET /todos` — List (scope: `todos:r`)
-- `GET /todos/search?q=` — Search (scope: `todos:r`)
-- `GET /todos/:id` — Get by ID (scope: `todos:r`)
-- `PATCH /todos/:id` — Update (scope: `todos:rw`)
-- `DELETE /todos/:id` — Delete (scope: `todos:rw`)
+- `POST /api/todos` — Create (scope: `todos:rw`)
+- `GET /api/todos` — List (scope: `todos:r`)
+- `GET /api/todos/search?q=` — Search (scope: `todos:r`)
+- `GET /api/todos/:id` — Get by ID (scope: `todos:r`)
+- `PATCH /api/todos/:id` — Update (scope: `todos:rw`)
+- `DELETE /api/todos/:id` — Delete (scope: `todos:rw`)
 
 ### Notes (authenticated)
-- `POST /notes` — Create (scope: `notes:rw`)
-- `GET /notes` — List (scope: `notes:r`)
-- `GET /notes/search?q=` — Search (scope: `notes:r`)
-- `GET /notes/:id` — Get by ID (scope: `notes:r`)
-- `PATCH /notes/:id` — Update (scope: `notes:rw`)
-- `DELETE /notes/:id` — Delete (scope: `notes:rw`)
+- `POST /api/notes` — Create (scope: `notes:rw`)
+- `GET /api/notes` — List (scope: `notes:r`)
+- `GET /api/notes/search?q=` — Search (scope: `notes:r`)
+- `GET /api/notes/:id` — Get by ID (scope: `notes:r`)
+- `PATCH /api/notes/:id` — Update (scope: `notes:rw`)
+- `DELETE /api/notes/:id` — Delete (scope: `notes:rw`)
 
 ### Skills (authenticated)
-- `POST /skills/sources` — Register or update a skill source (`git` or `local`) (scope: `skills:rw`)
-- `GET /skills/sources` — List skill sources (scope: `skills:r`)
-- `GET /skills/sources/:id/revisions` — List source revisions (scope: `skills:r`)
-- `POST /skills/sources/:id/snapshots` — Push a local skill package snapshot (scope: `skills:rw`)
-- `POST /skills/index` — Index active skill versions into retrieval (scope: `skills:rw`)
-- `POST /skills/search` — Semantic search across indexed active skills (scope: `skills:r`)
-- `GET /skills/versions/active?skill_name=` — Get active skill version (scope: `skills:r`)
-- `GET /skills/versions/:id/files` — List files captured for a skill version (scope: `skills:r`)
-- `POST /skills/versions/:id/activate` — Activate a skill version (scope: `skills:rw`)
+- `POST /api/skills/sources` — Register or update a skill source (`git` or `local`) (scope: `skills:rw`)
+- `GET /api/skills/sources` — List skill sources (scope: `skills:r`)
+- `GET /api/skills/sources/:id/revisions` — List source revisions (scope: `skills:r`)
+- `POST /api/skills/sources/:id/snapshots` — Push a local skill package snapshot (scope: `skills:rw`)
+- `POST /api/skills/index` — Index active skill versions into retrieval (scope: `skills:rw`)
+- `POST /api/skills/search` — Semantic search across indexed active skills (scope: `skills:r`)
+- `GET /api/skills/versions/active?skill_name=` — Get active skill version (scope: `skills:r`)
+- `GET /api/skills/versions/:id/files` — List files captured for a skill version (scope: `skills:r`)
+- `POST /api/skills/versions/:id/activate` — Activate a skill version (scope: `skills:rw`)
 
 Skill sources keep registry metadata and deterministic file snapshots. Git sources are registered as server-pull sources; local sources are client-push sources where the client sends a package snapshot. `SKILL.md` remains the compatibility content for `skill_versions`, while additional files are tracked as revision file metadata and indexable text snapshots.
 
 ```bash
 # Register a local source.
-curl -X POST http://localhost:26001/skills/sources \
+curl -X POST http://localhost:26001/api/skills/sources \
   -H "Authorization: Bearer <jwt_token>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -141,7 +141,7 @@ curl -X POST http://localhost:26001/skills/sources \
 
 # Push a local snapshot. Omit sha256/package_hash to let the server derive them
 # from supplied text content.
-curl -X POST http://localhost:26001/skills/sources/<source_id>/snapshots \
+curl -X POST http://localhost:26001/api/skills/sources/<source_id>/snapshots \
   -H "Authorization: Bearer <jwt_token>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -163,56 +163,103 @@ curl -X POST http://localhost:26001/skills/sources/<source_id>/snapshots \
 
 ```bash
 # Login to get token
-curl -X POST http://localhost:26001/auth/login \
+curl -X POST http://localhost:26001/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email": "user@example.com", "password": "password123"}'
 
 # Use token
-curl -H "Authorization: Bearer <jwt_token>" http://localhost:26001/todos
+curl -H "Authorization: Bearer <jwt_token>" http://localhost:26001/api/todos
 ```
 
 ### API Key
 
 ```bash
 # Via x-api-key header
-curl -H "x-api-key: ak_xxxx" http://localhost:26001/todos
+curl -H "x-api-key: ak_xxxx" http://localhost:26001/api/todos
 
 # Via Authorization header
-curl -H "Authorization: Bearer ak_xxxx" http://localhost:26001/todos
+curl -H "Authorization: Bearer ak_xxxx" http://localhost:26001/api/todos
 ```
 
 ### Scopes Example
 
 ```bash
 # Create a read-only key for todos
-curl -X POST http://localhost:26001/auth/apikeys \
+curl -X POST http://localhost:26001/api/auth/apikeys \
   -H "Authorization: Bearer <jwt_token>" \
   -H "Content-Type: application/json" \
   -d '{"name": "readonly-agent", "scopes": ["todos:r", "notes:r"]}'
 
 # This key can list/get but cannot create/update/delete
-curl -H "x-api-key: ak_xxxx" http://localhost:26001/todos        # ✓ 200
-curl -X POST -H "x-api-key: ak_xxxx" http://localhost:26001/todos # ✗ 403 insufficient scope
+curl -H "x-api-key: ak_xxxx" http://localhost:26001/api/todos        # ✓ 200
+curl -X POST -H "x-api-key: ak_xxxx" http://localhost:26001/api/todos # ✗ 403 insufficient scope
 ```
 
 ## MCP Integration
 
-The MCP servers run over Streamable HTTP on the main API port:
+Each business module mounts its own Streamable HTTP MCP server, rather than a
+single aggregated endpoint. This keeps tool lists focused and lets an agent
+integration opt into only the modules it needs.
 
-- `POST /mcp` — todos, notes, reports, bookmarks, expenses
-- `POST /mcp/skills` — skill logs and skill versions
+| Endpoint | Tools |
+|----------|-------|
+| `POST /mcp/todos` | `todo_create`, `todo_get`, `todo_list`, `todo_update`, `todo_delete`, `todo_search` |
+| `POST /mcp/notes` | `note_create`, `note_get`, `note_list`, `note_update`, `note_append`, `note_delete`, `note_search` |
+| `POST /mcp/reports` | `report_create`, `report_get`, `report_list`, `report_list_sources`, `report_update`, `report_delete` |
+| `POST /mcp/bookmarks` | `bookmark_create`, `bookmark_get`, `bookmark_list`, `bookmark_update`, `bookmark_delete` |
+| `POST /mcp/expenses` | `expense_create`, `expense_get`, `expense_list`, `expense_summary`, `expense_update`, `expense_delete` |
+| `POST /mcp/skills` | `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active` |
 
-Authenticate with a valid API key via `X-Api-Key`, `Authorization: Bearer ak_xxx`, or `?api_key=ak_xxx`. MCP tool calls enforce the same API key scopes as REST.
+Authenticate with a valid API key via `X-Api-Key` header, `Authorization: Bearer ak_xxx`,
+or `?api_key=ak_xxx` query param. MCP tool calls enforce the same API key scopes as REST
+(e.g. `todo_create` requires `todos:rw`, `todo_list` requires `todos:r`).
 
-Available `/mcp` tools:
-- `todo_create`, `todo_list`, `todo_get`, `todo_update`, `todo_delete`, `todo_search`
-- `note_create`, `note_list`, `note_get`, `note_update`, `note_delete`, `note_search`, `note_append`
-- `report_create`, `report_list`, `report_get`, `report_update`, `report_delete`, `report_search`
-- `bookmark_save`, `bookmark_list`, `bookmark_get`, `bookmark_update`, `bookmark_mark_read`, `bookmark_delete`, `bookmark_search`
-- `expense_add`, `expense_list`, `expense_summary`, `expense_search`, `expense_update`, `expense_delete`
+### Connecting an MCP client
 
-Available `/mcp/skills` tools:
-- `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active`
+Point the client at the module endpoint it needs, e.g. for todos only:
+
+```json
+{
+  "mcpServers": {
+    "agentmate-todos": {
+      "url": "http://localhost:26001/mcp/todos",
+      "headers": { "X-Api-Key": "ak_xxxx" }
+    }
+  }
+}
+```
+
+To use multiple modules, add one entry per endpoint (each is an independent
+MCP server with its own tool list):
+
+```json
+{
+  "mcpServers": {
+    "agentmate-todos": {
+      "url": "http://localhost:26001/mcp/todos",
+      "headers": { "X-Api-Key": "ak_xxxx" }
+    },
+    "agentmate-notes": {
+      "url": "http://localhost:26001/mcp/notes",
+      "headers": { "X-Api-Key": "ak_xxxx" }
+    },
+    "agentmate-skills": {
+      "url": "http://localhost:26001/mcp/skills",
+      "headers": { "X-Api-Key": "ak_xxxx" }
+    }
+  }
+}
+```
+
+### Quick test (JSON-RPC over HTTP)
+
+```bash
+curl -X POST http://localhost:26001/mcp/todos \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "X-Api-Key: ak_xxxx" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
 
 ## Roadmap
 
