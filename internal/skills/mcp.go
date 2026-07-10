@@ -2,28 +2,15 @@ package skills
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/wellxie/agentmate/internal/auth"
-	"github.com/wellxie/agentmate/internal/ownership"
+	"github.com/wellxie/agentmate/internal/mcpauth"
 )
 
-type accountIDKeyType struct{}
-type userIDKeyType struct{}
-type apiKeyIDKeyType struct{}
-type scopesKeyType struct{}
-
-var skillAccountIDKey = accountIDKeyType{}
-var skillUserIDKey = userIDKeyType{}
-var skillAPIKeyIDKey = apiKeyIDKeyType{}
-var skillScopesKey = scopesKeyType{}
-
-var skillToolScopes = map[string]string{
+var toolScopes = map[string]string{
 	"skill_log_add":            "skills:rw",
 	"skill_version_publish":    "skills:rw",
 	"skill_version_get_active": "skills:r",
@@ -35,7 +22,7 @@ var skillToolScopes = map[string]string{
 }
 
 func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
-	s := server.NewMCPServer("agentmate-skills", "0.1.0", server.WithToolHandlerMiddleware(skillScopeMiddleware(skillToolScopes)))
+	s := server.NewMCPServer("agentmate-skills", "0.1.0", server.WithToolHandlerMiddleware(mcpauth.ScopeMiddleware(toolScopes)))
 
 	// skill_log_add
 	s.AddTool(mcp.NewTool("skill_log_add",
@@ -51,37 +38,31 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		mcp.WithString("user_correction", mcp.Description("What the user corrected (for user_corrected outcome)")),
 		mcp.WithNumber("duration_ms", mcp.Description("Execution duration in milliseconds")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		owner, ok := skillOwnerFromCtx(ctx)
+		owner, ok := mcpauth.OwnerFromContext(ctx)
 		if !ok {
-			return skillErrResult("unauthorized"), nil
+			return mcpauth.ErrResult("unauthorized"), nil
 		}
 		args := req.GetArguments()
 		r := CreateLogRequest{
-			SkillName:      skillStrArg(args, "skill_name"),
-			Outcome:        skillStrArg(args, "outcome"),
-			AgentID:        skillStrArg(args, "agent_id"),
-			SkillVersion:   skillStrArg(args, "skill_version"),
-			SessionID:      skillStrArg(args, "session_id"),
-			TriggerText:    skillStrArg(args, "trigger_text"),
-			FailureReason:  skillStrArg(args, "failure_reason"),
-			UserCorrection: skillStrArg(args, "user_correction"),
+			SkillName:      mcpauth.StrArg(args, "skill_name"),
+			Outcome:        mcpauth.StrArg(args, "outcome"),
+			AgentID:        mcpauth.StrArg(args, "agent_id"),
+			SkillVersion:   mcpauth.StrArg(args, "skill_version"),
+			SessionID:      mcpauth.StrArg(args, "session_id"),
+			TriggerText:    mcpauth.StrArg(args, "trigger_text"),
+			FailureReason:  mcpauth.StrArg(args, "failure_reason"),
+			UserCorrection: mcpauth.StrArg(args, "user_correction"),
+			WasTriggered:   mcpauth.BoolPtrArg(args, "was_triggered"),
 		}
-		if v, ok := args["was_triggered"]; ok {
-			if b, ok := v.(bool); ok {
-				r.WasTriggered = &b
-			}
-		}
-		if v, ok := args["duration_ms"]; ok {
-			if f, ok := v.(float64); ok {
-				d := int(f)
-				r.DurationMs = &d
-			}
+		if v := mcpauth.FloatPtrArg(args, "duration_ms"); v != nil {
+			d := int(*v)
+			r.DurationMs = &d
 		}
 		l, err := svc.CreateLog(ctx, owner, r)
 		if err != nil {
-			return skillErrResult(err.Error()), nil
+			return mcpauth.ErrResult(err.Error()), nil
 		}
-		return skillJsonResult(l)
+		return mcpauth.JSONResult(l)
 	})
 
 	// skill_version_publish
@@ -95,33 +76,25 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		mcp.WithNumber("eval_pass_rate", mcp.Description("Evaluation pass rate 0.0-1.0")),
 		mcp.WithBoolean("activate", mcp.Description("Set as active version immediately (default false)")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		owner, ok := skillOwnerFromCtx(ctx)
+		owner, ok := mcpauth.OwnerFromContext(ctx)
 		if !ok {
-			return skillErrResult("unauthorized"), nil
+			return mcpauth.ErrResult("unauthorized"), nil
 		}
 		args := req.GetArguments()
 		r := CreateVersionRequest{
-			SkillName:     skillStrArg(args, "skill_name"),
-			Version:       skillStrArg(args, "version"),
-			Content:       skillStrArg(args, "content"),
-			AgentID:       skillStrArg(args, "agent_id"),
-			ChangeSummary: skillStrArg(args, "change_summary"),
-		}
-		if v, ok := args["eval_pass_rate"]; ok {
-			if f, ok := v.(float64); ok {
-				r.EvalPassRate = &f
-			}
-		}
-		if v, ok := args["activate"]; ok {
-			if b, ok := v.(bool); ok {
-				r.Activate = b
-			}
+			SkillName:     mcpauth.StrArg(args, "skill_name"),
+			Version:       mcpauth.StrArg(args, "version"),
+			Content:       mcpauth.StrArg(args, "content"),
+			AgentID:       mcpauth.StrArg(args, "agent_id"),
+			ChangeSummary: mcpauth.StrArg(args, "change_summary"),
+			EvalPassRate:  mcpauth.FloatPtrArg(args, "eval_pass_rate"),
+			Activate:      mcpauth.BoolArg(args, "activate"),
 		}
 		ver, err := svc.CreateVersion(ctx, owner, r)
 		if err != nil {
-			return skillErrResult(err.Error()), nil
+			return mcpauth.ErrResult(err.Error()), nil
 		}
-		return skillJsonResult(ver)
+		return mcpauth.JSONResult(ver)
 	})
 
 	// skill_version_get_active
@@ -129,15 +102,15 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		mcp.WithDescription("Get the currently active version of a skill. Returns full content."),
 		mcp.WithString("skill_name", mcp.Required(), mcp.Description("Skill name")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		owner, ok := skillOwnerFromCtx(ctx)
+		owner, ok := mcpauth.OwnerFromContext(ctx)
 		if !ok {
-			return skillErrResult("unauthorized"), nil
+			return mcpauth.ErrResult("unauthorized"), nil
 		}
-		v, err := svc.GetActiveVersion(ctx, owner.Account(), skillStrArg(req.GetArguments(), "skill_name"))
+		v, err := svc.GetActiveVersion(ctx, owner.Account(), mcpauth.StrArg(req.GetArguments(), "skill_name"))
 		if err != nil {
-			return skillErrResult("not found"), nil
+			return mcpauth.ErrResult("not found"), nil
 		}
-		return skillJsonResult(v)
+		return mcpauth.JSONResult(v)
 	})
 
 	// skill_stats
@@ -145,15 +118,15 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		mcp.WithDescription("Get aggregated performance stats for a skill: total runs, success/failure/correction rates."),
 		mcp.WithString("skill_name", mcp.Required(), mcp.Description("Skill name")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		owner, ok := skillOwnerFromCtx(ctx)
+		owner, ok := mcpauth.OwnerFromContext(ctx)
 		if !ok {
-			return skillErrResult("unauthorized"), nil
+			return mcpauth.ErrResult("unauthorized"), nil
 		}
-		stats, err := svc.GetSkillStats(ctx, owner.Account(), skillStrArg(req.GetArguments(), "skill_name"))
+		stats, err := svc.GetSkillStats(ctx, owner.Account(), mcpauth.StrArg(req.GetArguments(), "skill_name"))
 		if err != nil {
-			return skillErrResult(err.Error()), nil
+			return mcpauth.ErrResult(err.Error()), nil
 		}
-		return skillJsonResult(stats)
+		return mcpauth.JSONResult(stats)
 	})
 
 	// skill_signals
@@ -162,22 +135,20 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		mcp.WithString("skill_name", mcp.Required(), mcp.Description("Skill name")),
 		mcp.WithNumber("limit", mcp.Description("Max results (default 10, max 50)")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		owner, ok := skillOwnerFromCtx(ctx)
+		owner, ok := mcpauth.OwnerFromContext(ctx)
 		if !ok {
-			return skillErrResult("unauthorized"), nil
+			return mcpauth.ErrResult("unauthorized"), nil
 		}
 		args := req.GetArguments()
-		limit := 10
-		if v, ok := args["limit"]; ok {
-			if f, ok := v.(float64); ok {
-				limit = int(f)
-			}
+		limit := mcpauth.IntArg(args, "limit")
+		if limit == 0 {
+			limit = 10
 		}
-		signals, err := svc.SkillSignals(ctx, owner.Account(), skillStrArg(args, "skill_name"), limit)
+		signals, err := svc.SkillSignals(ctx, owner.Account(), mcpauth.StrArg(args, "skill_name"), limit)
 		if err != nil {
-			return skillErrResult(err.Error()), nil
+			return mcpauth.ErrResult(err.Error()), nil
 		}
-		return skillJsonResult(signals)
+		return mcpauth.JSONResult(signals)
 	})
 
 	// skill_search
@@ -187,21 +158,21 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		mcp.WithNumber("top_k", mcp.Description("Max results (default 5, max 20)")),
 		mcp.WithBoolean("include_content", mcp.Description("Return indexed content for selected skills")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		owner, ok := skillOwnerFromCtx(ctx)
+		owner, ok := mcpauth.OwnerFromContext(ctx)
 		if !ok {
-			return skillErrResult("unauthorized"), nil
+			return mcpauth.ErrResult("unauthorized"), nil
 		}
 		args := req.GetArguments()
 		searchReq := SearchSkillsRequest{
-			Query:          skillStrArg(args, "query"),
-			TopK:           skillIntArg(args, "top_k"),
-			IncludeContent: skillBoolArg(args, "include_content"),
+			Query:          mcpauth.StrArg(args, "query"),
+			TopK:           mcpauth.IntArg(args, "top_k"),
+			IncludeContent: mcpauth.BoolArg(args, "include_content"),
 		}
 		result, err := svc.Search(ctx, owner, searchReq)
 		if err != nil {
-			return skillErrResult(err.Error()), nil
+			return mcpauth.ErrResult(err.Error()), nil
 		}
-		return skillJsonResult(result)
+		return mcpauth.JSONResult(result)
 	})
 
 	// skill_index_active
@@ -209,15 +180,15 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		mcp.WithDescription("Index active skill versions into the retrieval store. Optionally restrict to one skill_name."),
 		mcp.WithString("skill_name", mcp.Description("Optional skill name to reindex")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		owner, ok := skillOwnerFromCtx(ctx)
+		owner, ok := mcpauth.OwnerFromContext(ctx)
 		if !ok {
-			return skillErrResult("unauthorized"), nil
+			return mcpauth.ErrResult("unauthorized"), nil
 		}
-		result, err := svc.IndexActiveVersions(ctx, owner, skillStrArg(req.GetArguments(), "skill_name"))
+		result, err := svc.IndexActiveVersions(ctx, owner, mcpauth.StrArg(req.GetArguments(), "skill_name"))
 		if err != nil {
-			return skillErrResult(err.Error()), nil
+			return mcpauth.ErrResult(err.Error()), nil
 		}
-		return skillJsonResult(result)
+		return mcpauth.JSONResult(result)
 	})
 
 	// skill_logs_list
@@ -229,127 +200,24 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		mcp.WithNumber("limit", mcp.Description("Max results (default 20)")),
 		mcp.WithNumber("offset", mcp.Description("Offset for pagination")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		owner, ok := skillOwnerFromCtx(ctx)
+		owner, ok := mcpauth.OwnerFromContext(ctx)
 		if !ok {
-			return skillErrResult("unauthorized"), nil
+			return mcpauth.ErrResult("unauthorized"), nil
 		}
 		args := req.GetArguments()
 		params := LogListParams{
-			SkillName: skillStrArg(args, "skill_name"),
-			AgentID:   skillStrArg(args, "agent_id"),
-			Outcome:   skillStrArg(args, "outcome"),
-			Limit:     skillIntArg(args, "limit"),
-			Offset:    skillIntArg(args, "offset"),
+			SkillName: mcpauth.StrArg(args, "skill_name"),
+			AgentID:   mcpauth.StrArg(args, "agent_id"),
+			Outcome:   mcpauth.StrArg(args, "outcome"),
+			Limit:     mcpauth.IntArg(args, "limit"),
+			Offset:    mcpauth.IntArg(args, "offset"),
 		}
 		list, err := svc.ListLogs(ctx, owner.Account(), params)
 		if err != nil {
-			return skillErrResult(err.Error()), nil
+			return mcpauth.ErrResult(err.Error()), nil
 		}
-		return skillJsonResult(list)
+		return mcpauth.JSONResult(list)
 	})
 
-	// Build HTTP handler with auth
-	httpSrv := server.NewStreamableHTTPServer(s,
-		server.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
-			apiKey := r.Header.Get("X-Api-Key")
-			if apiKey == "" {
-				apiKey = r.URL.Query().Get("api_key")
-			}
-			if apiKey == "" {
-				if bearer := r.Header.Get("Authorization"); strings.HasPrefix(bearer, "Bearer ") {
-					apiKey = strings.TrimPrefix(bearer, "Bearer ")
-				}
-			}
-			if apiKey == "" {
-				return ctx
-			}
-			ak, err := authSvc.ValidateAPIKey(ctx, apiKey)
-			if err != nil {
-				return ctx
-			}
-			ctx = context.WithValue(ctx, skillAccountIDKey, ak.AccountID)
-			ctx = context.WithValue(ctx, skillUserIDKey, ak.UserID)
-			ctx = context.WithValue(ctx, skillAPIKeyIDKey, ak.ID)
-			return context.WithValue(ctx, skillScopesKey, ak.Scopes)
-		}),
-	)
-
-	return httpSrv
-}
-
-func skillUserIDFromCtx(ctx context.Context) (string, bool) {
-	id, ok := ctx.Value(skillUserIDKey).(string)
-	return id, ok && id != ""
-}
-
-func skillOwnerFromCtx(ctx context.Context) (ownership.Owner, bool) {
-	userID, ok := skillUserIDFromCtx(ctx)
-	if !ok {
-		return ownership.Owner{}, false
-	}
-	accountID, _ := ctx.Value(skillAccountIDKey).(string)
-	if accountID == "" {
-		accountID = userID
-	}
-	var keyID *string
-	if id, ok := ctx.Value(skillAPIKeyIDKey).(string); ok && id != "" {
-		keyID = &id
-	}
-	return ownership.Owner{AccountID: accountID, UserID: userID, KeyID: keyID}, true
-}
-
-func skillScopesFromCtx(ctx context.Context) ([]string, bool) {
-	scopes, ok := ctx.Value(skillScopesKey).([]string)
-	return scopes, ok
-}
-
-func skillScopeMiddleware(requiredScopes map[string]string) server.ToolHandlerMiddleware {
-	return func(next server.ToolHandlerFunc) server.ToolHandlerFunc {
-		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			if _, ok := skillOwnerFromCtx(ctx); !ok {
-				return skillErrResult("unauthorized"), nil
-			}
-			scopes, ok := skillScopesFromCtx(ctx)
-			if !ok {
-				return skillErrResult("unauthorized"), nil
-			}
-			required, ok := requiredScopes[req.Params.Name]
-			if !ok {
-				return skillErrResult("missing scope policy for tool: " + req.Params.Name), nil
-			}
-			if !auth.HasScope(&auth.APIKey{Scopes: scopes}, required) {
-				return skillErrResult("insufficient scope: " + required), nil
-			}
-			return next(ctx, req)
-		}
-	}
-}
-
-func skillStrArg(args map[string]interface{}, key string) string {
-	v, _ := args[key].(string)
-	return v
-}
-
-func skillIntArg(args map[string]interface{}, key string) int {
-	v, _ := args[key].(float64)
-	return int(v)
-}
-
-func skillBoolArg(args map[string]interface{}, key string) bool {
-	v, _ := args[key].(bool)
-	return v
-}
-
-func skillErrResult(msg string) *mcp.CallToolResult {
-	r := mcp.NewToolResultText(msg)
-	r.IsError = true
-	return r
-}
-
-func skillJsonResult(v interface{}) (*mcp.CallToolResult, error) {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return skillErrResult(fmt.Sprintf("json marshal: %v", err)), nil
-	}
-	return mcp.NewToolResultText(string(b)), nil
+	return server.NewStreamableHTTPServer(s, server.WithHTTPContextFunc(mcpauth.HTTPContextFunc(authSvc)))
 }

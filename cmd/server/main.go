@@ -3,15 +3,12 @@ package main
 import (
 	"context"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/wellxie/agentmate/internal/admin"
 	"github.com/wellxie/agentmate/internal/auth"
 	"github.com/wellxie/agentmate/internal/bookmarks"
@@ -24,7 +21,6 @@ import (
 	"github.com/wellxie/agentmate/internal/skills"
 	"github.com/wellxie/agentmate/internal/tags"
 	"github.com/wellxie/agentmate/internal/todo"
-	"github.com/wellxie/agentmate/mcp"
 )
 
 func main() {
@@ -178,40 +174,15 @@ func main() {
 	adminAPI.GET("/reports", adminHandler.Reports)
 	adminAPI.GET("/usage", adminHandler.Usage)
 
-	// MCP Server (Streamable HTTP, mounted on /mcp)
-	{
-		mcpSrv := mcp.NewServer(todoSvc, notesSvc, reportsSvc, bookmarksSvc, expensesSvc)
-
-		httpSrv := mcpserver.NewStreamableHTTPServer(mcpSrv,
-			mcpserver.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
-				apiKey := r.Header.Get("X-Api-Key")
-				if apiKey == "" {
-					apiKey = r.URL.Query().Get("api_key")
-				}
-				if apiKey == "" {
-					if bearer := r.Header.Get("Authorization"); strings.HasPrefix(bearer, "Bearer ") {
-						apiKey = strings.TrimPrefix(bearer, "Bearer ")
-					}
-				}
-				if apiKey == "" {
-					return ctx
-				}
-				ak, err := authSvc.ValidateAPIKey(ctx, apiKey)
-				if err != nil {
-					return ctx
-				}
-				ctx = context.WithValue(ctx, mcp.AccountIDKey, ak.AccountID)
-				ctx = context.WithValue(ctx, mcp.UserIDKey, ak.UserID)
-				ctx = context.WithValue(ctx, mcp.APIKeyIDKey, ak.ID)
-				return context.WithValue(ctx, mcp.APIKeyScopesKey, ak.Scopes)
-			}),
-		)
-
-		r.Any("/mcp", gin.WrapH(httpSrv))
-	}
-
-	// Skills MCP Server (independent endpoint)
+	// MCP Servers — 每个业务模块独立挂载一个 Streamable HTTP MCP 端点，
+	// 而不是聚合成单个 /mcp（与 skills 保持一致的模式）。
+	r.Any("/mcp/todos", gin.WrapH(todo.NewMCPServer(todoSvc, authSvc)))
+	r.Any("/mcp/notes", gin.WrapH(notes.NewMCPServer(notesSvc, authSvc)))
+	r.Any("/mcp/reports", gin.WrapH(reports.NewMCPServer(reportsSvc, authSvc)))
+	r.Any("/mcp/bookmarks", gin.WrapH(bookmarks.NewMCPServer(bookmarksSvc, authSvc)))
+	r.Any("/mcp/expenses", gin.WrapH(expenses.NewMCPServer(expensesSvc, authSvc)))
 	r.Any("/mcp/skills", gin.WrapH(skills.NewMCPServer(skillsSvc, authSvc)))
+
 
 	registerFrontend(r)
 
@@ -233,7 +204,7 @@ const banner = `
 
 func printBanner(port string) {
 	log.Print(banner)
-	log.Printf("listening on http://localhost:%s", port)
+	log.Printf("listening on http://0.0.0.0:%s (accessible on all network interfaces)", port)
 }
 
 func env(key, fallback string) string {
