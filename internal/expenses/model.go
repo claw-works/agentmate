@@ -4,7 +4,9 @@ import "time"
 
 type Expense struct {
 	ID          string    `json:"id"`
+	AccountID   string    `json:"account_id"`
 	UserID      string    `json:"user_id"`
+	KeyID       *string   `json:"key_id,omitempty"`
 	Amount      float64   `json:"amount"`
 	Currency    string    `json:"currency"`
 	Description string    `json:"description"`

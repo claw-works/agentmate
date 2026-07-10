@@ -4,6 +4,7 @@ import "time"
 
 type User struct {
 	ID           string    `json:"id"`
+	AccountID    string    `json:"account_id"`
 	Email        string    `json:"email"`
 	PasswordHash string    `json:"-"`
 	Role         string    `json:"role" db:"role"`
@@ -12,6 +13,7 @@ type User struct {
 
 type APIKey struct {
 	ID        string    `json:"id"`
+	AccountID string    `json:"account_id"`
 	UserID    string    `json:"user_id"`
 	Name      string    `json:"name"`
 	Prefix    string    `json:"prefix"`

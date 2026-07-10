@@ -7,7 +7,9 @@ import (
 
 type SkillLog struct {
 	ID             string          `json:"id"`
+	AccountID      *string         `json:"account_id,omitempty"`
 	UserID         *string         `json:"user_id,omitempty"`
+	KeyID          *string         `json:"key_id,omitempty"`
 	SkillName      string          `json:"skill_name"`
 	SkillVersion   string          `json:"skill_version"`
 	AgentID        string          `json:"agent_id"`
@@ -24,7 +26,9 @@ type SkillLog struct {
 
 type SkillVersion struct {
 	ID            string    `json:"id"`
+	AccountID     *string   `json:"account_id,omitempty"`
 	UserID        *string   `json:"user_id,omitempty"`
+	KeyID         *string   `json:"key_id,omitempty"`
 	SkillName     string    `json:"skill_name"`
 	Version       string    `json:"version"`
 	Content       string    `json:"content"`
@@ -38,7 +42,9 @@ type SkillVersion struct {
 
 type SkillSource struct {
 	ID            string          `json:"id"`
+	AccountID     *string         `json:"account_id,omitempty"`
 	UserID        *string         `json:"user_id,omitempty"`
+	KeyID         *string         `json:"key_id,omitempty"`
 	Name          string          `json:"name"`
 	Type          string          `json:"type"`
 	RepositoryURL string          `json:"repository_url"`
@@ -54,7 +60,9 @@ type SkillSource struct {
 
 type SkillSourceRevision struct {
 	ID              string    `json:"id"`
+	AccountID       *string   `json:"account_id,omitempty"`
 	UserID          *string   `json:"user_id,omitempty"`
+	KeyID           *string   `json:"key_id,omitempty"`
 	SourceID        string    `json:"source_id"`
 	SkillVersionID  *string   `json:"skill_version_id,omitempty"`
 	CommitSHA       string    `json:"commit_sha"`
@@ -68,7 +76,9 @@ type SkillSourceRevision struct {
 
 type SkillVersionFile struct {
 	ID               string    `json:"id"`
+	AccountID        *string   `json:"account_id,omitempty"`
 	UserID           *string   `json:"user_id,omitempty"`
+	KeyID            *string   `json:"key_id,omitempty"`
 	SourceRevisionID string    `json:"source_revision_id"`
 	VersionID        *string   `json:"version_id,omitempty"`
 	Path             string    `json:"path"`

@@ -5,9 +5,11 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/wellxie/agentmate/internal/ownership"
 )
 
 const (
+	ContextAccountID  = "account_id"
 	ContextUserID     = "user_id"
 	ContextKeyID      = "key_id"
 	ContextScopes     = "scopes"
@@ -23,6 +25,7 @@ func Middleware(svc *Service) gin.HandlerFunc {
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
 				return
 			}
+			c.Set(ContextAccountID, ak.AccountID)
 			c.Set(ContextUserID, ak.UserID)
 			c.Set(ContextKeyID, ak.ID)
 			c.Set(ContextScopes, ak.Scopes)
@@ -46,6 +49,7 @@ func Middleware(svc *Service) gin.HandlerFunc {
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
 				return
 			}
+			c.Set(ContextAccountID, ak.AccountID)
 			c.Set(ContextUserID, ak.UserID)
 			c.Set(ContextKeyID, ak.ID)
 			c.Set(ContextScopes, ak.Scopes)
@@ -60,9 +64,32 @@ func Middleware(svc *Service) gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 			return
 		}
+		user, err := svc.GetUser(c.Request.Context(), userID)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+			return
+		}
+		c.Set(ContextAccountID, user.AccountID)
 		c.Set(ContextUserID, userID)
 		c.Set(ContextAuthMethod, "jwt")
 		c.Next()
+	}
+}
+
+func OwnerFromContext(c *gin.Context) ownership.Owner {
+	accountID := c.GetString(ContextAccountID)
+	userID := c.GetString(ContextUserID)
+	if accountID == "" {
+		accountID = userID
+	}
+	var keyID *string
+	if kid := c.GetString(ContextKeyID); kid != "" {
+		keyID = &kid
+	}
+	return ownership.Owner{
+		AccountID: accountID,
+		UserID:    userID,
+		KeyID:     keyID,
 	}
 }
 

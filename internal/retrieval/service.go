@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/wellxie/agentmate/internal/ownership"
 )
 
 type Service struct {
@@ -24,9 +26,9 @@ func NewService(repo *Repo, store VectorStore, embedder Embedder) *Service {
 	}
 }
 
-func (s *Service) IndexDocument(ctx context.Context, userID string, in UpsertDocumentInput) (*Document, error) {
-	if userID == "" {
-		return nil, fmt.Errorf("user id required")
+func (s *Service) IndexDocument(ctx context.Context, owner ownership.Owner, in UpsertDocumentInput) (*Document, error) {
+	if owner.Account() == "" {
+		return nil, fmt.Errorf("account id required")
 	}
 	if in.Namespace == "" {
 		return nil, fmt.Errorf("namespace required")
@@ -67,7 +69,7 @@ func (s *Service) IndexDocument(ctx context.Context, userID string, in UpsertDoc
 		return nil, err
 	}
 
-	doc, err := s.repo.UpsertDocument(ctx, userID, in)
+	doc, err := s.repo.UpsertDocument(ctx, owner, in)
 	if err != nil {
 		return nil, err
 	}
@@ -78,19 +80,19 @@ func (s *Service) IndexDocument(ctx context.Context, userID string, in UpsertDoc
 		Payload: payloadForDocument(doc),
 	}})
 	if err != nil {
-		_ = s.repo.MarkDocumentFailed(ctx, userID, doc.ID, err.Error())
+		_ = s.repo.MarkDocumentFailed(ctx, owner.Account(), doc.ID, err.Error())
 		return nil, err
 	}
 
-	if err := s.repo.MarkDocumentIndexed(ctx, userID, doc.ID); err != nil {
+	if err := s.repo.MarkDocumentIndexed(ctx, owner.Account(), doc.ID); err != nil {
 		return nil, err
 	}
-	return s.repo.GetDocument(ctx, userID, doc.ID)
+	return s.repo.GetDocument(ctx, owner.Account(), doc.ID)
 }
 
-func (s *Service) Search(ctx context.Context, userID string, req SearchRequest) ([]SearchResult, error) {
-	if userID == "" {
-		return nil, fmt.Errorf("user id required")
+func (s *Service) Search(ctx context.Context, owner ownership.Owner, req SearchRequest) ([]SearchResult, error) {
+	if owner.Account() == "" {
+		return nil, fmt.Errorf("account id required")
 	}
 	if req.Namespace == "" {
 		return nil, fmt.Errorf("namespace required")
@@ -112,8 +114,8 @@ func (s *Service) Search(ctx context.Context, userID string, req SearchRequest) 
 	}
 
 	filterValues := map[string]any{
-		"user_id":   userID,
-		"namespace": req.Namespace,
+		"account_id": owner.Account(),
+		"namespace":  req.Namespace,
 	}
 	for k, v := range req.Filters {
 		filterValues[k] = v
@@ -133,7 +135,7 @@ func (s *Service) Search(ctx context.Context, userID string, req SearchRequest) 
 	for _, item := range vectorResults {
 		pointIDs = append(pointIDs, item.ID)
 	}
-	docsByPointID, err := s.repo.DocumentsByPointIDs(ctx, userID, s.store.Collection(), pointIDs)
+	docsByPointID, err := s.repo.DocumentsByPointIDs(ctx, owner.Account(), s.store.Collection(), pointIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +167,7 @@ func (s *Service) Search(ctx context.Context, userID string, req SearchRequest) 
 		})
 	}
 
-	queryLog, err := s.repo.CreateQueryLog(ctx, userID, CreateQueryLogInput{
+	queryLog, err := s.repo.CreateQueryLog(ctx, owner, CreateQueryLogInput{
 		Namespace:      req.Namespace,
 		Query:          req.Query,
 		QueryHash:      sha256Hex(req.Query),
@@ -189,6 +191,7 @@ func (s *Service) Search(ctx context.Context, userID string, req SearchRequest) 
 func payloadForDocument(doc *Document) map[string]any {
 	payload := map[string]any{
 		"document_id":  doc.ID,
+		"account_id":   doc.AccountID,
 		"user_id":      doc.UserID,
 		"namespace":    doc.Namespace,
 		"source_type":  doc.SourceType,
@@ -196,6 +199,9 @@ func payloadForDocument(doc *Document) map[string]any {
 		"chunk_key":    doc.ChunkKey,
 		"title":        doc.Title,
 		"content_hash": doc.ContentHash,
+	}
+	if doc.KeyID != nil {
+		payload["key_id"] = *doc.KeyID
 	}
 	if len(doc.Metadata) > 0 {
 		var metadata map[string]any

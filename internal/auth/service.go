@@ -31,9 +31,18 @@ func (s *Service) Register(ctx context.Context, email, password string) (*User, 
 	}
 	var u User
 	err = s.pool.QueryRow(ctx,
-		"INSERT INTO users (email, password_hash, role) VALUES ($1, $2, 'user') RETURNING id, email, password_hash, role, created_at",
+		`WITH ids AS (
+		   SELECT gen_random_uuid() AS id
+		 ), created_account AS (
+		   INSERT INTO accounts (id, name)
+		   SELECT id, $1 FROM ids
+		   RETURNING id
+		 )
+		 INSERT INTO users (id, account_id, email, password_hash, role)
+		 SELECT id, id, $1, $2, 'user' FROM created_account
+		 RETURNING id, account_id, email, password_hash, role, created_at`,
 		email, string(hash),
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt)
+	).Scan(&u.ID, &u.AccountID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create user: %w", err)
 	}
@@ -43,8 +52,8 @@ func (s *Service) Register(ctx context.Context, email, password string) (*User, 
 func (s *Service) Login(ctx context.Context, email, password string) (string, error) {
 	var u User
 	err := s.pool.QueryRow(ctx,
-		"SELECT id, email, password_hash, role, created_at FROM users WHERE email = $1", email,
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt)
+		"SELECT id, account_id, email, password_hash, role, created_at FROM users WHERE email = $1", email,
+	).Scan(&u.ID, &u.AccountID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt)
 	if err != nil {
 		return "", errors.New("invalid credentials")
 	}
@@ -52,8 +61,9 @@ func (s *Service) Login(ctx context.Context, email, password string) (string, er
 		return "", errors.New("invalid credentials")
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": u.ID,
-		"exp": time.Now().Add(72 * time.Hour).Unix(),
+		"sub":        u.ID,
+		"account_id": u.AccountID,
+		"exp":        time.Now().Add(72 * time.Hour).Unix(),
 	})
 	return token.SignedString(s.jwtSecret)
 }
@@ -61,15 +71,15 @@ func (s *Service) Login(ctx context.Context, email, password string) (string, er
 func (s *Service) GetUser(ctx context.Context, userID string) (*User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx,
-		"SELECT id, email, password_hash, role, created_at FROM users WHERE id = $1", userID,
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt)
+		"SELECT id, account_id, email, password_hash, role, created_at FROM users WHERE id = $1", userID,
+	).Scan(&u.ID, &u.AccountID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 	return &u, nil
 }
 
-func (s *Service) CreateAPIKey(ctx context.Context, userID, name string, scopes []string) (string, *APIKey, error) {
+func (s *Service) CreateAPIKey(ctx context.Context, accountID, userID, name string, scopes []string) (string, *APIKey, error) {
 	if scopes == nil {
 		scopes = []string{}
 	}
@@ -83,18 +93,24 @@ func (s *Service) CreateAPIKey(ctx context.Context, userID, name string, scopes 
 
 	var ak APIKey
 	err := s.pool.QueryRow(ctx,
-		"INSERT INTO api_keys (user_id, name, key_hash, prefix, scopes) VALUES ($1, $2, $3, $4, $5) RETURNING id, user_id, name, prefix, scopes, created_at",
-		userID, name, hash, prefix, scopes,
-	).Scan(&ak.ID, &ak.UserID, &ak.Name, &ak.Prefix, &ak.Scopes, &ak.CreatedAt)
+		`INSERT INTO api_keys (account_id, user_id, name, key_hash, prefix, scopes)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id, account_id, user_id, name, prefix, scopes, created_at`,
+		accountID, userID, name, hash, prefix, scopes,
+	).Scan(&ak.ID, &ak.AccountID, &ak.UserID, &ak.Name, &ak.Prefix, &ak.Scopes, &ak.CreatedAt)
 	if err != nil {
 		return "", nil, err
 	}
 	return key, &ak, nil
 }
 
-func (s *Service) ListAPIKeys(ctx context.Context, userID string) ([]APIKey, error) {
+func (s *Service) ListAPIKeys(ctx context.Context, accountID string) ([]APIKey, error) {
 	rows, err := s.pool.Query(ctx,
-		"SELECT id, user_id, name, prefix, scopes, created_at FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC", userID,
+		`SELECT id, account_id, user_id, name, prefix, scopes, created_at
+		 FROM api_keys
+		 WHERE account_id = $1
+		 ORDER BY created_at DESC`,
+		accountID,
 	)
 	if err != nil {
 		return nil, err
@@ -103,7 +119,7 @@ func (s *Service) ListAPIKeys(ctx context.Context, userID string) ([]APIKey, err
 	keys := make([]APIKey, 0)
 	for rows.Next() {
 		var k APIKey
-		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.Prefix, &k.Scopes, &k.CreatedAt); err != nil {
+		if err := rows.Scan(&k.ID, &k.AccountID, &k.UserID, &k.Name, &k.Prefix, &k.Scopes, &k.CreatedAt); err != nil {
 			return nil, err
 		}
 		keys = append(keys, k)
@@ -111,8 +127,8 @@ func (s *Service) ListAPIKeys(ctx context.Context, userID string) ([]APIKey, err
 	return keys, nil
 }
 
-func (s *Service) DeleteAPIKey(ctx context.Context, userID, keyID string) error {
-	_, err := s.pool.Exec(ctx, "DELETE FROM api_keys WHERE id = $1 AND user_id = $2", keyID, userID)
+func (s *Service) DeleteAPIKey(ctx context.Context, accountID, keyID string) error {
+	_, err := s.pool.Exec(ctx, "DELETE FROM api_keys WHERE id = $1 AND account_id = $2", keyID, accountID)
 	return err
 }
 
@@ -135,8 +151,10 @@ func (s *Service) ValidateAPIKey(ctx context.Context, key string) (*APIKey, erro
 	hash := sha256Hash(key)
 	var ak APIKey
 	err := s.pool.QueryRow(ctx,
-		"SELECT id, user_id, name, prefix, scopes, created_at FROM api_keys WHERE key_hash = $1", hash,
-	).Scan(&ak.ID, &ak.UserID, &ak.Name, &ak.Prefix, &ak.Scopes, &ak.CreatedAt)
+		`SELECT id, account_id, user_id, name, prefix, scopes, created_at
+		 FROM api_keys WHERE key_hash = $1`,
+		hash,
+	).Scan(&ak.ID, &ak.AccountID, &ak.UserID, &ak.Name, &ak.Prefix, &ak.Scopes, &ak.CreatedAt)
 	if err != nil {
 		return nil, errors.New("invalid api key")
 	}

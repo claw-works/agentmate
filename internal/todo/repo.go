@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/wellxie/agentmate/internal/ownership"
 )
 
 type Repo struct {
@@ -17,7 +18,7 @@ func NewRepo(pool *pgxpool.Pool) *Repo {
 	return &Repo{pool: pool}
 }
 
-func (r *Repo) Create(ctx context.Context, userID string, req CreateRequest) (*Todo, error) {
+func (r *Repo) Create(ctx context.Context, owner ownership.Owner, req CreateRequest) (*Todo, error) {
 	var t Todo
 	var dueDate *time.Time
 	if req.DueDate != "" {
@@ -39,20 +40,20 @@ func (r *Repo) Create(ctx context.Context, userID string, req CreateRequest) (*T
 		tags[i] = strings.ToLower(strings.TrimSpace(tag))
 	}
 	err := r.pool.QueryRow(ctx,
-		`INSERT INTO todos (user_id, title, description, priority, due_date, tags)
-		 VALUES ($1, $2, $3, $4, $5, $6)
-		 RETURNING id, user_id, title, description, status, priority, due_date, tags, created_at, updated_at`,
-		userID, req.Title, req.Description, priority, dueDate, tags,
-	).Scan(&t.ID, &t.UserID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.DueDate, &t.Tags, &t.CreatedAt, &t.UpdatedAt)
+		`INSERT INTO todos (account_id, user_id, key_id, title, description, priority, due_date, tags)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		 RETURNING id, account_id, user_id, key_id, title, description, status, priority, due_date, tags, created_at, updated_at`,
+		owner.Account(), owner.UserID, owner.KeyID, req.Title, req.Description, priority, dueDate, tags,
+	).Scan(&t.ID, &t.AccountID, &t.UserID, &t.KeyID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.DueDate, &t.Tags, &t.CreatedAt, &t.UpdatedAt)
 	return &t, err
 }
 
-func (r *Repo) Get(ctx context.Context, userID, id string) (*Todo, error) {
+func (r *Repo) Get(ctx context.Context, accountID, id string) (*Todo, error) {
 	var t Todo
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, user_id, title, description, status, priority, due_date, tags, created_at, updated_at
-		 FROM todos WHERE id = $1 AND user_id = $2`, id, userID,
-	).Scan(&t.ID, &t.UserID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.DueDate, &t.Tags, &t.CreatedAt, &t.UpdatedAt)
+		`SELECT id, account_id, user_id, key_id, title, description, status, priority, due_date, tags, created_at, updated_at
+		 FROM todos WHERE id = $1 AND account_id = $2`, id, accountID,
+	).Scan(&t.ID, &t.AccountID, &t.UserID, &t.KeyID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.DueDate, &t.Tags, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -66,24 +67,24 @@ type ListTodosParams struct {
 	Offset int
 }
 
-func (r *Repo) Count(ctx context.Context, userID string, params ListTodosParams) (int, error) {
+func (r *Repo) Count(ctx context.Context, accountID string, params ListTodosParams) (int, error) {
 	var count int
 	err := r.pool.QueryRow(ctx,
-		`SELECT count(*) FROM todos WHERE user_id = $1 AND ($2::text[] = '{}' OR tags @> $2::text[]) AND ($3 = '' OR status = $3)`,
-		userID, params.Tags, params.Status,
+		`SELECT count(*) FROM todos WHERE account_id = $1 AND ($2::text[] = '{}' OR tags @> $2::text[]) AND ($3 = '' OR status = $3)`,
+		accountID, params.Tags, params.Status,
 	).Scan(&count)
 	return count, err
 }
 
-func (r *Repo) List(ctx context.Context, userID string, params ListTodosParams) ([]Todo, error) {
+func (r *Repo) List(ctx context.Context, accountID string, params ListTodosParams) ([]Todo, error) {
 	limit := params.Limit
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, user_id, title, description, status, priority, due_date, tags, created_at, updated_at
-		 FROM todos WHERE user_id = $1 AND ($2::text[] = '{}' OR tags @> $2::text[]) AND ($3 = '' OR status = $3)
-		 ORDER BY created_at DESC LIMIT $4 OFFSET $5`, userID, params.Tags, params.Status, limit, params.Offset,
+		`SELECT id, account_id, user_id, key_id, title, description, status, priority, due_date, tags, created_at, updated_at
+		 FROM todos WHERE account_id = $1 AND ($2::text[] = '{}' OR tags @> $2::text[]) AND ($3 = '' OR status = $3)
+		 ORDER BY created_at DESC LIMIT $4 OFFSET $5`, accountID, params.Tags, params.Status, limit, params.Offset,
 	)
 	if err != nil {
 		return nil, err
@@ -92,7 +93,7 @@ func (r *Repo) List(ctx context.Context, userID string, params ListTodosParams) 
 	todos := make([]Todo, 0)
 	for rows.Next() {
 		var t Todo
-		if err := rows.Scan(&t.ID, &t.UserID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.DueDate, &t.Tags, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.AccountID, &t.UserID, &t.KeyID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.DueDate, &t.Tags, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, err
 		}
 		todos = append(todos, t)
@@ -100,8 +101,8 @@ func (r *Repo) List(ctx context.Context, userID string, params ListTodosParams) 
 	return todos, nil
 }
 
-func (r *Repo) Update(ctx context.Context, userID, id string, req UpdateRequest) (*Todo, error) {
-	existing, err := r.Get(ctx, userID, id)
+func (r *Repo) Update(ctx context.Context, accountID, id string, req UpdateRequest) (*Todo, error) {
+	existing, err := r.Get(ctx, accountID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -139,23 +140,23 @@ func (r *Repo) Update(ctx context.Context, userID, id string, req UpdateRequest)
 	var t Todo
 	err = r.pool.QueryRow(ctx,
 		`UPDATE todos SET title=$3, description=$4, status=$5, priority=$6, due_date=$7, tags=$8, updated_at=now()
-		 WHERE id=$1 AND user_id=$2
-		 RETURNING id, user_id, title, description, status, priority, due_date, tags, created_at, updated_at`,
-		id, userID, existing.Title, existing.Description, existing.Status, existing.Priority, dueDate, tags,
-	).Scan(&t.ID, &t.UserID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.DueDate, &t.Tags, &t.CreatedAt, &t.UpdatedAt)
+		 WHERE id=$1 AND account_id=$2
+		 RETURNING id, account_id, user_id, key_id, title, description, status, priority, due_date, tags, created_at, updated_at`,
+		id, accountID, existing.Title, existing.Description, existing.Status, existing.Priority, dueDate, tags,
+	).Scan(&t.ID, &t.AccountID, &t.UserID, &t.KeyID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.DueDate, &t.Tags, &t.CreatedAt, &t.UpdatedAt)
 	return &t, err
 }
 
-func (r *Repo) Delete(ctx context.Context, userID, id string) error {
-	_, err := r.pool.Exec(ctx, "DELETE FROM todos WHERE id = $1 AND user_id = $2", id, userID)
+func (r *Repo) Delete(ctx context.Context, accountID, id string) error {
+	_, err := r.pool.Exec(ctx, "DELETE FROM todos WHERE id = $1 AND account_id = $2", id, accountID)
 	return err
 }
 
-func (r *Repo) Search(ctx context.Context, userID, query string) ([]Todo, error) {
+func (r *Repo) Search(ctx context.Context, accountID, query string) ([]Todo, error) {
 	pattern := "%" + query + "%"
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, user_id, title, description, status, priority, due_date, tags, created_at, updated_at
-		 FROM todos WHERE user_id = $1 AND (title ILIKE $2 OR description ILIKE $2)`, userID, pattern,
+		`SELECT id, account_id, user_id, key_id, title, description, status, priority, due_date, tags, created_at, updated_at
+		 FROM todos WHERE account_id = $1 AND (title ILIKE $2 OR description ILIKE $2)`, accountID, pattern,
 	)
 	if err != nil {
 		return nil, err
@@ -164,7 +165,7 @@ func (r *Repo) Search(ctx context.Context, userID, query string) ([]Todo, error)
 	todos := make([]Todo, 0)
 	for rows.Next() {
 		var t Todo
-		if err := rows.Scan(&t.ID, &t.UserID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.DueDate, &t.Tags, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.AccountID, &t.UserID, &t.KeyID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.DueDate, &t.Tags, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, err
 		}
 		todos = append(todos, t)

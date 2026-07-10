@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wellxie/agentmate/internal/ownership"
 	"github.com/wellxie/agentmate/internal/retrieval"
 )
 
@@ -27,73 +28,73 @@ func NewService(repo *Repo, retrievalSvc ...*retrieval.Service) *Service {
 	return s
 }
 
-func (s *Service) CreateLog(ctx context.Context, userID string, req CreateLogRequest) (*SkillLog, error) {
-	return s.repo.CreateLog(ctx, userID, req)
+func (s *Service) CreateLog(ctx context.Context, owner ownership.Owner, req CreateLogRequest) (*SkillLog, error) {
+	return s.repo.CreateLog(ctx, owner, req)
 }
 
-func (s *Service) ListLogs(ctx context.Context, userID string, params LogListParams) ([]SkillLog, error) {
-	return s.repo.ListLogs(ctx, userID, params)
+func (s *Service) ListLogs(ctx context.Context, accountID string, params LogListParams) ([]SkillLog, error) {
+	return s.repo.ListLogs(ctx, accountID, params)
 }
 
-func (s *Service) CountLogs(ctx context.Context, userID string, params LogListParams) (int, error) {
-	return s.repo.CountLogs(ctx, userID, params)
+func (s *Service) CountLogs(ctx context.Context, accountID string, params LogListParams) (int, error) {
+	return s.repo.CountLogs(ctx, accountID, params)
 }
 
-func (s *Service) CreateVersion(ctx context.Context, userID string, req CreateVersionRequest) (*SkillVersion, error) {
-	return s.repo.CreateVersion(ctx, userID, req)
+func (s *Service) CreateVersion(ctx context.Context, owner ownership.Owner, req CreateVersionRequest) (*SkillVersion, error) {
+	return s.repo.CreateVersion(ctx, owner, req)
 }
 
-func (s *Service) ListVersions(ctx context.Context, userID string, params VersionListParams) ([]SkillVersion, error) {
-	return s.repo.ListVersions(ctx, userID, params)
+func (s *Service) ListVersions(ctx context.Context, accountID string, params VersionListParams) ([]SkillVersion, error) {
+	return s.repo.ListVersions(ctx, accountID, params)
 }
 
-func (s *Service) GetActiveVersion(ctx context.Context, userID, skillName string) (*SkillVersion, error) {
-	return s.repo.GetActiveVersion(ctx, userID, skillName)
+func (s *Service) GetActiveVersion(ctx context.Context, accountID, skillName string) (*SkillVersion, error) {
+	return s.repo.GetActiveVersion(ctx, accountID, skillName)
 }
 
-func (s *Service) ActivateVersion(ctx context.Context, userID, id string) (*SkillVersion, error) {
-	return s.repo.ActivateVersion(ctx, userID, id)
+func (s *Service) ActivateVersion(ctx context.Context, accountID, id string) (*SkillVersion, error) {
+	return s.repo.ActivateVersion(ctx, accountID, id)
 }
 
-func (s *Service) GetSkillStats(ctx context.Context, userID, skillName string) (*SkillStats, error) {
-	return s.repo.GetSkillStats(ctx, userID, skillName)
+func (s *Service) GetSkillStats(ctx context.Context, accountID, skillName string) (*SkillStats, error) {
+	return s.repo.GetSkillStats(ctx, accountID, skillName)
 }
 
-func (s *Service) SkillSignals(ctx context.Context, userID, skillName string, limit int) ([]SkillLog, error) {
-	return s.repo.SkillSignals(ctx, userID, skillName, limit)
+func (s *Service) SkillSignals(ctx context.Context, accountID, skillName string, limit int) ([]SkillLog, error) {
+	return s.repo.SkillSignals(ctx, accountID, skillName, limit)
 }
 
-func (s *Service) CreateSource(ctx context.Context, userID string, req CreateSkillSourceRequest) (*SkillSource, error) {
+func (s *Service) CreateSource(ctx context.Context, owner ownership.Owner, req CreateSkillSourceRequest) (*SkillSource, error) {
 	normalized, err := normalizeSourceRequest(req)
 	if err != nil {
 		return nil, err
 	}
-	return s.repo.UpsertSource(ctx, userID, normalized)
+	return s.repo.UpsertSource(ctx, owner, normalized)
 }
 
-func (s *Service) ListSources(ctx context.Context, userID string, params SkillSourceListParams) ([]SkillSource, error) {
+func (s *Service) ListSources(ctx context.Context, accountID string, params SkillSourceListParams) ([]SkillSource, error) {
 	params.Type = strings.TrimSpace(strings.ToLower(params.Type))
 	params.Status = strings.TrimSpace(strings.ToLower(params.Status))
-	return s.repo.ListSources(ctx, userID, params)
+	return s.repo.ListSources(ctx, accountID, params)
 }
 
-func (s *Service) GetSource(ctx context.Context, userID, id string) (*SkillSource, error) {
-	return s.repo.GetSource(ctx, userID, id)
+func (s *Service) GetSource(ctx context.Context, accountID, id string) (*SkillSource, error) {
+	return s.repo.GetSource(ctx, accountID, id)
 }
 
-func (s *Service) ListSourceRevisions(ctx context.Context, userID, sourceID string, limit, offset int) ([]SkillSourceRevision, error) {
-	if _, err := s.repo.GetSource(ctx, userID, sourceID); err != nil {
+func (s *Service) ListSourceRevisions(ctx context.Context, accountID, sourceID string, limit, offset int) ([]SkillSourceRevision, error) {
+	if _, err := s.repo.GetSource(ctx, accountID, sourceID); err != nil {
 		return nil, err
 	}
-	return s.repo.ListSourceRevisions(ctx, userID, sourceID, limit, offset)
+	return s.repo.ListSourceRevisions(ctx, accountID, sourceID, limit, offset)
 }
 
-func (s *Service) ListVersionFiles(ctx context.Context, userID, versionID string) ([]SkillVersionFile, error) {
-	return s.repo.ListVersionFiles(ctx, userID, versionID)
+func (s *Service) ListVersionFiles(ctx context.Context, accountID, versionID string) ([]SkillVersionFile, error) {
+	return s.repo.ListVersionFiles(ctx, accountID, versionID)
 }
 
-func (s *Service) SubmitLocalSnapshot(ctx context.Context, userID, sourceID string, req SubmitLocalSnapshotRequest) (*SubmitLocalSnapshotResponse, error) {
-	source, err := s.repo.GetSource(ctx, userID, sourceID)
+func (s *Service) SubmitLocalSnapshot(ctx context.Context, owner ownership.Owner, sourceID string, req SubmitLocalSnapshotRequest) (*SubmitLocalSnapshotResponse, error) {
+	source, err := s.repo.GetSource(ctx, owner.Account(), sourceID)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +154,7 @@ func (s *Service) SubmitLocalSnapshot(ctx context.Context, userID, sourceID stri
 		TreeHash:        treeHash,
 		PackageHash:     packageHash,
 	}
-	revision, skillVersion, storedFiles, err := s.repo.IngestLocalSnapshot(ctx, userID, source, versionReq, revisionIn, files)
+	revision, skillVersion, storedFiles, err := s.repo.IngestLocalSnapshot(ctx, owner, source, versionReq, revisionIn, files)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +166,7 @@ func (s *Service) SubmitLocalSnapshot(ctx context.Context, userID, sourceID stri
 		Files:    storedFiles,
 	}
 	if boolDefault(req.Index, true) {
-		indexResp, err := s.IndexActiveVersions(ctx, userID, skillName)
+		indexResp, err := s.IndexActiveVersions(ctx, owner, skillName)
 		if err != nil {
 			indexResp = &IndexSkillsResponse{
 				Indexed: []IndexedSkill{},
@@ -177,12 +178,12 @@ func (s *Service) SubmitLocalSnapshot(ctx context.Context, userID, sourceID stri
 	return resp, nil
 }
 
-func (s *Service) IndexActiveVersions(ctx context.Context, userID, skillName string) (*IndexSkillsResponse, error) {
+func (s *Service) IndexActiveVersions(ctx context.Context, owner ownership.Owner, skillName string) (*IndexSkillsResponse, error) {
 	if s.retrieval == nil {
 		return nil, fmt.Errorf("retrieval service is not configured")
 	}
 	skillName = strings.TrimSpace(skillName)
-	versions, err := s.repo.ListActiveVersions(ctx, userID, skillName)
+	versions, err := s.repo.ListActiveVersions(ctx, owner.Account(), skillName)
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +193,7 @@ func (s *Service) IndexActiveVersions(ctx context.Context, userID, skillName str
 		Errors:  make([]IndexError, 0),
 	}
 	for _, version := range versions {
-		doc, err := s.retrieval.IndexDocument(ctx, userID, retrieval.UpsertDocumentInput{
+		doc, err := s.retrieval.IndexDocument(ctx, owner, retrieval.UpsertDocumentInput{
 			Namespace:  retrieval.NamespaceSkills,
 			SourceType: "skill_version",
 			SourceID:   version.SkillName,
@@ -224,7 +225,7 @@ func (s *Service) IndexActiveVersions(ctx context.Context, userID, skillName str
 	return resp, nil
 }
 
-func (s *Service) Search(ctx context.Context, userID string, req SearchSkillsRequest) (*SearchSkillsResponse, error) {
+func (s *Service) Search(ctx context.Context, owner ownership.Owner, req SearchSkillsRequest) (*SearchSkillsResponse, error) {
 	if s.retrieval == nil {
 		return nil, fmt.Errorf("retrieval service is not configured")
 	}
@@ -236,7 +237,7 @@ func (s *Service) Search(ctx context.Context, userID string, req SearchSkillsReq
 	if topK <= 0 || topK > 20 {
 		topK = 5
 	}
-	results, err := s.retrieval.Search(ctx, userID, retrieval.SearchRequest{
+	results, err := s.retrieval.Search(ctx, owner, retrieval.SearchRequest{
 		Namespace: retrieval.NamespaceSkills,
 		Query:     req.Query,
 		TopK:      topK,

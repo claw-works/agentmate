@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/wellxie/agentmate/internal/ownership"
 )
 
 type Repo struct {
@@ -16,7 +17,7 @@ func NewRepo(pool *pgxpool.Pool) *Repo {
 	return &Repo{pool: pool}
 }
 
-func (r *Repo) Create(ctx context.Context, userID string, req CreateReportRequest, sourceKeyID *string) (*Report, error) {
+func (r *Repo) Create(ctx context.Context, owner ownership.Owner, req CreateReportRequest) (*Report, error) {
 	tags := req.Tags
 	if tags == nil {
 		tags = []string{}
@@ -30,29 +31,29 @@ func (r *Repo) Create(ctx context.Context, userID string, req CreateReportReques
 	}
 	var rpt Report
 	err := r.pool.QueryRow(ctx,
-		`INSERT INTO reports (user_id, title, content, format, tags, source, source_key_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
-		 RETURNING id, user_id, title, content, format, tags, source, source_key_id, created_at, updated_at`,
-		userID, req.Title, req.Content, format, tags, req.Source, sourceKeyID,
-	).Scan(&rpt.ID, &rpt.UserID, &rpt.Title, &rpt.Content, &rpt.Format, &rpt.Tags, &rpt.Source, &rpt.SourceKeyID, &rpt.CreatedAt, &rpt.UpdatedAt)
+		`INSERT INTO reports (account_id, user_id, key_id, title, content, format, tags, source, source_key_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $3)
+		 RETURNING id, account_id, user_id, key_id, title, content, format, tags, source, source_key_id, created_at, updated_at`,
+		owner.Account(), owner.UserID, owner.KeyID, req.Title, req.Content, format, tags, req.Source,
+	).Scan(&rpt.ID, &rpt.AccountID, &rpt.UserID, &rpt.KeyID, &rpt.Title, &rpt.Content, &rpt.Format, &rpt.Tags, &rpt.Source, &rpt.SourceKeyID, &rpt.CreatedAt, &rpt.UpdatedAt)
 	return &rpt, err
 }
 
-func (r *Repo) Get(ctx context.Context, userID, id string) (*Report, error) {
+func (r *Repo) Get(ctx context.Context, accountID, id string) (*Report, error) {
 	var rpt Report
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, user_id, title, content, format, tags, source, source_key_id, created_at, updated_at
-		 FROM reports WHERE id = $1 AND user_id = $2`, id, userID,
-	).Scan(&rpt.ID, &rpt.UserID, &rpt.Title, &rpt.Content, &rpt.Format, &rpt.Tags, &rpt.Source, &rpt.SourceKeyID, &rpt.CreatedAt, &rpt.UpdatedAt)
+		`SELECT id, account_id, user_id, key_id, title, content, format, tags, source, source_key_id, created_at, updated_at
+		 FROM reports WHERE id = $1 AND account_id = $2`, id, accountID,
+	).Scan(&rpt.ID, &rpt.AccountID, &rpt.UserID, &rpt.KeyID, &rpt.Title, &rpt.Content, &rpt.Format, &rpt.Tags, &rpt.Source, &rpt.SourceKeyID, &rpt.CreatedAt, &rpt.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	return &rpt, nil
 }
 
-func (r *Repo) Count(ctx context.Context, userID string, params ListReportsParams) (int, error) {
-	query := `SELECT count(*) FROM reports WHERE user_id = $1`
-	args := []any{userID}
+func (r *Repo) Count(ctx context.Context, accountID string, params ListReportsParams) (int, error) {
+	query := `SELECT count(*) FROM reports WHERE account_id = $1`
+	args := []any{accountID}
 	argIdx := 2
 	if params.Tag != "" {
 		query += fmt.Sprintf(" AND $%d = ANY(tags)", argIdx)
@@ -74,9 +75,9 @@ func (r *Repo) Count(ctx context.Context, userID string, params ListReportsParam
 	return count, err
 }
 
-func (r *Repo) List(ctx context.Context, userID string, params ListReportsParams) ([]Report, error) {
-	query := `SELECT id, user_id, title, format, tags, source, source_key_id, created_at, updated_at FROM reports WHERE user_id = $1`
-	args := []any{userID}
+func (r *Repo) List(ctx context.Context, accountID string, params ListReportsParams) ([]Report, error) {
+	query := `SELECT id, account_id, user_id, key_id, title, format, tags, source, source_key_id, created_at, updated_at FROM reports WHERE account_id = $1`
+	args := []any{accountID}
 	argIdx := 2
 
 	if params.Tag != "" {
@@ -118,7 +119,7 @@ func (r *Repo) List(ctx context.Context, userID string, params ListReportsParams
 	reports := make([]Report, 0)
 	for rows.Next() {
 		var rpt Report
-		if err := rows.Scan(&rpt.ID, &rpt.UserID, &rpt.Title, &rpt.Format, &rpt.Tags, &rpt.Source, &rpt.SourceKeyID, &rpt.CreatedAt, &rpt.UpdatedAt); err != nil {
+		if err := rows.Scan(&rpt.ID, &rpt.AccountID, &rpt.UserID, &rpt.KeyID, &rpt.Title, &rpt.Format, &rpt.Tags, &rpt.Source, &rpt.SourceKeyID, &rpt.CreatedAt, &rpt.UpdatedAt); err != nil {
 			return nil, err
 		}
 		reports = append(reports, rpt)
@@ -126,8 +127,8 @@ func (r *Repo) List(ctx context.Context, userID string, params ListReportsParams
 	return reports, nil
 }
 
-func (r *Repo) Update(ctx context.Context, userID, id string, req UpdateReportRequest) (*Report, error) {
-	existing, err := r.Get(ctx, userID, id)
+func (r *Repo) Update(ctx context.Context, accountID, id string, req UpdateReportRequest) (*Report, error) {
+	existing, err := r.Get(ctx, accountID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -147,15 +148,15 @@ func (r *Repo) Update(ctx context.Context, userID, id string, req UpdateReportRe
 	var rpt Report
 	err = r.pool.QueryRow(ctx,
 		`UPDATE reports SET title=$3, tags=$4, source=$5, updated_at=now()
-		 WHERE id=$1 AND user_id=$2
-		 RETURNING id, user_id, title, content, format, tags, source, source_key_id, created_at, updated_at`,
-		id, userID, existing.Title, tags, existing.Source,
-	).Scan(&rpt.ID, &rpt.UserID, &rpt.Title, &rpt.Content, &rpt.Format, &rpt.Tags, &rpt.Source, &rpt.SourceKeyID, &rpt.CreatedAt, &rpt.UpdatedAt)
+		 WHERE id=$1 AND account_id=$2
+		 RETURNING id, account_id, user_id, key_id, title, content, format, tags, source, source_key_id, created_at, updated_at`,
+		id, accountID, existing.Title, tags, existing.Source,
+	).Scan(&rpt.ID, &rpt.AccountID, &rpt.UserID, &rpt.KeyID, &rpt.Title, &rpt.Content, &rpt.Format, &rpt.Tags, &rpt.Source, &rpt.SourceKeyID, &rpt.CreatedAt, &rpt.UpdatedAt)
 	return &rpt, err
 }
 
-func (r *Repo) Delete(ctx context.Context, userID, id string) error {
-	_, err := r.pool.Exec(ctx, "DELETE FROM reports WHERE id = $1 AND user_id = $2", id, userID)
+func (r *Repo) Delete(ctx context.Context, accountID, id string) error {
+	_, err := r.pool.Exec(ctx, "DELETE FROM reports WHERE id = $1 AND account_id = $2", id, accountID)
 	return err
 }
 
@@ -164,12 +165,12 @@ type SourceStat struct {
 	Count  int    `json:"count"`
 }
 
-func (r *Repo) ListSources(ctx context.Context, userID string) ([]SourceStat, error) {
+func (r *Repo) ListSources(ctx context.Context, accountID string) ([]SourceStat, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT source, count(*) as count FROM reports
-		 WHERE user_id = $1 AND source != ''
+		 WHERE account_id = $1 AND source != ''
 		 GROUP BY source ORDER BY count DESC, source`,
-		userID,
+		accountID,
 	)
 	if err != nil {
 		return nil, err

@@ -75,8 +75,8 @@ func (h *Handler) CreateAPIKey(c *gin.Context) {
 		}
 	}
 
-	userID := c.GetString(ContextUserID)
-	key, ak, err := h.svc.CreateAPIKey(c.Request.Context(), userID, req.Name, req.Scopes)
+	owner := OwnerFromContext(c)
+	key, ak, err := h.svc.CreateAPIKey(c.Request.Context(), owner.Account(), owner.UserID, req.Name, req.Scopes)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -85,8 +85,8 @@ func (h *Handler) CreateAPIKey(c *gin.Context) {
 }
 
 func (h *Handler) ListAPIKeys(c *gin.Context) {
-	userID := c.GetString(ContextUserID)
-	keys, err := h.svc.ListAPIKeys(c.Request.Context(), userID)
+	owner := OwnerFromContext(c)
+	keys, err := h.svc.ListAPIKeys(c.Request.Context(), owner.Account())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -106,9 +106,9 @@ func (h *Handler) DeleteAPIKey(c *gin.Context) {
 		}
 	}
 
-	userID := c.GetString(ContextUserID)
 	keyID := c.Param("id")
-	if err := h.svc.DeleteAPIKey(c.Request.Context(), userID, keyID); err != nil {
+	owner := OwnerFromContext(c)
+	if err := h.svc.DeleteAPIKey(c.Request.Context(), owner.Account(), keyID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

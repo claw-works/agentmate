@@ -10,12 +10,17 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/wellxie/agentmate/internal/auth"
+	"github.com/wellxie/agentmate/internal/ownership"
 )
 
+type accountIDKeyType struct{}
 type userIDKeyType struct{}
+type apiKeyIDKeyType struct{}
 type scopesKeyType struct{}
 
+var skillAccountIDKey = accountIDKeyType{}
 var skillUserIDKey = userIDKeyType{}
+var skillAPIKeyIDKey = apiKeyIDKeyType{}
 var skillScopesKey = scopesKeyType{}
 
 var skillToolScopes = map[string]string{
@@ -46,7 +51,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		mcp.WithString("user_correction", mcp.Description("What the user corrected (for user_corrected outcome)")),
 		mcp.WithNumber("duration_ms", mcp.Description("Execution duration in milliseconds")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		userID, ok := skillUserIDFromCtx(ctx)
+		owner, ok := skillOwnerFromCtx(ctx)
 		if !ok {
 			return skillErrResult("unauthorized"), nil
 		}
@@ -72,7 +77,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 				r.DurationMs = &d
 			}
 		}
-		l, err := svc.CreateLog(ctx, userID, r)
+		l, err := svc.CreateLog(ctx, owner, r)
 		if err != nil {
 			return skillErrResult(err.Error()), nil
 		}
@@ -90,7 +95,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		mcp.WithNumber("eval_pass_rate", mcp.Description("Evaluation pass rate 0.0-1.0")),
 		mcp.WithBoolean("activate", mcp.Description("Set as active version immediately (default false)")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		userID, ok := skillUserIDFromCtx(ctx)
+		owner, ok := skillOwnerFromCtx(ctx)
 		if !ok {
 			return skillErrResult("unauthorized"), nil
 		}
@@ -112,7 +117,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 				r.Activate = b
 			}
 		}
-		ver, err := svc.CreateVersion(ctx, userID, r)
+		ver, err := svc.CreateVersion(ctx, owner, r)
 		if err != nil {
 			return skillErrResult(err.Error()), nil
 		}
@@ -124,11 +129,11 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		mcp.WithDescription("Get the currently active version of a skill. Returns full content."),
 		mcp.WithString("skill_name", mcp.Required(), mcp.Description("Skill name")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		userID, ok := skillUserIDFromCtx(ctx)
+		owner, ok := skillOwnerFromCtx(ctx)
 		if !ok {
 			return skillErrResult("unauthorized"), nil
 		}
-		v, err := svc.GetActiveVersion(ctx, userID, skillStrArg(req.GetArguments(), "skill_name"))
+		v, err := svc.GetActiveVersion(ctx, owner.Account(), skillStrArg(req.GetArguments(), "skill_name"))
 		if err != nil {
 			return skillErrResult("not found"), nil
 		}
@@ -140,11 +145,11 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		mcp.WithDescription("Get aggregated performance stats for a skill: total runs, success/failure/correction rates."),
 		mcp.WithString("skill_name", mcp.Required(), mcp.Description("Skill name")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		userID, ok := skillUserIDFromCtx(ctx)
+		owner, ok := skillOwnerFromCtx(ctx)
 		if !ok {
 			return skillErrResult("unauthorized"), nil
 		}
-		stats, err := svc.GetSkillStats(ctx, userID, skillStrArg(req.GetArguments(), "skill_name"))
+		stats, err := svc.GetSkillStats(ctx, owner.Account(), skillStrArg(req.GetArguments(), "skill_name"))
 		if err != nil {
 			return skillErrResult(err.Error()), nil
 		}
@@ -157,7 +162,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		mcp.WithString("skill_name", mcp.Required(), mcp.Description("Skill name")),
 		mcp.WithNumber("limit", mcp.Description("Max results (default 10, max 50)")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		userID, ok := skillUserIDFromCtx(ctx)
+		owner, ok := skillOwnerFromCtx(ctx)
 		if !ok {
 			return skillErrResult("unauthorized"), nil
 		}
@@ -168,7 +173,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 				limit = int(f)
 			}
 		}
-		signals, err := svc.SkillSignals(ctx, userID, skillStrArg(args, "skill_name"), limit)
+		signals, err := svc.SkillSignals(ctx, owner.Account(), skillStrArg(args, "skill_name"), limit)
 		if err != nil {
 			return skillErrResult(err.Error()), nil
 		}
@@ -182,7 +187,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		mcp.WithNumber("top_k", mcp.Description("Max results (default 5, max 20)")),
 		mcp.WithBoolean("include_content", mcp.Description("Return indexed content for selected skills")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		userID, ok := skillUserIDFromCtx(ctx)
+		owner, ok := skillOwnerFromCtx(ctx)
 		if !ok {
 			return skillErrResult("unauthorized"), nil
 		}
@@ -192,7 +197,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 			TopK:           skillIntArg(args, "top_k"),
 			IncludeContent: skillBoolArg(args, "include_content"),
 		}
-		result, err := svc.Search(ctx, userID, searchReq)
+		result, err := svc.Search(ctx, owner, searchReq)
 		if err != nil {
 			return skillErrResult(err.Error()), nil
 		}
@@ -204,11 +209,11 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		mcp.WithDescription("Index active skill versions into the retrieval store. Optionally restrict to one skill_name."),
 		mcp.WithString("skill_name", mcp.Description("Optional skill name to reindex")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		userID, ok := skillUserIDFromCtx(ctx)
+		owner, ok := skillOwnerFromCtx(ctx)
 		if !ok {
 			return skillErrResult("unauthorized"), nil
 		}
-		result, err := svc.IndexActiveVersions(ctx, userID, skillStrArg(req.GetArguments(), "skill_name"))
+		result, err := svc.IndexActiveVersions(ctx, owner, skillStrArg(req.GetArguments(), "skill_name"))
 		if err != nil {
 			return skillErrResult(err.Error()), nil
 		}
@@ -224,7 +229,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		mcp.WithNumber("limit", mcp.Description("Max results (default 20)")),
 		mcp.WithNumber("offset", mcp.Description("Offset for pagination")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		userID, ok := skillUserIDFromCtx(ctx)
+		owner, ok := skillOwnerFromCtx(ctx)
 		if !ok {
 			return skillErrResult("unauthorized"), nil
 		}
@@ -236,7 +241,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 			Limit:     skillIntArg(args, "limit"),
 			Offset:    skillIntArg(args, "offset"),
 		}
-		list, err := svc.ListLogs(ctx, userID, params)
+		list, err := svc.ListLogs(ctx, owner.Account(), params)
 		if err != nil {
 			return skillErrResult(err.Error()), nil
 		}
@@ -262,7 +267,9 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 			if err != nil {
 				return ctx
 			}
+			ctx = context.WithValue(ctx, skillAccountIDKey, ak.AccountID)
 			ctx = context.WithValue(ctx, skillUserIDKey, ak.UserID)
+			ctx = context.WithValue(ctx, skillAPIKeyIDKey, ak.ID)
 			return context.WithValue(ctx, skillScopesKey, ak.Scopes)
 		}),
 	)
@@ -275,6 +282,22 @@ func skillUserIDFromCtx(ctx context.Context) (string, bool) {
 	return id, ok && id != ""
 }
 
+func skillOwnerFromCtx(ctx context.Context) (ownership.Owner, bool) {
+	userID, ok := skillUserIDFromCtx(ctx)
+	if !ok {
+		return ownership.Owner{}, false
+	}
+	accountID, _ := ctx.Value(skillAccountIDKey).(string)
+	if accountID == "" {
+		accountID = userID
+	}
+	var keyID *string
+	if id, ok := ctx.Value(skillAPIKeyIDKey).(string); ok && id != "" {
+		keyID = &id
+	}
+	return ownership.Owner{AccountID: accountID, UserID: userID, KeyID: keyID}, true
+}
+
 func skillScopesFromCtx(ctx context.Context) ([]string, bool) {
 	scopes, ok := ctx.Value(skillScopesKey).([]string)
 	return scopes, ok
@@ -283,7 +306,7 @@ func skillScopesFromCtx(ctx context.Context) ([]string, bool) {
 func skillScopeMiddleware(requiredScopes map[string]string) server.ToolHandlerMiddleware {
 	return func(next server.ToolHandlerFunc) server.ToolHandlerFunc {
 		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			if _, ok := skillUserIDFromCtx(ctx); !ok {
+			if _, ok := skillOwnerFromCtx(ctx); !ok {
 				return skillErrResult("unauthorized"), nil
 			}
 			scopes, ok := skillScopesFromCtx(ctx)

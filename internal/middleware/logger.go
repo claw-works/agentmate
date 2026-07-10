@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/wellxie/agentmate/internal/auth"
 )
 
 func APILogger(pool *pgxpool.Pool) gin.HandlerFunc {
@@ -14,8 +15,9 @@ func APILogger(pool *pgxpool.Pool) gin.HandlerFunc {
 		c.Next()
 
 		latency := int(time.Since(start).Milliseconds())
-		userID, _ := c.Get("user_id")
-		keyID, _ := c.Get("key_id")
+		accountID, _ := c.Get(auth.ContextAccountID)
+		userID, _ := c.Get(auth.ContextUserID)
+		keyID, _ := c.Get(auth.ContextKeyID)
 		method := c.Request.Method
 		path := c.FullPath()
 		if path == "" {
@@ -25,9 +27,9 @@ func APILogger(pool *pgxpool.Pool) gin.HandlerFunc {
 
 		go func() {
 			pool.Exec(context.Background(),
-				`INSERT INTO api_logs (user_id, key_id, method, path, status_code, latency_ms)
-				 VALUES ($1, $2, $3, $4, $5, $6)`,
-				userID, keyID, method, path, statusCode, latency,
+				`INSERT INTO api_logs (account_id, user_id, key_id, method, path, status_code, latency_ms)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+				accountID, userID, keyID, method, path, statusCode, latency,
 			)
 		}()
 	}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/wellxie/agentmate/internal/ownership"
 )
 
 type Repo struct {
@@ -22,7 +23,7 @@ func NewRepo(pool *pgxpool.Pool) *Repo {
 
 // ─── Skill Sources ───
 
-func (r *Repo) UpsertSource(ctx context.Context, userID string, req CreateSkillSourceRequest) (*SkillSource, error) {
+func (r *Repo) UpsertSource(ctx context.Context, owner ownership.Owner, req CreateSkillSourceRequest) (*SkillSource, error) {
 	metadata, err := sourceMetadata(req.Metadata)
 	if err != nil {
 		return nil, err
@@ -30,10 +31,12 @@ func (r *Repo) UpsertSource(ctx context.Context, userID string, req CreateSkillS
 	var s SkillSource
 	err = r.pool.QueryRow(ctx,
 		`INSERT INTO skill_sources
-		 (user_id, name, type, repository_url, package_path, default_ref, sync_mode, visibility, status, metadata)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		 ON CONFLICT (user_id, type, repository_url, package_path)
+		 (account_id, user_id, key_id, name, type, repository_url, package_path, default_ref, sync_mode, visibility, status, metadata)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		 ON CONFLICT (account_id, type, repository_url, package_path)
 		 DO UPDATE SET
+		   user_id = EXCLUDED.user_id,
+		   key_id = EXCLUDED.key_id,
 		   name = EXCLUDED.name,
 		   default_ref = EXCLUDED.default_ref,
 		   sync_mode = EXCLUDED.sync_mode,
@@ -41,26 +44,26 @@ func (r *Repo) UpsertSource(ctx context.Context, userID string, req CreateSkillS
 		   status = EXCLUDED.status,
 		   metadata = EXCLUDED.metadata,
 		   updated_at = NOW()
-		 RETURNING id, user_id, name, type, repository_url, package_path, default_ref, sync_mode, visibility, status, metadata, created_at, updated_at`,
-		userID, req.Name, req.Type, req.RepositoryURL, req.PackagePath, req.DefaultRef, req.SyncMode, req.Visibility, req.Status, metadata,
+		 RETURNING id, account_id, user_id, key_id, name, type, repository_url, package_path, default_ref, sync_mode, visibility, status, metadata, created_at, updated_at`,
+		owner.Account(), owner.UserID, owner.KeyID, req.Name, req.Type, req.RepositoryURL, req.PackagePath, req.DefaultRef, req.SyncMode, req.Visibility, req.Status, metadata,
 	).Scan(scanSource(&s)...)
 	return &s, err
 }
 
-func (r *Repo) ListSources(ctx context.Context, userID string, params SkillSourceListParams) ([]SkillSource, error) {
+func (r *Repo) ListSources(ctx context.Context, accountID string, params SkillSourceListParams) ([]SkillSource, error) {
 	limit := params.Limit
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, user_id, name, type, repository_url, package_path, default_ref, sync_mode, visibility, status, metadata, created_at, updated_at
+		`SELECT id, account_id, user_id, key_id, name, type, repository_url, package_path, default_ref, sync_mode, visibility, status, metadata, created_at, updated_at
 		 FROM skill_sources
-		 WHERE user_id = $1
+		 WHERE account_id = $1
 		   AND ($2 = '' OR type = $2)
 		   AND ($3 = '' OR status = $3)
 		 ORDER BY updated_at DESC, created_at DESC
 		 LIMIT $4 OFFSET $5`,
-		userID, params.Type, params.Status, limit, params.Offset,
+		accountID, params.Type, params.Status, limit, params.Offset,
 	)
 	if err != nil {
 		return nil, err
@@ -77,13 +80,13 @@ func (r *Repo) ListSources(ctx context.Context, userID string, params SkillSourc
 	return items, rows.Err()
 }
 
-func (r *Repo) GetSource(ctx context.Context, userID, id string) (*SkillSource, error) {
+func (r *Repo) GetSource(ctx context.Context, accountID, id string) (*SkillSource, error) {
 	var s SkillSource
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, user_id, name, type, repository_url, package_path, default_ref, sync_mode, visibility, status, metadata, created_at, updated_at
+		`SELECT id, account_id, user_id, key_id, name, type, repository_url, package_path, default_ref, sync_mode, visibility, status, metadata, created_at, updated_at
 		 FROM skill_sources
-		 WHERE id = $1 AND user_id = $2`,
-		id, userID,
+		 WHERE id = $1 AND account_id = $2`,
+		id, accountID,
 	).Scan(scanSource(&s)...)
 	if err != nil {
 		return nil, err
@@ -91,17 +94,17 @@ func (r *Repo) GetSource(ctx context.Context, userID, id string) (*SkillSource, 
 	return &s, nil
 }
 
-func (r *Repo) ListSourceRevisions(ctx context.Context, userID, sourceID string, limit, offset int) ([]SkillSourceRevision, error) {
+func (r *Repo) ListSourceRevisions(ctx context.Context, accountID, sourceID string, limit, offset int) ([]SkillSourceRevision, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, user_id, source_id, skill_version_id, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error, created_at
+		`SELECT id, account_id, user_id, key_id, source_id, skill_version_id, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error, created_at
 		 FROM skill_source_revisions
-		 WHERE user_id = $1 AND source_id = $2
+		 WHERE account_id = $1 AND source_id = $2
 		 ORDER BY created_at DESC
 		 LIMIT $3 OFFSET $4`,
-		userID, sourceID, limit, offset,
+		accountID, sourceID, limit, offset,
 	)
 	if err != nil {
 		return nil, err
@@ -120,7 +123,7 @@ func (r *Repo) ListSourceRevisions(ctx context.Context, userID, sourceID string,
 
 // ─── Skill Logs ───
 
-func (r *Repo) CreateLog(ctx context.Context, userID string, req CreateLogRequest) (*SkillLog, error) {
+func (r *Repo) CreateLog(ctx context.Context, owner ownership.Owner, req CreateLogRequest) (*SkillLog, error) {
 	wasTriggered := true
 	if req.WasTriggered != nil {
 		wasTriggered = *req.WasTriggered
@@ -136,30 +139,30 @@ func (r *Repo) CreateLog(ctx context.Context, userID string, req CreateLogReques
 
 	var l SkillLog
 	err := r.pool.QueryRow(ctx,
-		`INSERT INTO skill_logs (user_id, skill_name, skill_version, agent_id, session_id, trigger_text, was_triggered, outcome, failure_reason, user_correction, tool_calls, duration_ms)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-		 RETURNING id, user_id, skill_name, skill_version, agent_id, session_id, trigger_text, was_triggered, outcome, failure_reason, user_correction, tool_calls, duration_ms, created_at`,
-		userID, req.SkillName, version, req.AgentID, req.SessionID, req.TriggerText,
+		`INSERT INTO skill_logs (account_id, user_id, key_id, skill_name, skill_version, agent_id, session_id, trigger_text, was_triggered, outcome, failure_reason, user_correction, tool_calls, duration_ms)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		 RETURNING id, account_id, user_id, key_id, skill_name, skill_version, agent_id, session_id, trigger_text, was_triggered, outcome, failure_reason, user_correction, tool_calls, duration_ms, created_at`,
+		nullableString(owner.Account()), nullableString(owner.UserID), owner.KeyID, req.SkillName, version, req.AgentID, req.SessionID, req.TriggerText,
 		wasTriggered, req.Outcome, req.FailureReason, req.UserCorrection, toolCalls, req.DurationMs,
-	).Scan(&l.ID, &l.UserID, &l.SkillName, &l.SkillVersion, &l.AgentID, &l.SessionID, &l.TriggerText,
+	).Scan(&l.ID, &l.AccountID, &l.UserID, &l.KeyID, &l.SkillName, &l.SkillVersion, &l.AgentID, &l.SessionID, &l.TriggerText,
 		&l.WasTriggered, &l.Outcome, &l.FailureReason, &l.UserCorrection, &l.ToolCalls, &l.DurationMs, &l.CreatedAt)
 	return &l, err
 }
 
-func (r *Repo) ListLogs(ctx context.Context, userID string, params LogListParams) ([]SkillLog, error) {
+func (r *Repo) ListLogs(ctx context.Context, accountID string, params LogListParams) ([]SkillLog, error) {
 	limit := params.Limit
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, user_id, skill_name, skill_version, agent_id, session_id, trigger_text, was_triggered, outcome, failure_reason, user_correction, tool_calls, duration_ms, created_at
+		`SELECT id, account_id, user_id, key_id, skill_name, skill_version, agent_id, session_id, trigger_text, was_triggered, outcome, failure_reason, user_correction, tool_calls, duration_ms, created_at
 		 FROM skill_logs
-		 WHERE user_id = $1
+		 WHERE account_id = $1
 		   AND ($2 = '' OR skill_name = $2)
 		   AND ($3 = '' OR agent_id = $3)
 		   AND ($4 = '' OR outcome = $4)
 		 ORDER BY created_at DESC LIMIT $5 OFFSET $6`,
-		userID, params.SkillName, params.AgentID, params.Outcome, limit, params.Offset,
+		accountID, params.SkillName, params.AgentID, params.Outcome, limit, params.Offset,
 	)
 	if err != nil {
 		return nil, err
@@ -168,7 +171,7 @@ func (r *Repo) ListLogs(ctx context.Context, userID string, params LogListParams
 	items := make([]SkillLog, 0)
 	for rows.Next() {
 		var l SkillLog
-		if err := rows.Scan(&l.ID, &l.UserID, &l.SkillName, &l.SkillVersion, &l.AgentID, &l.SessionID, &l.TriggerText,
+		if err := rows.Scan(&l.ID, &l.AccountID, &l.UserID, &l.KeyID, &l.SkillName, &l.SkillVersion, &l.AgentID, &l.SessionID, &l.TriggerText,
 			&l.WasTriggered, &l.Outcome, &l.FailureReason, &l.UserCorrection, &l.ToolCalls, &l.DurationMs, &l.CreatedAt); err != nil {
 			return nil, err
 		}
@@ -177,22 +180,22 @@ func (r *Repo) ListLogs(ctx context.Context, userID string, params LogListParams
 	return items, nil
 }
 
-func (r *Repo) CountLogs(ctx context.Context, userID string, params LogListParams) (int, error) {
+func (r *Repo) CountLogs(ctx context.Context, accountID string, params LogListParams) (int, error) {
 	var count int
 	err := r.pool.QueryRow(ctx,
 		`SELECT count(*) FROM skill_logs
-		 WHERE user_id = $1
+		 WHERE account_id = $1
 		   AND ($2 = '' OR skill_name = $2)
 		   AND ($3 = '' OR agent_id = $3)
 		   AND ($4 = '' OR outcome = $4)`,
-		userID, params.SkillName, params.AgentID, params.Outcome,
+		accountID, params.SkillName, params.AgentID, params.Outcome,
 	).Scan(&count)
 	return count, err
 }
 
 // ─── Skill Versions ───
 
-func (r *Repo) CreateVersion(ctx context.Context, userID string, req CreateVersionRequest) (*SkillVersion, error) {
+func (r *Repo) CreateVersion(ctx context.Context, owner ownership.Owner, req CreateVersionRequest) (*SkillVersion, error) {
 	hash := sha256.Sum256([]byte(req.Content))
 	contentHash := hex.EncodeToString(hash[:])
 
@@ -204,8 +207,8 @@ func (r *Repo) CreateVersion(ctx context.Context, userID string, req CreateVersi
 
 	if req.Activate {
 		_, err = tx.Exec(ctx,
-			`UPDATE skill_versions SET is_active = false WHERE skill_name = $1 AND user_id = $2 AND is_active = true`,
-			req.SkillName, userID)
+			`UPDATE skill_versions SET is_active = false WHERE skill_name = $1 AND account_id = $2 AND is_active = true`,
+			req.SkillName, owner.Account())
 		if err != nil {
 			return nil, err
 		}
@@ -213,11 +216,11 @@ func (r *Repo) CreateVersion(ctx context.Context, userID string, req CreateVersi
 
 	var v SkillVersion
 	err = tx.QueryRow(ctx,
-		`INSERT INTO skill_versions (user_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		 RETURNING id, user_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at`,
-		userID, req.SkillName, req.Version, req.Content, contentHash, req.AgentID, req.ChangeSummary, req.EvalPassRate, req.Activate,
-	).Scan(&v.ID, &v.UserID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt)
+		`INSERT INTO skill_versions (account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		 RETURNING id, account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at`,
+		nullableString(owner.Account()), nullableString(owner.UserID), owner.KeyID, req.SkillName, req.Version, req.Content, contentHash, req.AgentID, req.ChangeSummary, req.EvalPassRate, req.Activate,
+	).Scan(&v.ID, &v.AccountID, &v.UserID, &v.KeyID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -228,17 +231,17 @@ func (r *Repo) CreateVersion(ctx context.Context, userID string, req CreateVersi
 	return &v, nil
 }
 
-func (r *Repo) ListVersions(ctx context.Context, userID string, params VersionListParams) ([]SkillVersion, error) {
+func (r *Repo) ListVersions(ctx context.Context, accountID string, params VersionListParams) ([]SkillVersion, error) {
 	limit := params.Limit
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, user_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at
+		`SELECT id, account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at
 		 FROM skill_versions
-		 WHERE user_id = $1 AND ($2 = '' OR skill_name = $2)
+		 WHERE account_id = $1 AND ($2 = '' OR skill_name = $2)
 		 ORDER BY published_at DESC LIMIT $3 OFFSET $4`,
-		userID, params.SkillName, limit, params.Offset,
+		accountID, params.SkillName, limit, params.Offset,
 	)
 	if err != nil {
 		return nil, err
@@ -247,7 +250,7 @@ func (r *Repo) ListVersions(ctx context.Context, userID string, params VersionLi
 	items := make([]SkillVersion, 0)
 	for rows.Next() {
 		var v SkillVersion
-		if err := rows.Scan(&v.ID, &v.UserID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt); err != nil {
+		if err := rows.Scan(&v.ID, &v.AccountID, &v.UserID, &v.KeyID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, v)
@@ -255,27 +258,27 @@ func (r *Repo) ListVersions(ctx context.Context, userID string, params VersionLi
 	return items, nil
 }
 
-func (r *Repo) GetActiveVersion(ctx context.Context, userID, skillName string) (*SkillVersion, error) {
+func (r *Repo) GetActiveVersion(ctx context.Context, accountID, skillName string) (*SkillVersion, error) {
 	var v SkillVersion
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, user_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at
+		`SELECT id, account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at
 		 FROM skill_versions
-		 WHERE user_id = $1 AND skill_name = $2 AND is_active = true`,
-		userID, skillName,
-	).Scan(&v.ID, &v.UserID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt)
+		 WHERE account_id = $1 AND skill_name = $2 AND is_active = true`,
+		accountID, skillName,
+	).Scan(&v.ID, &v.AccountID, &v.UserID, &v.KeyID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt)
 	if err != nil {
 		return nil, err
 	}
 	return &v, nil
 }
 
-func (r *Repo) ListActiveVersions(ctx context.Context, userID, skillName string) ([]SkillVersion, error) {
+func (r *Repo) ListActiveVersions(ctx context.Context, accountID, skillName string) ([]SkillVersion, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, user_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at
+		`SELECT id, account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at
 		 FROM skill_versions
-		 WHERE user_id = $1 AND is_active = true AND ($2 = '' OR skill_name = $2)
+		 WHERE account_id = $1 AND is_active = true AND ($2 = '' OR skill_name = $2)
 		 ORDER BY skill_name, published_at DESC`,
-		userID, skillName,
+		accountID, skillName,
 	)
 	if err != nil {
 		return nil, err
@@ -284,7 +287,7 @@ func (r *Repo) ListActiveVersions(ctx context.Context, userID, skillName string)
 	items := make([]SkillVersion, 0)
 	for rows.Next() {
 		var v SkillVersion
-		if err := rows.Scan(&v.ID, &v.UserID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt); err != nil {
+		if err := rows.Scan(&v.ID, &v.AccountID, &v.UserID, &v.KeyID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, v)
@@ -292,7 +295,7 @@ func (r *Repo) ListActiveVersions(ctx context.Context, userID, skillName string)
 	return items, rows.Err()
 }
 
-func (r *Repo) ActivateVersion(ctx context.Context, userID, id string) (*SkillVersion, error) {
+func (r *Repo) ActivateVersion(ctx context.Context, accountID, id string) (*SkillVersion, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -301,22 +304,22 @@ func (r *Repo) ActivateVersion(ctx context.Context, userID, id string) (*SkillVe
 
 	// Get the version to find its skill_name
 	var skillName string
-	err = tx.QueryRow(ctx, `SELECT skill_name FROM skill_versions WHERE id = $1 AND user_id = $2`, id, userID).Scan(&skillName)
+	err = tx.QueryRow(ctx, `SELECT skill_name FROM skill_versions WHERE id = $1 AND account_id = $2`, id, accountID).Scan(&skillName)
 	if err != nil {
 		return nil, err
 	}
 
-	_, err = tx.Exec(ctx, `UPDATE skill_versions SET is_active = false WHERE skill_name = $1 AND user_id = $2 AND is_active = true`, skillName, userID)
+	_, err = tx.Exec(ctx, `UPDATE skill_versions SET is_active = false WHERE skill_name = $1 AND account_id = $2 AND is_active = true`, skillName, accountID)
 	if err != nil {
 		return nil, err
 	}
 
 	var v SkillVersion
 	err = tx.QueryRow(ctx,
-		`UPDATE skill_versions SET is_active = true WHERE id = $1 AND user_id = $2
-		 RETURNING id, user_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at`,
-		id, userID,
-	).Scan(&v.ID, &v.UserID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt)
+		`UPDATE skill_versions SET is_active = true WHERE id = $1 AND account_id = $2
+		 RETURNING id, account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at`,
+		id, accountID,
+	).Scan(&v.ID, &v.AccountID, &v.UserID, &v.KeyID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -327,13 +330,13 @@ func (r *Repo) ActivateVersion(ctx context.Context, userID, id string) (*SkillVe
 	return &v, nil
 }
 
-func (r *Repo) ListVersionFiles(ctx context.Context, userID, versionID string) ([]SkillVersionFile, error) {
+func (r *Repo) ListVersionFiles(ctx context.Context, accountID, versionID string) ([]SkillVersionFile, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, user_id, source_revision_id, version_id, path, kind, sha256, size_bytes, mime_type, indexable, content_snapshot, created_at
+		`SELECT id, account_id, user_id, key_id, source_revision_id, version_id, path, kind, sha256, size_bytes, mime_type, indexable, content_snapshot, created_at
 		 FROM skill_version_files
-		 WHERE user_id = $1 AND version_id = $2
+		 WHERE account_id = $1 AND version_id = $2
 		 ORDER BY path`,
-		userID, versionID,
+		accountID, versionID,
 	)
 	if err != nil {
 		return nil, err
@@ -350,7 +353,7 @@ func (r *Repo) ListVersionFiles(ctx context.Context, userID, versionID string) (
 	return items, rows.Err()
 }
 
-func (r *Repo) IngestLocalSnapshot(ctx context.Context, userID string, source *SkillSource, versionReq CreateVersionRequest, revisionIn SkillSourceRevision, fileInputs []SkillVersionFile) (*SkillSourceRevision, *SkillVersion, []SkillVersionFile, error) {
+func (r *Repo) IngestLocalSnapshot(ctx context.Context, owner ownership.Owner, source *SkillSource, versionReq CreateVersionRequest, revisionIn SkillSourceRevision, fileInputs []SkillVersionFile) (*SkillSourceRevision, *SkillVersion, []SkillVersionFile, error) {
 	hash := sha256.Sum256([]byte(versionReq.Content))
 	contentHash := hex.EncodeToString(hash[:])
 
@@ -361,16 +364,16 @@ func (r *Repo) IngestLocalSnapshot(ctx context.Context, userID string, source *S
 	defer tx.Rollback(ctx)
 
 	if _, err := tx.Exec(ctx,
-		`UPDATE skill_sources SET status = 'active', updated_at = NOW() WHERE id = $1 AND user_id = $2`,
-		source.ID, userID,
+		`UPDATE skill_sources SET status = 'active', updated_at = NOW() WHERE id = $1 AND account_id = $2`,
+		source.ID, owner.Account(),
 	); err != nil {
 		return nil, nil, nil, err
 	}
 
 	if versionReq.Activate {
 		_, err = tx.Exec(ctx,
-			`UPDATE skill_versions SET is_active = false WHERE skill_name = $1 AND user_id = $2 AND is_active = true`,
-			versionReq.SkillName, userID)
+			`UPDATE skill_versions SET is_active = false WHERE skill_name = $1 AND account_id = $2 AND is_active = true`,
+			versionReq.SkillName, owner.Account())
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -378,18 +381,18 @@ func (r *Repo) IngestLocalSnapshot(ctx context.Context, userID string, source *S
 
 	var v SkillVersion
 	err = tx.QueryRow(ctx,
-		`SELECT id, user_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at
+		`SELECT id, account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at
 		 FROM skill_versions
-		 WHERE user_id = $1 AND skill_name = $2 AND content_hash = $3`,
-		userID, versionReq.SkillName, contentHash,
-	).Scan(&v.ID, &v.UserID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt)
+		 WHERE account_id = $1 AND skill_name = $2 AND content_hash = $3`,
+		owner.Account(), versionReq.SkillName, contentHash,
+	).Scan(&v.ID, &v.AccountID, &v.UserID, &v.KeyID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = tx.QueryRow(ctx,
-			`INSERT INTO skill_versions (user_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-			 RETURNING id, user_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at`,
-			userID, versionReq.SkillName, versionReq.Version, versionReq.Content, contentHash, versionReq.AgentID, versionReq.ChangeSummary, versionReq.EvalPassRate, versionReq.Activate,
-		).Scan(&v.ID, &v.UserID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt)
+			`INSERT INTO skill_versions (account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			 RETURNING id, account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at`,
+			nullableString(owner.Account()), nullableString(owner.UserID), owner.KeyID, versionReq.SkillName, versionReq.Version, versionReq.Content, contentHash, versionReq.AgentID, versionReq.ChangeSummary, versionReq.EvalPassRate, versionReq.Activate,
+		).Scan(&v.ID, &v.AccountID, &v.UserID, &v.KeyID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -397,10 +400,10 @@ func (r *Repo) IngestLocalSnapshot(ctx context.Context, userID string, source *S
 		return nil, nil, nil, err
 	} else if versionReq.Activate {
 		err = tx.QueryRow(ctx,
-			`UPDATE skill_versions SET is_active = true WHERE id = $1 AND user_id = $2
-			 RETURNING id, user_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at`,
-			v.ID, userID,
-		).Scan(&v.ID, &v.UserID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt)
+			`UPDATE skill_versions SET is_active = true WHERE id = $1 AND account_id = $2
+			 RETURNING id, account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at`,
+			v.ID, owner.Account(),
+		).Scan(&v.ID, &v.AccountID, &v.UserID, &v.KeyID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -408,18 +411,18 @@ func (r *Repo) IngestLocalSnapshot(ctx context.Context, userID string, source *S
 
 	var rev SkillSourceRevision
 	err = tx.QueryRow(ctx,
-		`SELECT id, user_id, source_id, skill_version_id, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error, created_at
+		`SELECT id, account_id, user_id, key_id, source_id, skill_version_id, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error, created_at
 		 FROM skill_source_revisions
-		 WHERE user_id = $1 AND source_id = $2 AND local_snapshot_id = $3`,
-		userID, source.ID, revisionIn.LocalSnapshotID,
+		 WHERE account_id = $1 AND source_id = $2 AND local_snapshot_id = $3`,
+		owner.Account(), source.ID, revisionIn.LocalSnapshotID,
 	).Scan(scanRevision(&rev)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = tx.QueryRow(ctx,
 			`INSERT INTO skill_source_revisions
-			 (user_id, source_id, skill_version_id, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error)
-			 VALUES ($1, $2, $3, '', $4, $5, $6, 'ingested', '')
-			 RETURNING id, user_id, source_id, skill_version_id, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error, created_at`,
-			userID, source.ID, v.ID, revisionIn.LocalSnapshotID, revisionIn.TreeHash, revisionIn.PackageHash,
+			 (account_id, user_id, key_id, source_id, skill_version_id, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error)
+			 VALUES ($1, $2, $3, $4, $5, '', $6, $7, $8, 'ingested', '')
+			 RETURNING id, account_id, user_id, key_id, source_id, skill_version_id, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error, created_at`,
+			owner.Account(), owner.UserID, owner.KeyID, source.ID, v.ID, revisionIn.LocalSnapshotID, revisionIn.TreeHash, revisionIn.PackageHash,
 		).Scan(scanRevision(&rev)...)
 		if err != nil {
 			return nil, nil, nil, err
@@ -430,16 +433,16 @@ func (r *Repo) IngestLocalSnapshot(ctx context.Context, userID string, source *S
 		err = tx.QueryRow(ctx,
 			`UPDATE skill_source_revisions
 			 SET skill_version_id = $1, tree_hash = $2, package_hash = $3, status = 'ingested', error = ''
-			 WHERE id = $4 AND user_id = $5
-			 RETURNING id, user_id, source_id, skill_version_id, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error, created_at`,
-			v.ID, revisionIn.TreeHash, revisionIn.PackageHash, rev.ID, userID,
+			 WHERE id = $4 AND account_id = $5
+			 RETURNING id, account_id, user_id, key_id, source_id, skill_version_id, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error, created_at`,
+			v.ID, revisionIn.TreeHash, revisionIn.PackageHash, rev.ID, owner.Account(),
 		).Scan(scanRevision(&rev)...)
 		if err != nil {
 			return nil, nil, nil, err
 		}
 	}
 
-	if _, err := tx.Exec(ctx, `DELETE FROM skill_version_files WHERE source_revision_id = $1 AND user_id = $2`, rev.ID, userID); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM skill_version_files WHERE source_revision_id = $1 AND account_id = $2`, rev.ID, owner.Account()); err != nil {
 		return nil, nil, nil, err
 	}
 	files := make([]SkillVersionFile, 0, len(fileInputs))
@@ -447,10 +450,10 @@ func (r *Repo) IngestLocalSnapshot(ctx context.Context, userID string, source *S
 		var f SkillVersionFile
 		err = tx.QueryRow(ctx,
 			`INSERT INTO skill_version_files
-			 (user_id, source_revision_id, version_id, path, kind, sha256, size_bytes, mime_type, indexable, content_snapshot)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-			 RETURNING id, user_id, source_revision_id, version_id, path, kind, sha256, size_bytes, mime_type, indexable, content_snapshot, created_at`,
-			userID, rev.ID, v.ID, input.Path, input.Kind, input.SHA256, input.SizeBytes, input.MimeType, input.Indexable, input.ContentSnapshot,
+			 (account_id, user_id, key_id, source_revision_id, version_id, path, kind, sha256, size_bytes, mime_type, indexable, content_snapshot)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			 RETURNING id, account_id, user_id, key_id, source_revision_id, version_id, path, kind, sha256, size_bytes, mime_type, indexable, content_snapshot, created_at`,
+			owner.Account(), owner.UserID, owner.KeyID, rev.ID, v.ID, input.Path, input.Kind, input.SHA256, input.SizeBytes, input.MimeType, input.Indexable, input.ContentSnapshot,
 		).Scan(scanVersionFile(&f)...)
 		if err != nil {
 			return nil, nil, nil, err
@@ -474,7 +477,7 @@ type SkillStats struct {
 	CorrectionRate float64 `json:"correction_rate"`
 }
 
-func (r *Repo) GetSkillStats(ctx context.Context, userID, skillName string) (*SkillStats, error) {
+func (r *Repo) GetSkillStats(ctx context.Context, accountID, skillName string) (*SkillStats, error) {
 	var stats SkillStats
 	stats.SkillName = skillName
 	err := r.pool.QueryRow(ctx,
@@ -484,8 +487,8 @@ func (r *Repo) GetSkillStats(ctx context.Context, userID, skillName string) (*Sk
 			COALESCE(AVG(CASE WHEN outcome = 'failure' THEN 1.0 ELSE 0.0 END), 0),
 			COALESCE(AVG(CASE WHEN outcome = 'user_corrected' THEN 1.0 ELSE 0.0 END), 0)
 		 FROM skill_logs
-		 WHERE user_id = $1 AND skill_name = $2`,
-		userID, skillName,
+		 WHERE account_id = $1 AND skill_name = $2`,
+		accountID, skillName,
 	).Scan(&stats.TotalRuns, &stats.SuccessRate, &stats.FailureRate, &stats.CorrectionRate)
 	if err != nil {
 		return nil, err
@@ -494,16 +497,16 @@ func (r *Repo) GetSkillStats(ctx context.Context, userID, skillName string) (*Sk
 }
 
 // SkillSignals returns recent failure/correction logs for a skill (learning signal for SkillEvolver)
-func (r *Repo) SkillSignals(ctx context.Context, userID, skillName string, limit int) ([]SkillLog, error) {
+func (r *Repo) SkillSignals(ctx context.Context, accountID, skillName string, limit int) ([]SkillLog, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 10
 	}
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, user_id, skill_name, skill_version, agent_id, session_id, trigger_text, was_triggered, outcome, failure_reason, user_correction, tool_calls, duration_ms, created_at
+		`SELECT id, account_id, user_id, key_id, skill_name, skill_version, agent_id, session_id, trigger_text, was_triggered, outcome, failure_reason, user_correction, tool_calls, duration_ms, created_at
 		 FROM skill_logs
-		 WHERE user_id = $1 AND skill_name = $2 AND outcome IN ('failure', 'user_corrected', 'partial')
+		 WHERE account_id = $1 AND skill_name = $2 AND outcome IN ('failure', 'user_corrected', 'partial')
 		 ORDER BY created_at DESC LIMIT $3`,
-		userID, skillName, limit,
+		accountID, skillName, limit,
 	)
 	if err != nil {
 		return nil, err
@@ -512,7 +515,7 @@ func (r *Repo) SkillSignals(ctx context.Context, userID, skillName string, limit
 	items := make([]SkillLog, 0)
 	for rows.Next() {
 		var l SkillLog
-		if err := rows.Scan(&l.ID, &l.UserID, &l.SkillName, &l.SkillVersion, &l.AgentID, &l.SessionID, &l.TriggerText,
+		if err := rows.Scan(&l.ID, &l.AccountID, &l.UserID, &l.KeyID, &l.SkillName, &l.SkillVersion, &l.AgentID, &l.SessionID, &l.TriggerText,
 			&l.WasTriggered, &l.Outcome, &l.FailureReason, &l.UserCorrection, &l.ToolCalls, &l.DurationMs, &l.CreatedAt); err != nil {
 			return nil, err
 		}
@@ -534,7 +537,9 @@ func sourceMetadata(raw json.RawMessage) ([]byte, error) {
 func scanSource(s *SkillSource) []any {
 	return []any{
 		&s.ID,
+		&s.AccountID,
 		&s.UserID,
+		&s.KeyID,
 		&s.Name,
 		&s.Type,
 		&s.RepositoryURL,
@@ -552,7 +557,9 @@ func scanSource(s *SkillSource) []any {
 func scanRevision(rev *SkillSourceRevision) []any {
 	return []any{
 		&rev.ID,
+		&rev.AccountID,
 		&rev.UserID,
+		&rev.KeyID,
 		&rev.SourceID,
 		&rev.SkillVersionID,
 		&rev.CommitSHA,
@@ -568,7 +575,9 @@ func scanRevision(rev *SkillSourceRevision) []any {
 func scanVersionFile(f *SkillVersionFile) []any {
 	return []any{
 		&f.ID,
+		&f.AccountID,
 		&f.UserID,
+		&f.KeyID,
 		&f.SourceRevisionID,
 		&f.VersionID,
 		&f.Path,
@@ -580,4 +589,11 @@ func scanVersionFile(f *SkillVersionFile) []any {
 		&f.ContentSnapshot,
 		&f.CreatedAt,
 	}
+}
+
+func nullableString(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }

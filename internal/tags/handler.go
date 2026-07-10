@@ -22,30 +22,30 @@ func NewHandler(pool *pgxpool.Pool) *Handler {
 }
 
 func (h *Handler) List(c *gin.Context) {
-	userID := c.GetString(auth.ContextUserID)
+	owner := auth.OwnerFromContext(c)
 	module := c.DefaultQuery("module", "all")
 
 	result := make(map[string][]TagCount)
 
 	if module == "all" || module == "todos" {
-		tags, _ := h.queryTags(c, "todos", userID)
+		tags, _ := h.queryTags(c, "todos", owner.Account())
 		result["todos"] = tags
 	}
 	if module == "all" || module == "notes" {
-		tags, _ := h.queryTags(c, "notes", userID)
+		tags, _ := h.queryTags(c, "notes", owner.Account())
 		result["notes"] = tags
 	}
 	if module == "all" || module == "reports" {
-		tags, _ := h.queryTags(c, "reports", userID)
+		tags, _ := h.queryTags(c, "reports", owner.Account())
 		result["reports"] = tags
 	}
 
 	c.JSON(http.StatusOK, result)
 }
 
-func (h *Handler) queryTags(c *gin.Context, table, userID string) ([]TagCount, error) {
+func (h *Handler) queryTags(c *gin.Context, table, accountID string) ([]TagCount, error) {
 	rows, err := h.pool.Query(c.Request.Context(),
-		`SELECT tag, count(*) FROM `+table+`, unnest(tags) AS tag WHERE user_id=$1 GROUP BY tag ORDER BY count DESC`, userID)
+		`SELECT tag, count(*) FROM `+table+`, unnest(tags) AS tag WHERE account_id=$1 GROUP BY tag ORDER BY count DESC`, accountID)
 	if err != nil {
 		return nil, err
 	}

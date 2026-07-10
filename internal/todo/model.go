@@ -4,7 +4,9 @@ import "time"
 
 type Todo struct {
 	ID          string     `json:"id"`
+	AccountID   string     `json:"account_id"`
 	UserID      string     `json:"user_id"`
+	KeyID       *string    `json:"key_id,omitempty"`
 	Title       string     `json:"title"`
 	Description string     `json:"description"`
 	Status      string     `json:"status"`

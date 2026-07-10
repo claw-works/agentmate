@@ -4,7 +4,9 @@ import "time"
 
 type Note struct {
 	ID        string    `json:"id"`
+	AccountID string    `json:"account_id"`
 	UserID    string    `json:"user_id"`
+	KeyID     *string   `json:"key_id,omitempty"`
 	Title     string    `json:"title"`
 	Content   string    `json:"content"`
 	Tags      []string  `json:"tags"`

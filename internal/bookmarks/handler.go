@@ -23,8 +23,8 @@ func (h *Handler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	userID := c.GetString(auth.ContextUserID)
-	b, err := h.svc.Create(c.Request.Context(), userID, req)
+	owner := auth.OwnerFromContext(c)
+	b, err := h.svc.Create(c.Request.Context(), owner, req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -33,8 +33,8 @@ func (h *Handler) Create(c *gin.Context) {
 }
 
 func (h *Handler) Get(c *gin.Context) {
-	userID := c.GetString(auth.ContextUserID)
-	b, err := h.svc.Get(c.Request.Context(), userID, c.Param("id"))
+	owner := auth.OwnerFromContext(c)
+	b, err := h.svc.Get(c.Request.Context(), owner.Account(), c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
@@ -43,7 +43,7 @@ func (h *Handler) Get(c *gin.Context) {
 }
 
 func (h *Handler) List(c *gin.Context) {
-	userID := c.GetString(auth.ContextUserID)
+	owner := auth.OwnerFromContext(c)
 	tags := parseTags(c)
 	search := c.Query("q")
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
@@ -57,8 +57,8 @@ func (h *Handler) List(c *gin.Context) {
 		isRead = &b
 	}
 	params := ListParams{Tags: tags, IsRead: isRead, Search: search, Limit: limit, Offset: offset}
-	total, _ := h.svc.Count(c.Request.Context(), userID, params)
-	list, err := h.svc.List(c.Request.Context(), userID, params)
+	total, _ := h.svc.Count(c.Request.Context(), owner.Account(), params)
+	list, err := h.svc.List(c.Request.Context(), owner.Account(), params)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -72,8 +72,8 @@ func (h *Handler) Update(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	userID := c.GetString(auth.ContextUserID)
-	b, err := h.svc.Update(c.Request.Context(), userID, c.Param("id"), req)
+	owner := auth.OwnerFromContext(c)
+	b, err := h.svc.Update(c.Request.Context(), owner.Account(), c.Param("id"), req)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
@@ -82,8 +82,8 @@ func (h *Handler) Update(c *gin.Context) {
 }
 
 func (h *Handler) Delete(c *gin.Context) {
-	userID := c.GetString(auth.ContextUserID)
-	if err := h.svc.Delete(c.Request.Context(), userID, c.Param("id")); err != nil {
+	owner := auth.OwnerFromContext(c)
+	if err := h.svc.Delete(c.Request.Context(), owner.Account(), c.Param("id")); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

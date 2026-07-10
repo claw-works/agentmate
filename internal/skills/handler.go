@@ -26,8 +26,8 @@ func (h *Handler) CreateLog(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	userID := c.GetString(auth.ContextUserID)
-	l, err := h.svc.CreateLog(c.Request.Context(), userID, req)
+	owner := auth.OwnerFromContext(c)
+	l, err := h.svc.CreateLog(c.Request.Context(), owner, req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -36,7 +36,7 @@ func (h *Handler) CreateLog(c *gin.Context) {
 }
 
 func (h *Handler) ListLogs(c *gin.Context) {
-	userID := c.GetString(auth.ContextUserID)
+	owner := auth.OwnerFromContext(c)
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	if limit <= 0 || limit > 100 {
@@ -49,8 +49,8 @@ func (h *Handler) ListLogs(c *gin.Context) {
 		Limit:     limit,
 		Offset:    offset,
 	}
-	total, _ := h.svc.CountLogs(c.Request.Context(), userID, params)
-	list, err := h.svc.ListLogs(c.Request.Context(), userID, params)
+	total, _ := h.svc.CountLogs(c.Request.Context(), owner.Account(), params)
+	list, err := h.svc.ListLogs(c.Request.Context(), owner.Account(), params)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -66,8 +66,8 @@ func (h *Handler) CreateSource(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	userID := c.GetString(auth.ContextUserID)
-	source, err := h.svc.CreateSource(c.Request.Context(), userID, req)
+	owner := auth.OwnerFromContext(c)
+	source, err := h.svc.CreateSource(c.Request.Context(), owner, req)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -76,7 +76,7 @@ func (h *Handler) CreateSource(c *gin.Context) {
 }
 
 func (h *Handler) ListSources(c *gin.Context) {
-	userID := c.GetString(auth.ContextUserID)
+	owner := auth.OwnerFromContext(c)
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	params := SkillSourceListParams{
@@ -85,7 +85,7 @@ func (h *Handler) ListSources(c *gin.Context) {
 		Limit:  limit,
 		Offset: offset,
 	}
-	sources, err := h.svc.ListSources(c.Request.Context(), userID, params)
+	sources, err := h.svc.ListSources(c.Request.Context(), owner.Account(), params)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -94,8 +94,8 @@ func (h *Handler) ListSources(c *gin.Context) {
 }
 
 func (h *Handler) GetSource(c *gin.Context) {
-	userID := c.GetString(auth.ContextUserID)
-	source, err := h.svc.GetSource(c.Request.Context(), userID, c.Param("id"))
+	owner := auth.OwnerFromContext(c)
+	source, err := h.svc.GetSource(c.Request.Context(), owner.Account(), c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
@@ -104,10 +104,10 @@ func (h *Handler) GetSource(c *gin.Context) {
 }
 
 func (h *Handler) ListSourceRevisions(c *gin.Context) {
-	userID := c.GetString(auth.ContextUserID)
+	owner := auth.OwnerFromContext(c)
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
-	revisions, err := h.svc.ListSourceRevisions(c.Request.Context(), userID, c.Param("id"), limit, offset)
+	revisions, err := h.svc.ListSourceRevisions(c.Request.Context(), owner.Account(), c.Param("id"), limit, offset)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
@@ -121,8 +121,8 @@ func (h *Handler) SubmitLocalSnapshot(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	userID := c.GetString(auth.ContextUserID)
-	resp, err := h.svc.SubmitLocalSnapshot(c.Request.Context(), userID, c.Param("id"), req)
+	owner := auth.OwnerFromContext(c)
+	resp, err := h.svc.SubmitLocalSnapshot(c.Request.Context(), owner, c.Param("id"), req)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -138,8 +138,8 @@ func (h *Handler) CreateVersion(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	userID := c.GetString(auth.ContextUserID)
-	v, err := h.svc.CreateVersion(c.Request.Context(), userID, req)
+	owner := auth.OwnerFromContext(c)
+	v, err := h.svc.CreateVersion(c.Request.Context(), owner, req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -148,7 +148,7 @@ func (h *Handler) CreateVersion(c *gin.Context) {
 }
 
 func (h *Handler) ListVersions(c *gin.Context) {
-	userID := c.GetString(auth.ContextUserID)
+	owner := auth.OwnerFromContext(c)
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	if limit <= 0 || limit > 100 {
@@ -159,7 +159,7 @@ func (h *Handler) ListVersions(c *gin.Context) {
 		Limit:     limit,
 		Offset:    offset,
 	}
-	list, err := h.svc.ListVersions(c.Request.Context(), userID, params)
+	list, err := h.svc.ListVersions(c.Request.Context(), owner.Account(), params)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -168,13 +168,13 @@ func (h *Handler) ListVersions(c *gin.Context) {
 }
 
 func (h *Handler) GetActiveVersion(c *gin.Context) {
-	userID := c.GetString(auth.ContextUserID)
+	owner := auth.OwnerFromContext(c)
 	skillName := c.Query("skill_name")
 	if skillName == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "skill_name required"})
 		return
 	}
-	v, err := h.svc.GetActiveVersion(c.Request.Context(), userID, skillName)
+	v, err := h.svc.GetActiveVersion(c.Request.Context(), owner.Account(), skillName)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
@@ -183,8 +183,8 @@ func (h *Handler) GetActiveVersion(c *gin.Context) {
 }
 
 func (h *Handler) ActivateVersion(c *gin.Context) {
-	userID := c.GetString(auth.ContextUserID)
-	v, err := h.svc.ActivateVersion(c.Request.Context(), userID, c.Param("id"))
+	owner := auth.OwnerFromContext(c)
+	v, err := h.svc.ActivateVersion(c.Request.Context(), owner.Account(), c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
@@ -193,8 +193,8 @@ func (h *Handler) ActivateVersion(c *gin.Context) {
 }
 
 func (h *Handler) ListVersionFiles(c *gin.Context) {
-	userID := c.GetString(auth.ContextUserID)
-	files, err := h.svc.ListVersionFiles(c.Request.Context(), userID, c.Param("id"))
+	owner := auth.OwnerFromContext(c)
+	files, err := h.svc.ListVersionFiles(c.Request.Context(), owner.Account(), c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -208,8 +208,8 @@ func (h *Handler) IndexActiveVersions(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	userID := c.GetString(auth.ContextUserID)
-	result, err := h.svc.IndexActiveVersions(c.Request.Context(), userID, req.SkillName)
+	owner := auth.OwnerFromContext(c)
+	result, err := h.svc.IndexActiveVersions(c.Request.Context(), owner, req.SkillName)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -223,8 +223,8 @@ func (h *Handler) Search(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	userID := c.GetString(auth.ContextUserID)
-	result, err := h.svc.Search(c.Request.Context(), userID, req)
+	owner := auth.OwnerFromContext(c)
+	result, err := h.svc.Search(c.Request.Context(), owner, req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -233,13 +233,13 @@ func (h *Handler) Search(c *gin.Context) {
 }
 
 func (h *Handler) GetStats(c *gin.Context) {
-	userID := c.GetString(auth.ContextUserID)
+	owner := auth.OwnerFromContext(c)
 	skillName := c.Query("skill_name")
 	if skillName == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "skill_name required"})
 		return
 	}
-	stats, err := h.svc.GetSkillStats(c.Request.Context(), userID, skillName)
+	stats, err := h.svc.GetSkillStats(c.Request.Context(), owner.Account(), skillName)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -248,14 +248,14 @@ func (h *Handler) GetStats(c *gin.Context) {
 }
 
 func (h *Handler) GetSignals(c *gin.Context) {
-	userID := c.GetString(auth.ContextUserID)
+	owner := auth.OwnerFromContext(c)
 	skillName := c.Query("skill_name")
 	if skillName == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "skill_name required"})
 		return
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
-	signals, err := h.svc.SkillSignals(c.Request.Context(), userID, skillName, limit)
+	signals, err := h.svc.SkillSignals(c.Request.Context(), owner.Account(), skillName, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

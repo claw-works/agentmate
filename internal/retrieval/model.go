@@ -21,7 +21,9 @@ const (
 
 type Document struct {
 	ID                 string          `json:"id"`
+	AccountID          string          `json:"account_id"`
 	UserID             string          `json:"user_id"`
+	KeyID              *string         `json:"key_id,omitempty"`
 	Namespace          string          `json:"namespace"`
 	SourceType         string          `json:"source_type"`
 	SourceID           string          `json:"source_id"`
@@ -59,7 +61,9 @@ type UpsertDocumentInput struct {
 
 type QueryLog struct {
 	ID             string          `json:"id"`
+	AccountID      *string         `json:"account_id,omitempty"`
 	UserID         *string         `json:"user_id,omitempty"`
+	KeyID          *string         `json:"key_id,omitempty"`
 	Namespace      string          `json:"namespace"`
 	Query          string          `json:"query"`
 	QueryHash      string          `json:"query_hash"`
@@ -122,7 +126,9 @@ type SearchResult struct {
 
 type MemoryEntry struct {
 	ID             string          `json:"id"`
+	AccountID      string          `json:"account_id"`
 	UserID         string          `json:"user_id"`
+	KeyID          *string         `json:"key_id,omitempty"`
 	ScopeType      string          `json:"scope_type"`
 	ScopeKey       string          `json:"scope_key"`
 	MemoryType     string          `json:"memory_type"`
@@ -157,6 +163,8 @@ type CreateMemoryEntryInput struct {
 
 type MemoryEvidence struct {
 	ID         string          `json:"id"`
+	AccountID  *string         `json:"account_id,omitempty"`
+	KeyID      *string         `json:"key_id,omitempty"`
 	MemoryID   string          `json:"memory_id"`
 	SourceType string          `json:"source_type"`
 	SourceID   string          `json:"source_id"`

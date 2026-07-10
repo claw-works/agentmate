@@ -4,7 +4,9 @@ import "time"
 
 type Bookmark struct {
 	ID        string     `json:"id"`
+	AccountID string     `json:"account_id"`
 	UserID    string     `json:"user_id"`
+	KeyID     *string    `json:"key_id,omitempty"`
 	URL       string     `json:"url"`
 	Title     string     `json:"title"`
 	Summary   string     `json:"summary"`
