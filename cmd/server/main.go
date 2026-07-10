@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -183,7 +184,6 @@ func main() {
 	r.Any("/mcp/expenses", gin.WrapH(expenses.NewMCPServer(expensesSvc, authSvc)))
 	r.Any("/mcp/skills", gin.WrapH(skills.NewMCPServer(skillsSvc, authSvc)))
 
-
 	registerFrontend(r)
 
 	printBanner(port)
@@ -227,6 +227,11 @@ func registerFrontend(r *gin.Engine) {
 
 	r.Static("/_next", dir+"/_next")
 	r.NoRoute(func(c *gin.Context) {
+		if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+
 		reqPath := c.Request.URL.Path
 
 		htmlCandidate := filepath.Join(dir, reqPath+".html")
