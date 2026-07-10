@@ -85,12 +85,16 @@ func main() {
 		MaxAge:           12 * time.Hour,
 	}))
 
+	// 所有 REST API 挂在 /api 前缀下，与前端页面路径（/todos /reports/:id 等）区分，
+	// 避免同源托管时路由冲突。/admin（静态页）、/mcp*（agent 集成）不受影响。
+	api := r.Group("/api")
+
 	// Public routes
-	r.POST("/auth/register", authHandler.Register)
-	r.POST("/auth/login", authHandler.Login)
+	api.POST("/auth/register", authHandler.Register)
+	api.POST("/auth/login", authHandler.Login)
 
 	// Protected routes
-	protected := r.Group("/", auth.Middleware(authSvc), middleware.APILogger(pool))
+	protected := api.Group("/", auth.Middleware(authSvc), middleware.APILogger(pool))
 	protected.GET("/auth/me", authHandler.Me)
 	protected.POST("/auth/apikeys", authHandler.CreateAPIKey)
 	protected.GET("/auth/apikeys", authHandler.ListAPIKeys)
@@ -167,7 +171,7 @@ func main() {
 	// Admin
 	adminHandler := admin.NewHandler(pool)
 	r.StaticFile("/admin", "./web/admin.html")
-	adminAPI := r.Group("/admin/api", admin.Middleware(authSvc))
+	adminAPI := r.Group("/api/admin", admin.Middleware(authSvc))
 	adminAPI.GET("/stats", adminHandler.Stats)
 	adminAPI.GET("/users", adminHandler.Users)
 	adminAPI.GET("/apikeys", adminHandler.APIKeys)

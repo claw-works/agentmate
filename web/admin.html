@@ -136,7 +136,7 @@ function app() {
         apikeys: [],
         async login() {
             this.loginError = '';
-            const res = await window.fetch('/auth/login', {
+            const res = await window.fetch('/api/auth/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email: this.emailInput, password: this.passwordInput })
@@ -162,10 +162,10 @@ function app() {
         async init() {
             if (!this.token) return;
             const [stats, users, apikeys, me] = await Promise.all([
-                this.fetch('/admin/api/stats'),
-                this.fetch('/admin/api/users'),
-                this.fetch('/admin/api/apikeys'),
-                window.fetch('/auth/me', { headers: { 'Authorization': 'Bearer ' + this.token } }).then(r => r.json()),
+                this.fetch('/api/admin/stats'),
+                this.fetch('/api/admin/users'),
+                this.fetch('/api/admin/apikeys'),
+                window.fetch('/api/auth/me', { headers: { 'Authorization': 'Bearer ' + this.token } }).then(r => r.json()),
             ]);
             if (stats) this.stats = stats;
             if (users) this.users = users;
