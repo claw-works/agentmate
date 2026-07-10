@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -208,6 +209,8 @@ func main() {
 	// Skills MCP Server (independent endpoint)
 	r.Any("/mcp/skills", gin.WrapH(skills.NewMCPServer(skillsSvc, authSvc)))
 
+	registerFrontend(r)
+
 	printBanner(port)
 	if err := r.Run(":" + port); err != nil {
 		log.Fatal(err)
@@ -234,4 +237,43 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// registerFrontend 托管 agentmate-web 的静态导出产物（next build, output: 'export'）。
+// 产物目录结构是 <route>.html + <route>/ 混合布局，不是单一 index.html 的 SPA，
+// 因此 NoRoute 兜底时按「请求路径 + .html」优先查找，找不到再退回根 index.html
+// （交给前端的客户端路由处理未知路径，如报告/书签详情页的动态 id）。
+func registerFrontend(r *gin.Engine) {
+	const dir = "./web/dist"
+	if _, err := os.Stat(dir); err != nil {
+		log.Printf("frontend: %s not found, skip serving (run web build first)", dir)
+		return
+	}
+
+	r.Static("/_next", dir+"/_next")
+	r.NoRoute(func(c *gin.Context) {
+		reqPath := c.Request.URL.Path
+
+		htmlCandidate := filepath.Join(dir, reqPath+".html")
+		if reqPath == "/" {
+			htmlCandidate = filepath.Join(dir, "index.html")
+		}
+		if fileExists(htmlCandidate) {
+			c.File(htmlCandidate)
+			return
+		}
+
+		staticCandidate := filepath.Join(dir, reqPath)
+		if fileExists(staticCandidate) {
+			c.File(staticCandidate)
+			return
+		}
+
+		c.File(filepath.Join(dir, "index.html"))
+	})
+}
+
+func fileExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && !info.IsDir()
 }
