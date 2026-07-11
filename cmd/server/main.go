@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -233,6 +234,10 @@ func registerFrontend(r *gin.Engine) {
 		}
 
 		reqPath := c.Request.URL.Path
+		if dynamicCandidate := dynamicExportCandidate(dir, reqPath); dynamicCandidate != "" && fileExists(dynamicCandidate) {
+			c.File(dynamicCandidate)
+			return
+		}
 
 		htmlCandidate := filepath.Join(dir, reqPath+".html")
 		if reqPath == "/" {
@@ -251,6 +256,41 @@ func registerFrontend(r *gin.Engine) {
 
 		c.File(filepath.Join(dir, "index.html"))
 	})
+}
+
+func dynamicExportCandidate(dir, reqPath string) string {
+	for _, route := range []string{"reports", "bookmarks"} {
+		prefix := "/" + route + "/"
+		if !strings.HasPrefix(reqPath, prefix) {
+			continue
+		}
+
+		rest := strings.TrimPrefix(reqPath, prefix)
+		if rest == "" || strings.Contains(rest, "..") {
+			continue
+		}
+
+		parts := strings.SplitN(rest, "/", 2)
+		id := parts[0]
+		if id == "" {
+			continue
+		}
+
+		if len(parts) == 1 {
+			switch {
+			case strings.HasSuffix(id, ".txt"):
+				return filepath.Join(dir, route, "placeholder.txt")
+			case strings.HasSuffix(id, ".html"):
+				return filepath.Join(dir, route, "placeholder.html")
+			case !strings.Contains(id, "."):
+				return filepath.Join(dir, route, "placeholder.html")
+			}
+			continue
+		}
+
+		return filepath.Join(dir, route, "placeholder", parts[1])
+	}
+	return ""
 }
 
 func fileExists(p string) bool {
