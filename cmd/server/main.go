@@ -90,6 +90,8 @@ func main() {
 	// Public routes
 	api.POST("/auth/register", authHandler.Register)
 	api.POST("/auth/login", authHandler.Login)
+	api.GET("/public/reports", reportsHandler.PublicList)
+	api.GET("/public/reports/:id", reportsHandler.PublicGet)
 
 	// Protected routes
 	protected := api.Group("/", auth.Middleware(authSvc), middleware.APILogger(pool))

@@ -51,6 +51,18 @@ func (r *Repo) Get(ctx context.Context, accountID, id string) (*Report, error) {
 	return &rpt, nil
 }
 
+func (r *Repo) PublicGet(ctx context.Context, id string) (*PublicReport, error) {
+	var rpt PublicReport
+	err := r.pool.QueryRow(ctx,
+		`SELECT id, title, content, format, tags, source, created_at, updated_at
+		 FROM reports WHERE id = $1`, id,
+	).Scan(&rpt.ID, &rpt.Title, &rpt.Content, &rpt.Format, &rpt.Tags, &rpt.Source, &rpt.CreatedAt, &rpt.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &rpt, nil
+}
+
 func (r *Repo) Count(ctx context.Context, accountID string, params ListReportsParams) (int, error) {
 	query := `SELECT count(*) FROM reports WHERE account_id = $1`
 	args := []any{accountID}
@@ -69,6 +81,29 @@ func (r *Repo) Count(ctx context.Context, accountID string, params ListReportsPa
 		query += fmt.Sprintf(" AND to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(content, '')) @@ plainto_tsquery('simple', $%d)", argIdx)
 		args = append(args, params.Search)
 		argIdx++
+	}
+	var count int
+	err := r.pool.QueryRow(ctx, query, args...).Scan(&count)
+	return count, err
+}
+
+func (r *Repo) PublicCount(ctx context.Context, params ListReportsParams) (int, error) {
+	query := `SELECT count(*) FROM reports WHERE true`
+	args := []any{}
+	argIdx := 1
+	if params.Tag != "" {
+		query += fmt.Sprintf(" AND $%d = ANY(tags)", argIdx)
+		args = append(args, params.Tag)
+		argIdx++
+	}
+	if params.Source != "" {
+		query += fmt.Sprintf(" AND source = $%d", argIdx)
+		args = append(args, params.Source)
+		argIdx++
+	}
+	if params.Search != "" {
+		query += fmt.Sprintf(" AND to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(content, '')) @@ plainto_tsquery('simple', $%d)", argIdx)
+		args = append(args, params.Search)
 	}
 	var count int
 	err := r.pool.QueryRow(ctx, query, args...).Scan(&count)
@@ -120,6 +155,58 @@ func (r *Repo) List(ctx context.Context, accountID string, params ListReportsPar
 	for rows.Next() {
 		var rpt Report
 		if err := rows.Scan(&rpt.ID, &rpt.AccountID, &rpt.UserID, &rpt.KeyID, &rpt.Title, &rpt.Format, &rpt.Tags, &rpt.Source, &rpt.SourceKeyID, &rpt.CreatedAt, &rpt.UpdatedAt); err != nil {
+			return nil, err
+		}
+		reports = append(reports, rpt)
+	}
+	return reports, nil
+}
+
+func (r *Repo) PublicList(ctx context.Context, params ListReportsParams) ([]PublicReport, error) {
+	query := `SELECT id, title, content, format, tags, source, created_at, updated_at FROM reports WHERE true`
+	args := []any{}
+	argIdx := 1
+
+	if params.Tag != "" {
+		query += fmt.Sprintf(" AND $%d = ANY(tags)", argIdx)
+		args = append(args, params.Tag)
+		argIdx++
+	}
+	if params.Source != "" {
+		query += fmt.Sprintf(" AND source = $%d", argIdx)
+		args = append(args, params.Source)
+		argIdx++
+	}
+	if params.Search != "" {
+		query += fmt.Sprintf(" AND to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(content, '')) @@ plainto_tsquery('simple', $%d)", argIdx)
+		args = append(args, params.Search)
+		argIdx++
+	}
+
+	query += " ORDER BY created_at DESC"
+
+	limit := params.Limit
+	if limit <= 0 || limit > 50 {
+		limit = 12
+	}
+	query += fmt.Sprintf(" LIMIT $%d", argIdx)
+	args = append(args, limit)
+	argIdx++
+
+	if params.Offset > 0 {
+		query += fmt.Sprintf(" OFFSET $%d", argIdx)
+		args = append(args, params.Offset)
+	}
+
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	reports := make([]PublicReport, 0)
+	for rows.Next() {
+		var rpt PublicReport
+		if err := rows.Scan(&rpt.ID, &rpt.Title, &rpt.Content, &rpt.Format, &rpt.Tags, &rpt.Source, &rpt.CreatedAt, &rpt.UpdatedAt); err != nil {
 			return nil, err
 		}
 		reports = append(reports, rpt)

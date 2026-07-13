@@ -40,6 +40,15 @@ func (h *Handler) Get(c *gin.Context) {
 	c.JSON(http.StatusOK, rpt)
 }
 
+func (h *Handler) PublicGet(c *gin.Context) {
+	rpt, err := h.svc.PublicGet(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.JSON(http.StatusOK, rpt)
+}
+
 func (h *Handler) List(c *gin.Context) {
 	owner := auth.OwnerFromContext(c)
 	var params ListReportsParams
@@ -52,6 +61,24 @@ func (h *Handler) List(c *gin.Context) {
 	}
 	total, _ := h.svc.Count(c.Request.Context(), owner.Account(), params)
 	list, err := h.svc.List(c.Request.Context(), owner.Account(), params)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": list, "total": total, "limit": params.Limit, "offset": params.Offset})
+}
+
+func (h *Handler) PublicList(c *gin.Context) {
+	var params ListReportsParams
+	if err := c.ShouldBindQuery(&params); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if params.Limit <= 0 || params.Limit > 50 {
+		params.Limit = 12
+	}
+	total, _ := h.svc.PublicCount(c.Request.Context(), params)
+	list, err := h.svc.PublicList(c.Request.Context(), params)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

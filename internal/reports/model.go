@@ -17,6 +17,17 @@ type Report struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+type PublicReport struct {
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	Content   string    `json:"content,omitempty"`
+	Format    string    `json:"format"`
+	Tags      []string  `json:"tags"`
+	Source    string    `json:"source"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 type CreateReportRequest struct {
 	Title   string   `json:"title" binding:"required"`
 	Content string   `json:"content"`
