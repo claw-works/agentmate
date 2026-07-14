@@ -217,80 +217,6 @@ func (r *Repo) AddFeedback(ctx context.Context, owner ownership.Owner, in Feedba
 	return err
 }
 
-func (r *Repo) CreateMemoryEntry(ctx context.Context, owner ownership.Owner, in CreateMemoryEntryInput) (*MemoryEntry, error) {
-	metadata, err := marshalMetadata(in.Metadata)
-	if err != nil {
-		return nil, err
-	}
-	setMemoryDefaults(&in)
-
-	var m MemoryEntry
-	err = r.pool.QueryRow(ctx,
-		`INSERT INTO memory_entries
-		 (account_id, user_id, key_id, scope_type, scope_key, memory_type, title, content, summary, content_hash,
-		  confidence, importance, status, metadata, ttl_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-		 RETURNING id, account_id, user_id, key_id, scope_type, scope_key, memory_type, title, content, summary, content_hash,
-		   confidence, importance, status, metadata, ttl_at, last_accessed_at, created_at, updated_at`,
-		owner.Account(), owner.UserID, owner.KeyID, in.ScopeType, in.ScopeKey, in.MemoryType, in.Title, in.Content, in.Summary, in.ContentHash,
-		in.Confidence, in.Importance, in.Status, metadata, in.TTLAt,
-	).Scan(scanMemoryEntry(&m)...)
-	if err != nil {
-		return nil, err
-	}
-	return &m, nil
-}
-
-func (r *Repo) AddMemoryEvidence(ctx context.Context, owner ownership.Owner, in AddMemoryEvidenceInput) (*MemoryEvidence, error) {
-	metadata, err := marshalMetadata(in.Metadata)
-	if err != nil {
-		return nil, err
-	}
-	var e MemoryEvidence
-	err = r.pool.QueryRow(ctx,
-		`INSERT INTO memory_evidence (account_id, key_id, memory_id, source_type, source_id, excerpt, metadata)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
-		 RETURNING id, account_id, key_id, memory_id, source_type, source_id, excerpt, metadata, created_at`,
-		nullableString(owner.Account()), owner.KeyID, in.MemoryID, in.SourceType, in.SourceID, in.Excerpt, metadata,
-	).Scan(&e.ID, &e.AccountID, &e.KeyID, &e.MemoryID, &e.SourceType, &e.SourceID, &e.Excerpt, &e.Metadata, &e.CreatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return &e, nil
-}
-
-func (r *Repo) ListMemoryEntries(ctx context.Context, accountID, scopeType, scopeKey, memoryType, status string, limit, offset int) ([]MemoryEntry, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 20
-	}
-	rows, err := r.pool.Query(ctx,
-		`SELECT id, account_id, user_id, key_id, scope_type, scope_key, memory_type, title, content, summary, content_hash,
-		   confidence, importance, status, metadata, ttl_at, last_accessed_at, created_at, updated_at
-		 FROM memory_entries
-		 WHERE account_id = $1
-		   AND ($2 = '' OR scope_type = $2)
-		   AND ($3 = '' OR scope_key = $3)
-		   AND ($4 = '' OR memory_type = $4)
-		   AND ($5 = '' OR status = $5)
-		 ORDER BY importance DESC, updated_at DESC
-		 LIMIT $6 OFFSET $7`,
-		accountID, scopeType, scopeKey, memoryType, status, limit, offset,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := make([]MemoryEntry, 0)
-	for rows.Next() {
-		var m MemoryEntry
-		if err := rows.Scan(scanMemoryEntry(&m)...); err != nil {
-			return nil, err
-		}
-		items = append(items, m)
-	}
-	return items, rows.Err()
-}
-
 func marshalMetadata(metadata map[string]any) ([]byte, error) {
 	if metadata == nil {
 		return []byte("{}"), nil
@@ -310,14 +236,6 @@ func scanDocument(d *Document) []any {
 	}
 }
 
-func scanMemoryEntry(m *MemoryEntry) []any {
-	return []any{
-		&m.ID, &m.AccountID, &m.UserID, &m.KeyID, &m.ScopeType, &m.ScopeKey, &m.MemoryType, &m.Title, &m.Content, &m.Summary,
-		&m.ContentHash, &m.Confidence, &m.Importance, &m.Status, &m.Metadata, &m.TTLAt,
-		&m.LastAccessedAt, &m.CreatedAt, &m.UpdatedAt,
-	}
-}
-
 func setDocumentDefaults(in *UpsertDocumentInput) {
 	if in.ChunkKey == "" {
 		in.ChunkKey = "default"
@@ -327,24 +245,6 @@ func setDocumentDefaults(in *UpsertDocumentInput) {
 	}
 	if in.VectorName == "" {
 		in.VectorName = DefaultVectorName
-	}
-}
-
-func setMemoryDefaults(in *CreateMemoryEntryInput) {
-	if in.ScopeType == "" {
-		in.ScopeType = "global"
-	}
-	if in.Status == "" {
-		in.Status = StatusPending
-	}
-	if in.Confidence <= 0 {
-		in.Confidence = 0.5
-	}
-	if in.Importance <= 0 {
-		in.Importance = 0.5
-	}
-	if in.ContentHash == "" {
-		in.ContentHash = sha256Hex(in.Content)
 	}
 }
 
