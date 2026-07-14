@@ -53,3 +53,7 @@ func (s *Service) Delete(ctx context.Context, accountID, id string) error {
 func (s *Service) ListSources(ctx context.Context, accountID string) ([]SourceStat, error) {
 	return s.repo.ListSources(ctx, accountID)
 }
+
+func (s *Service) PublicListSources(ctx context.Context) ([]SourceStat, error) {
+	return s.repo.PublicListSources(ctx)
+}

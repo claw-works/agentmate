@@ -91,6 +91,7 @@ func main() {
 	api.POST("/auth/register", authHandler.Register)
 	api.POST("/auth/login", authHandler.Login)
 	api.GET("/public/reports", reportsHandler.PublicList)
+	api.GET("/public/reports/sources", reportsHandler.PublicSources)
 	api.GET("/public/reports/:id", reportsHandler.PublicGet)
 
 	// Protected routes

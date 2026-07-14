@@ -186,8 +186,10 @@ func (r *Repo) PublicList(ctx context.Context, params ListReportsParams) ([]Publ
 	query += " ORDER BY created_at DESC"
 
 	limit := params.Limit
-	if limit <= 0 || limit > 50 {
-		limit = 12
+	if limit <= 0 {
+		limit = 5
+	} else if limit > 20 {
+		limit = 20
 	}
 	query += fmt.Sprintf(" LIMIT $%d", argIdx)
 	args = append(args, limit)
@@ -258,6 +260,27 @@ func (r *Repo) ListSources(ctx context.Context, accountID string) ([]SourceStat,
 		 WHERE account_id = $1 AND source != ''
 		 GROUP BY source ORDER BY count DESC, source`,
 		accountID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]SourceStat, 0)
+	for rows.Next() {
+		var s SourceStat
+		if err := rows.Scan(&s.Source, &s.Count); err != nil {
+			return nil, err
+		}
+		result = append(result, s)
+	}
+	return result, nil
+}
+
+func (r *Repo) PublicListSources(ctx context.Context) ([]SourceStat, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT source, count(*) as count FROM reports
+		 WHERE source != ''
+		 GROUP BY source ORDER BY count DESC, source`,
 	)
 	if err != nil {
 		return nil, err

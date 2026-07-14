@@ -74,8 +74,10 @@ func (h *Handler) PublicList(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if params.Limit <= 0 || params.Limit > 50 {
-		params.Limit = 12
+	if params.Limit <= 0 {
+		params.Limit = 5
+	} else if params.Limit > 20 {
+		params.Limit = 20
 	}
 	total, _ := h.svc.PublicCount(c.Request.Context(), params)
 	list, err := h.svc.PublicList(c.Request.Context(), params)
@@ -84,6 +86,15 @@ func (h *Handler) PublicList(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"items": list, "total": total, "limit": params.Limit, "offset": params.Offset})
+}
+
+func (h *Handler) PublicSources(c *gin.Context) {
+	sources, err := h.svc.PublicListSources(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, sources)
 }
 
 func (h *Handler) Update(c *gin.Context) {
