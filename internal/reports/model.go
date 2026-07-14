@@ -37,9 +37,10 @@ type CreateReportRequest struct {
 }
 
 type UpdateReportRequest struct {
-	Title  *string  `json:"title"`
-	Tags   []string `json:"tags"`
-	Source *string  `json:"source"`
+	Title   *string  `json:"title"`
+	Content *string  `json:"content"`
+	Tags    []string `json:"tags"`
+	Source  *string  `json:"source"`
 }
 
 type ListReportsParams struct {

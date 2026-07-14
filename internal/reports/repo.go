@@ -224,6 +224,9 @@ func (r *Repo) Update(ctx context.Context, accountID, id string, req UpdateRepor
 	if req.Title != nil {
 		existing.Title = *req.Title
 	}
+	if req.Content != nil {
+		existing.Content = *req.Content
+	}
 	if req.Source != nil {
 		existing.Source = *req.Source
 	}
@@ -236,10 +239,10 @@ func (r *Repo) Update(ctx context.Context, accountID, id string, req UpdateRepor
 	}
 	var rpt Report
 	err = r.pool.QueryRow(ctx,
-		`UPDATE reports SET title=$3, tags=$4, source=$5, updated_at=now()
+		`UPDATE reports SET title=$3, content=$4, tags=$5, source=$6, updated_at=now()
 		 WHERE id=$1 AND account_id=$2
 		 RETURNING id, account_id, user_id, key_id, title, content, format, tags, source, source_key_id, created_at, updated_at`,
-		id, accountID, existing.Title, tags, existing.Source,
+		id, accountID, existing.Title, existing.Content, tags, existing.Source,
 	).Scan(&rpt.ID, &rpt.AccountID, &rpt.UserID, &rpt.KeyID, &rpt.Title, &rpt.Content, &rpt.Format, &rpt.Tags, &rpt.Source, &rpt.SourceKeyID, &rpt.CreatedAt, &rpt.UpdatedAt)
 	return &rpt, err
 }

@@ -109,9 +109,10 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 	})
 
 	s.AddTool(mcp.NewTool("report_update",
-		mcp.WithDescription("Update a report's title/tags/source (content is immutable after creation)."),
+		mcp.WithDescription("Update a report's title, content, tags, or source."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("Report ID")),
 		mcp.WithString("title", mcp.Description("New title")),
+		mcp.WithString("content", mcp.Description("New report content")),
 		mcp.WithArray("tags", mcp.Description("Replace tags")),
 		mcp.WithString("source", mcp.Description("New source")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -123,6 +124,9 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		r := UpdateReportRequest{Tags: mcpauth.StrSliceArg(args, "tags")}
 		if v, ok := args["title"].(string); ok {
 			r.Title = &v
+		}
+		if v, ok := args["content"].(string); ok {
+			r.Content = &v
 		}
 		if v, ok := args["source"].(string); ok {
 			r.Source = &v
