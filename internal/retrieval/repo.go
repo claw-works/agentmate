@@ -121,33 +121,63 @@ func (r *Repo) DocumentsByPointIDs(ctx context.Context, accountID, collection st
 }
 
 func (r *Repo) SearchDocumentsText(ctx context.Context, accountID, namespace, query string, limit int) ([]Document, error) {
+	results, err := r.SearchDocumentsTextFiltered(ctx, accountID, namespace, query, limit, TextSearchFilters{})
+	if err != nil {
+		return nil, err
+	}
+	items := make([]Document, 0, len(results))
+	for _, result := range results {
+		items = append(items, result.Document)
+	}
+	return items, nil
+}
+
+func (r *Repo) SearchDocumentsTextFiltered(
+	ctx context.Context,
+	accountID, namespace, query string,
+	limit int,
+	filters TextSearchFilters,
+) ([]TextSearchResult, error) {
 	if limit <= 0 || limit > 50 {
 		limit = DefaultTopK
+	}
+	metadata, err := marshalMetadata(filters.Metadata)
+	if err != nil {
+		return nil, err
 	}
 	rows, err := r.pool.Query(ctx,
 		`SELECT id, account_id, user_id, key_id, namespace, source_type, source_id, chunk_key, title, content, content_hash,
 		   metadata, qdrant_collection, qdrant_point_id, vector_name, embedding_model, embedding_dimension,
-		   status, error, indexed_at, created_at, updated_at
+		   status, error, indexed_at, created_at, updated_at,
+		   ts_rank_cd(
+		     to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(content, '')),
+		     plainto_tsquery('simple', $3)
+		   ) AS text_score
 		 FROM retrieval_documents
 		 WHERE account_id = $1
 		   AND namespace = $2
 		   AND status = 'indexed'
 		   AND to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(content, '')) @@ plainto_tsquery('simple', $3)
-		 ORDER BY ts_rank(to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(content, '')), plainto_tsquery('simple', $3)) DESC
-		 LIMIT $4`,
-		accountID, namespace, query, limit,
+		   AND ($4 = '' OR source_type = $4)
+		   AND ($5 = '' OR source_id = $5)
+		   AND metadata @> $6::jsonb
+		 ORDER BY text_score DESC, updated_at DESC
+		 LIMIT $7`,
+		accountID, namespace, query, filters.SourceType, filters.SourceID, metadata, limit,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := make([]Document, 0)
+	items := make([]TextSearchResult, 0)
 	for rows.Next() {
 		var d Document
-		if err := rows.Scan(scanDocument(&d)...); err != nil {
+		var score float64
+		destinations := append(scanDocument(&d), &score)
+		if err := rows.Scan(destinations...); err != nil {
 			return nil, err
 		}
-		items = append(items, d)
+		items = append(items, TextSearchResult{Document: d, Score: score})
 	}
 	return items, rows.Err()
 }

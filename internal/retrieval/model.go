@@ -123,3 +123,14 @@ type SearchResult struct {
 	Stage    string         `json:"stage"`
 	Payload  map[string]any `json:"payload,omitempty"`
 }
+
+type TextSearchFilters struct {
+	SourceType string
+	SourceID   string
+	Metadata   map[string]any
+}
+
+type TextSearchResult struct {
+	Document Document
+	Score    float64
+}

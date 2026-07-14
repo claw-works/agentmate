@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/wellxie/agentmate/internal/ownership"
@@ -186,6 +188,260 @@ func (s *Service) Search(ctx context.Context, owner ownership.Owner, req SearchR
 		return nil, err
 	}
 	return results, nil
+}
+
+func (s *Service) SearchHybrid(ctx context.Context, owner ownership.Owner, req SearchRequest) ([]SearchResult, error) {
+	if owner.Account() == "" {
+		return nil, fmt.Errorf("account id required")
+	}
+	if req.Namespace == "" {
+		return nil, fmt.Errorf("namespace required")
+	}
+	if strings.TrimSpace(req.Query) == "" {
+		return nil, fmt.Errorf("query required")
+	}
+	if req.TopK <= 0 || req.TopK > 50 {
+		req.TopK = DefaultTopK
+	}
+
+	textFilters, err := textFiltersFromSearch(req.Filters)
+	if err != nil {
+		return nil, err
+	}
+	candidateLimit := req.TopK * 4
+	if candidateLimit < 20 {
+		candidateLimit = 20
+	}
+	if candidateLimit > 50 {
+		candidateLimit = 50
+	}
+
+	start := time.Now()
+	textResults, textErr := s.repo.SearchDocumentsTextFiltered(
+		ctx, owner.Account(), req.Namespace, req.Query, candidateLimit, textFilters,
+	)
+
+	var vectorResults []VectorSearchResult
+	var docsByPointID map[string]Document
+	vectors, vectorErr := s.embedder.Embed(ctx, []string{req.Query})
+	if vectorErr == nil {
+		if len(vectors) != 1 || len(vectors[0]) == 0 {
+			vectorErr = fmt.Errorf("empty query embedding")
+		} else {
+			filterValues := map[string]any{
+				"account_id": owner.Account(),
+				"namespace":  req.Namespace,
+			}
+			for key, value := range req.Filters {
+				filterValues[key] = value
+			}
+			vectorResults, vectorErr = s.store.Search(ctx, VectorSearchRequest{
+				Vector:      vectors[0],
+				Limit:       candidateLimit,
+				Filter:      PayloadMatchFilter(filterValues),
+				WithPayload: true,
+			})
+		}
+	}
+	if vectorErr == nil {
+		pointIDs := make([]string, 0, len(vectorResults))
+		for _, item := range vectorResults {
+			pointIDs = append(pointIDs, item.ID)
+		}
+		docsByPointID, vectorErr = s.repo.DocumentsByPointIDs(ctx, owner.Account(), s.store.Collection(), pointIDs)
+	}
+	if textErr != nil && vectorErr != nil {
+		return nil, fmt.Errorf("hybrid search failed: lexical: %v; vector: %v", textErr, vectorErr)
+	}
+
+	results, queryResults := fuseSearchCandidates(vectorResults, docsByPointID, textResults, req.TopK)
+	logMetadata := cloneMetadata(req.Metadata)
+	logMetadata["retrieval_mode"] = "hybrid"
+	if textErr != nil {
+		logMetadata["lexical_error"] = textErr.Error()
+	}
+	if vectorErr != nil {
+		logMetadata["vector_error"] = vectorErr.Error()
+	}
+
+	queryLog, err := s.repo.CreateQueryLog(ctx, owner, CreateQueryLogInput{
+		Namespace:      req.Namespace,
+		Query:          req.Query,
+		QueryHash:      sha256Hex(req.Query),
+		TopK:           req.TopK,
+		CandidateCount: countUniqueCandidates(vectorResults, docsByPointID, textResults),
+		SelectedCount:  len(results),
+		EmbeddingModel: s.embedder.Model(),
+		RerankModel:    "rrf",
+		LatencyMs:      int(time.Since(start).Milliseconds()),
+		Metadata:       logMetadata,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.repo.AddQueryResults(ctx, queryLog.ID, queryResults); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+type fusedCandidate struct {
+	document    Document
+	pointID     string
+	payload     map[string]any
+	rrfScore    float64
+	vectorScore float64
+	textScore   float64
+	vector      bool
+	lexical     bool
+}
+
+func fuseSearchCandidates(
+	vectorResults []VectorSearchResult,
+	docsByPointID map[string]Document,
+	textResults []TextSearchResult,
+	topK int,
+) ([]SearchResult, []QueryResultInput) {
+	const rrfK = 60.0
+	candidates := make(map[string]*fusedCandidate)
+
+	for index, result := range vectorResults {
+		document, ok := docsByPointID[result.ID]
+		if !ok {
+			continue
+		}
+		candidate := candidates[document.ID]
+		if candidate == nil {
+			candidate = &fusedCandidate{document: document, pointID: result.ID, payload: cloneMetadata(result.Payload)}
+			candidates[document.ID] = candidate
+		}
+		candidate.rrfScore += 1 / (rrfK + float64(index+1))
+		candidate.vectorScore = result.Score
+		candidate.vector = true
+	}
+	for index, result := range textResults {
+		candidate := candidates[result.Document.ID]
+		if candidate == nil {
+			candidate = &fusedCandidate{
+				document: result.Document,
+				pointID:  result.Document.QdrantPointID,
+				payload:  map[string]any{},
+			}
+			candidates[result.Document.ID] = candidate
+		}
+		candidate.rrfScore += 1 / (rrfK + float64(index+1))
+		candidate.textScore = result.Score
+		candidate.lexical = true
+	}
+
+	ordered := make([]*fusedCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		ordered = append(ordered, candidate)
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].rrfScore == ordered[j].rrfScore {
+			if ordered[i].document.UpdatedAt.Equal(ordered[j].document.UpdatedAt) {
+				return ordered[i].document.ID < ordered[j].document.ID
+			}
+			return ordered[i].document.UpdatedAt.After(ordered[j].document.UpdatedAt)
+		}
+		return ordered[i].rrfScore > ordered[j].rrfScore
+	})
+	if topK > 0 && len(ordered) > topK {
+		ordered = ordered[:topK]
+	}
+
+	maxRRFScore := 2.0 / (rrfK + 1)
+	results := make([]SearchResult, 0, len(ordered))
+	queryResults := make([]QueryResultInput, 0, len(ordered))
+	for index, candidate := range ordered {
+		channels := make([]string, 0, 2)
+		if candidate.lexical {
+			channels = append(channels, "lexical")
+		}
+		if candidate.vector {
+			channels = append(channels, "vector")
+		}
+		stage := strings.Join(channels, "+")
+		score := candidate.rrfScore / maxRRFScore
+		payload := cloneMetadata(candidate.payload)
+		payload["channels"] = channels
+		payload["vector_score"] = candidate.vectorScore
+		payload["text_score"] = candidate.textScore
+		document := candidate.document
+		results = append(results, SearchResult{
+			Document: &document,
+			PointID:  candidate.pointID,
+			Rank:     index + 1,
+			Score:    score,
+			Stage:    stage,
+			Payload:  payload,
+		})
+		documentID := document.ID
+		queryResults = append(queryResults, QueryResultInput{
+			DocumentID:    &documentID,
+			QdrantPointID: candidate.pointID,
+			Rank:          index + 1,
+			Score:         score,
+			Stage:         stage,
+			Metadata: map[string]any{
+				"channels":     channels,
+				"vector_score": candidate.vectorScore,
+				"text_score":   candidate.textScore,
+			},
+		})
+	}
+	return results, queryResults
+}
+
+func textFiltersFromSearch(filters map[string]any) (TextSearchFilters, error) {
+	result := TextSearchFilters{Metadata: map[string]any{}}
+	for key, value := range filters {
+		switch {
+		case key == "source_type":
+			text, ok := value.(string)
+			if !ok {
+				return result, fmt.Errorf("source_type filter must be a string")
+			}
+			result.SourceType = text
+		case key == "source_id":
+			text, ok := value.(string)
+			if !ok {
+				return result, fmt.Errorf("source_id filter must be a string")
+			}
+			result.SourceID = text
+		case strings.HasPrefix(key, "metadata.") && len(key) > len("metadata."):
+			result.Metadata[strings.TrimPrefix(key, "metadata.")] = value
+		default:
+			return result, fmt.Errorf("unsupported hybrid search filter %q", key)
+		}
+	}
+	return result, nil
+}
+
+func countUniqueCandidates(
+	vectorResults []VectorSearchResult,
+	docsByPointID map[string]Document,
+	textResults []TextSearchResult,
+) int {
+	ids := make(map[string]struct{})
+	for _, result := range vectorResults {
+		if document, ok := docsByPointID[result.ID]; ok {
+			ids[document.ID] = struct{}{}
+		}
+	}
+	for _, result := range textResults {
+		ids[result.Document.ID] = struct{}{}
+	}
+	return len(ids)
+}
+
+func cloneMetadata(metadata map[string]any) map[string]any {
+	clone := make(map[string]any, len(metadata)+2)
+	for key, value := range metadata {
+		clone[key] = value
+	}
+	return clone
 }
 
 func payloadForDocument(doc *Document) map[string]any {
