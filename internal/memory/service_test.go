@@ -88,10 +88,11 @@ func TestValidateEventRequiresSessionForSequence(t *testing.T) {
 }
 
 func TestValidateEntryRejectsNegativeConfidence(t *testing.T) {
+	confidence := -0.1
 	req := CreateEntryRequest{
 		MemoryType: "semantic",
 		Content:    "Production port is 26001.",
-		Confidence: -0.1,
+		Confidence: &confidence,
 	}
 	normalizeEntryRequest(&req)
 	if err := validateEntryRequest(req, time.Now()); err == nil {
@@ -108,11 +109,44 @@ func TestNormalizeEntryAddsDefaults(t *testing.T) {
 	if req.ScopeType != DefaultScopeType || req.Status != StatusActive {
 		t.Fatalf("unexpected defaults: scope=%q status=%q", req.ScopeType, req.Status)
 	}
-	if req.Confidence != 0.5 || req.Importance != 0.5 {
-		t.Fatalf("unexpected scores: confidence=%v importance=%v", req.Confidence, req.Importance)
+	if req.Confidence != nil || req.Importance != nil {
+		t.Fatalf("scores should remain unset: confidence=%v importance=%v", req.Confidence, req.Importance)
 	}
 	if req.Content != "Production port is 26001." {
 		t.Fatalf("content = %q", req.Content)
+	}
+}
+
+func TestEntryMatchesSearchEnforcesValidityAndTTL(t *testing.T) {
+	now := time.Now()
+	req := SearchEntriesRequest{Status: StatusActive}
+	entry := Entry{
+		Status:    StatusActive,
+		ValidFrom: now.Add(-time.Hour),
+	}
+	if !entryMatchesSearch(entry, req, now) {
+		t.Fatal("active valid entry should match")
+	}
+
+	expired := now.Add(-time.Minute)
+	entry.TTLAt = &expired
+	if entryMatchesSearch(entry, req, now) {
+		t.Fatal("expired entry should not match")
+	}
+
+	entry.TTLAt = nil
+	future := now.Add(time.Hour)
+	entry.ValidFrom = future
+	if entryMatchesSearch(entry, req, now) {
+		t.Fatal("not-yet-valid entry should not match")
+	}
+}
+
+func TestNormalizeSearchRequestDefaults(t *testing.T) {
+	req := SearchEntriesRequest{Query: " deployment failure "}
+	normalizeSearchRequest(&req)
+	if req.Query != "deployment failure" || req.TopK != 8 || req.Status != StatusActive {
+		t.Fatalf("unexpected normalized search request: %#v", req)
 	}
 }
 

@@ -1,6 +1,6 @@
 // Package mcpauth provides shared API-key authentication and scope
 // enforcement for per-module MCP servers (todo, notes, reports, bookmarks,
-// expenses, skills). Each module mounts its own MCP endpoint but reuses this
+// expenses, memory, skills). Each module mounts its own MCP endpoint but reuses this
 // package instead of duplicating context plumbing and scope checks.
 package mcpauth
 

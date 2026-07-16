@@ -120,10 +120,11 @@ External Agents (REST / MCP)
 | Reports | `/reports` | CRUD + source/tag filter + full-text search |
 | Bookmarks | `/bookmarks` | CRUD + read status + tag/search filters |
 | Expenses | `/expenses` | CRUD + summary + tag/date filters |
+| Memory | `/memory` | Event journal, evidence-backed memories, hybrid retrieval |
 | Skills | `/skills` | Skill logs, versions, stats, signals, semantic search |
 | Tags | `/tags` | Aggregated tag counts across modules |
 | Admin | `/admin/*` | Stats, user management, API key management, usage |
-| MCP | `/mcp`, `/mcp/skills` | Streamable HTTP tool endpoints using API key auth and scopes |
+| MCP | `/mcp/*` | Per-module Streamable HTTP endpoints using API key auth and scopes |
 
 ## Database Migrations
 

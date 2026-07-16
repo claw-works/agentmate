@@ -109,8 +109,8 @@ type CreateEntryRequest struct {
 	Title         string          `json:"title"`
 	Content       string          `json:"content"`
 	Summary       string          `json:"summary"`
-	Confidence    float64         `json:"confidence"`
-	Importance    float64         `json:"importance"`
+	Confidence    *float64        `json:"confidence"`
+	Importance    *float64        `json:"importance"`
 	Status        string          `json:"status"`
 	Metadata      map[string]any  `json:"metadata"`
 	TTLAt         *time.Time      `json:"ttl_at"`
@@ -122,7 +122,14 @@ type CreateEntryRequest struct {
 
 type EntryDetail struct {
 	Entry
-	Evidence []Evidence `json:"evidence"`
+	Evidence []Evidence  `json:"evidence"`
+	Indexing *IndexState `json:"indexing,omitempty"`
+}
+
+type IndexState struct {
+	Status     string `json:"status"`
+	DocumentID string `json:"document_id,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 type ListEntriesParams struct {
@@ -134,10 +141,34 @@ type ListEntriesParams struct {
 	Offset     int
 }
 
+type SearchEntriesRequest struct {
+	Query      string `json:"query"`
+	TopK       int    `json:"top_k"`
+	ScopeType  string `json:"scope_type"`
+	ScopeKey   string `json:"scope_key"`
+	MemoryType string `json:"memory_type"`
+	Status     string `json:"status"`
+}
+
+type SearchItem struct {
+	Entry     *EntryDetail `json:"entry"`
+	Rank      int          `json:"rank"`
+	Score     float64      `json:"score"`
+	Channels  []string     `json:"channels"`
+	HitReason string       `json:"hit_reason"`
+}
+
+type SearchResponse struct {
+	Items []SearchItem `json:"items"`
+	Total int          `json:"total"`
+}
+
 type createEntryInput struct {
 	CreateEntryRequest
 	ContentHash      string
 	ValidFromValue   time.Time
+	ConfidenceValue  float64
+	ImportanceValue  float64
 	ExtractionMethod string
 	ExtractorVersion string
 }

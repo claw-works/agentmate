@@ -103,7 +103,10 @@ func (r *Repo) DocumentsByPointIDs(ctx context.Context, accountID, collection st
 		   metadata, qdrant_collection, qdrant_point_id, vector_name, embedding_model, embedding_dimension,
 		   status, error, indexed_at, created_at, updated_at
 		 FROM retrieval_documents
-		 WHERE account_id = $1 AND qdrant_collection = $2 AND qdrant_point_id::text = ANY($3)`,
+		 WHERE account_id = $1
+		   AND qdrant_collection = $2
+		   AND status = 'indexed'
+		   AND qdrant_point_id::text = ANY($3)`,
 		accountID, collection, pointIDs,
 	)
 	if err != nil {
@@ -156,7 +159,7 @@ func (r *Repo) SearchDocumentsTextFiltered(
 		 FROM retrieval_documents
 		 WHERE account_id = $1
 		   AND namespace = $2
-		   AND status = 'indexed'
+		   AND status IN ('indexed', 'failed')
 		   AND to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(content, '')) @@ plainto_tsquery('simple', $3)
 		   AND ($4 = '' OR source_type = $4)
 		   AND ($5 = '' OR source_id = $5)

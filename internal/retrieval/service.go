@@ -58,20 +58,29 @@ func (s *Service) IndexDocument(ctx context.Context, owner ownership.Owner, in U
 		in.VectorName = s.store.VectorName()
 	}
 
-	vectors, err := s.embedder.Embed(ctx, []string{in.Content})
+	doc, err := s.repo.UpsertDocument(ctx, owner, in)
 	if err != nil {
 		return nil, err
 	}
+
+	vectors, err := s.embedder.Embed(ctx, []string{in.Content})
+	if err != nil {
+		_ = s.repo.MarkDocumentFailed(ctx, owner.Account(), doc.ID, err.Error())
+		return nil, err
+	}
 	if len(vectors) != 1 || len(vectors[0]) == 0 {
-		return nil, fmt.Errorf("empty embedding")
+		err = fmt.Errorf("empty embedding")
+		_ = s.repo.MarkDocumentFailed(ctx, owner.Account(), doc.ID, err.Error())
+		return nil, err
 	}
 	in.EmbeddingDimension = len(vectors[0])
 
 	if err := s.store.EnsureCollection(ctx, in.EmbeddingDimension); err != nil {
+		_ = s.repo.MarkDocumentFailed(ctx, owner.Account(), doc.ID, err.Error())
 		return nil, err
 	}
 
-	doc, err := s.repo.UpsertDocument(ctx, owner, in)
+	doc, err = s.repo.UpsertDocument(ctx, owner, in)
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +333,6 @@ func fuseSearchCandidates(
 		if candidate == nil {
 			candidate = &fusedCandidate{
 				document: result.Document,
-				pointID:  result.Document.QdrantPointID,
 				payload:  map[string]any{},
 			}
 			candidates[result.Document.ID] = candidate

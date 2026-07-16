@@ -92,6 +92,8 @@ Available scopes:
 | `bookmarks:rw` | Read & write bookmarks (implies `bookmarks:r`) |
 | `expenses:r` | Read expenses |
 | `expenses:rw` | Read & write expenses (implies `expenses:r`) |
+| `memory:r` | Read and search durable memories |
+| `memory:rw` | Record events and store durable memories (implies `memory:r`) |
 | `skills:r` | Read skill logs and versions |
 | `skills:rw` | Read & write skill logs and versions (implies `skills:r`) |
 | `manage_keys` | Create/delete API keys |
@@ -113,6 +115,19 @@ Empty scopes array `[]` means **full access**.
 - `GET /api/notes/:id` — Get by ID (scope: `notes:r`)
 - `PATCH /api/notes/:id` — Update (scope: `notes:rw`)
 - `DELETE /api/notes/:id` — Delete (scope: `notes:rw`)
+
+### Memory (authenticated)
+- `POST /api/memory/events` — Append an immutable, idempotent memory event (scope: `memory:rw`)
+- `POST /api/memory/entries` — Store an evidence-backed durable memory (scope: `memory:rw`)
+- `GET /api/memory/entries` — List memories by scope, type, or status (scope: `memory:r`)
+- `GET /api/memory/entries/:id` — Get a memory with its evidence (scope: `memory:r`)
+- `POST /api/memory/search` — Hybrid PostgreSQL FTS and Qdrant search (scope: `memory:r`)
+
+Event retries must reuse the same `idempotency_key`. Reusing a key with different
+event content returns `409 Conflict`. Durable memories require either
+`source_event_id` or at least one `evidence` item. PostgreSQL is the source of truth:
+if embedding or Qdrant indexing fails, creation still succeeds with
+`indexing.status=failed`, and search continues through PostgreSQL FTS.
 
 ### Skills (authenticated)
 - `POST /api/skills/sources` — Register or update a skill source (`git` or `local`) (scope: `skills:rw`)
@@ -208,6 +223,7 @@ integration opt into only the modules it needs.
 | `POST /mcp/reports` | `report_create`, `report_get`, `report_list`, `report_list_sources`, `report_update`, `report_delete` |
 | `POST /mcp/bookmarks` | `bookmark_create`, `bookmark_get`, `bookmark_list`, `bookmark_update`, `bookmark_delete` |
 | `POST /mcp/expenses` | `expense_create`, `expense_get`, `expense_list`, `expense_summary`, `expense_update`, `expense_delete` |
+| `POST /mcp/memory` | `memory_record`, `memory_store`, `memory_search`, `memory_get` |
 | `POST /mcp/skills` | `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active` |
 
 Authenticate with a valid API key via `X-Api-Key` header, `Authorization: Bearer ak_xxx`,

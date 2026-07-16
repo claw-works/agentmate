@@ -16,6 +16,7 @@ import (
 	"github.com/wellxie/agentmate/internal/bookmarks"
 	"github.com/wellxie/agentmate/internal/db"
 	"github.com/wellxie/agentmate/internal/expenses"
+	"github.com/wellxie/agentmate/internal/memory"
 	"github.com/wellxie/agentmate/internal/middleware"
 	"github.com/wellxie/agentmate/internal/notes"
 	"github.com/wellxie/agentmate/internal/reports"
@@ -67,6 +68,10 @@ func main() {
 	retrievalStore := retrieval.NewQdrantClient(retrievalCfg)
 	retrievalEmbedder := retrieval.NewOpenAIEmbeddingClient(retrievalCfg)
 	retrievalSvc := retrieval.NewService(retrievalRepo, retrievalStore, retrievalEmbedder)
+
+	memoryRepo := memory.NewRepo(pool)
+	memorySvc := memory.NewService(memoryRepo, retrievalSvc)
+	memoryHandler := memory.NewHandler(memorySvc)
 
 	skillsRepo := skills.NewRepo(pool)
 	skillsSvc := skills.NewService(skillsRepo, retrievalSvc)
@@ -150,6 +155,14 @@ func main() {
 	protected.PATCH("/expenses/:id", auth.RequireScope("expenses:rw"), expensesHandler.Update)
 	protected.DELETE("/expenses/:id", auth.RequireScope("expenses:rw"), expensesHandler.Delete)
 
+	// Memory - read
+	protected.GET("/memory/entries", auth.RequireScope("memory:r"), memoryHandler.ListEntries)
+	protected.GET("/memory/entries/:id", auth.RequireScope("memory:r"), memoryHandler.GetEntry)
+	protected.POST("/memory/search", auth.RequireScope("memory:r"), memoryHandler.SearchEntries)
+	// Memory - write
+	protected.POST("/memory/events", auth.RequireScope("memory:rw"), memoryHandler.RecordEvent)
+	protected.POST("/memory/entries", auth.RequireScope("memory:rw"), memoryHandler.CreateEntry)
+
 	// Skills - read
 	protected.GET("/skills/logs", auth.RequireScope("skills:r"), skillsHandler.ListLogs)
 	protected.GET("/skills/sources", auth.RequireScope("skills:r"), skillsHandler.ListSources)
@@ -186,6 +199,7 @@ func main() {
 	r.Any("/mcp/reports", gin.WrapH(reports.NewMCPServer(reportsSvc, authSvc)))
 	r.Any("/mcp/bookmarks", gin.WrapH(bookmarks.NewMCPServer(bookmarksSvc, authSvc)))
 	r.Any("/mcp/expenses", gin.WrapH(expenses.NewMCPServer(expensesSvc, authSvc)))
+	r.Any("/mcp/memory", gin.WrapH(memory.NewMCPServer(memorySvc, authSvc)))
 	r.Any("/mcp/skills", gin.WrapH(skills.NewMCPServer(skillsSvc, authSvc)))
 
 	registerFrontend(r)

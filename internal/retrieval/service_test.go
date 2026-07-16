@@ -53,6 +53,17 @@ func TestTextFiltersFromSearch(t *testing.T) {
 	}
 }
 
+func TestFuseSearchCandidatesLeavesLexicalPointIDEmpty(t *testing.T) {
+	document := Document{ID: "lexical-only", QdrantPointID: "unused-point"}
+	results, logs := fuseSearchCandidates(nil, nil, []TextSearchResult{{Document: document, Score: 0.2}}, 1)
+	if len(results) != 1 || len(logs) != 1 {
+		t.Fatalf("unexpected result lengths: results=%d logs=%d", len(results), len(logs))
+	}
+	if results[0].PointID != "" || logs[0].QdrantPointID != "" {
+		t.Fatalf("lexical-only result must not claim a Qdrant hit: result=%q log=%q", results[0].PointID, logs[0].QdrantPointID)
+	}
+}
+
 func TestTextFiltersRejectUnsupportedFilter(t *testing.T) {
 	if _, err := textFiltersFromSearch(map[string]any{"scope_type": "repository"}); err == nil {
 		t.Fatal("expected unsupported filter error")

@@ -81,7 +81,7 @@ func (r *Repo) CreateEntry(ctx context.Context, owner ownership.Owner, in create
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 		 RETURNING `+entryColumns,
 		owner.Account(), owner.UserID, owner.KeyID, in.ScopeType, in.ScopeKey, in.MemoryType, in.Title,
-		in.Content, in.Summary, in.ContentHash, in.Confidence, in.Importance, in.Status, metadata,
+		in.Content, in.Summary, in.ContentHash, in.ConfidenceValue, in.ImportanceValue, in.Status, metadata,
 		in.TTLAt, in.ValidFromValue, in.ValidTo, in.SourceEventID, in.ExtractionMethod, in.ExtractorVersion,
 	).Scan(scanEntry(&entry)...)
 	if err != nil {
@@ -191,6 +191,19 @@ func (r *Repo) ListEntries(ctx context.Context, accountID string, params ListEnt
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (r *Repo) IncrementAccess(ctx context.Context, accountID string, memoryIDs []string) error {
+	if len(memoryIDs) == 0 {
+		return nil
+	}
+	_, err := r.pool.Exec(ctx,
+		`UPDATE memory_entries
+		 SET access_count = access_count + 1, last_accessed_at = NOW()
+		 WHERE account_id = $1 AND id::text = ANY($2)`,
+		accountID, memoryIDs,
+	)
+	return err
 }
 
 func insertEvidence(ctx context.Context, tx pgx.Tx, owner ownership.Owner, memoryID string, in EvidenceInput) (*Evidence, error) {

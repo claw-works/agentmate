@@ -12,19 +12,26 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/wellxie/agentmate/internal/ownership"
+	"github.com/wellxie/agentmate/internal/retrieval"
 )
 
 var (
 	ErrNotFound            = errors.New("memory entry not found")
+	ErrInvalidInput        = errors.New("invalid memory input")
 	ErrIdempotencyConflict = errors.New("idempotency key already used with different event content")
 )
 
 type Service struct {
-	repo *Repo
+	repo      *Repo
+	retrieval *retrieval.Service
 }
 
-func NewService(repo *Repo) *Service {
-	return &Service{repo: repo}
+func NewService(repo *Repo, retrievalServices ...*retrieval.Service) *Service {
+	service := &Service{repo: repo}
+	if len(retrievalServices) > 0 {
+		service.retrieval = retrievalServices[0]
+	}
+	return service
 }
 
 func (s *Service) RecordEvent(ctx context.Context, owner ownership.Owner, req RecordEventRequest) (*Event, bool, error) {
@@ -72,27 +79,42 @@ func (s *Service) CreateEntry(ctx context.Context, owner ownership.Owner, req Cr
 		})
 	}
 	if len(req.Evidence) == 0 {
-		return nil, fmt.Errorf("at least one evidence item or source_event_id is required")
+		return nil, invalidInputf("at least one evidence item or source_event_id is required")
 	}
 
 	validFrom := now
 	if req.ValidFrom != nil {
 		validFrom = req.ValidFrom.UTC()
 	}
-	return s.repo.CreateEntry(ctx, owner, createEntryInput{
+	confidence := 0.5
+	if req.Confidence != nil {
+		confidence = *req.Confidence
+	}
+	importance := 0.5
+	if req.Importance != nil {
+		importance = *req.Importance
+	}
+	entry, err := s.repo.CreateEntry(ctx, owner, createEntryInput{
 		CreateEntryRequest: req,
 		ContentHash:        sha256Hex(req.Content),
 		ValidFromValue:     validFrom,
+		ConfidenceValue:    confidence,
+		ImportanceValue:    importance,
 		ExtractionMethod:   ExtractionExplicit,
 	})
+	if err != nil {
+		return nil, err
+	}
+	entry.Indexing = s.indexEntry(ctx, owner, entry)
+	return entry, nil
 }
 
 func (s *Service) GetEntry(ctx context.Context, accountID, id string) (*EntryDetail, error) {
 	if strings.TrimSpace(accountID) == "" {
-		return nil, fmt.Errorf("account id required")
+		return nil, invalidInputf("account id required")
 	}
 	if strings.TrimSpace(id) == "" {
-		return nil, fmt.Errorf("memory id required")
+		return nil, invalidInputf("memory id required")
 	}
 	entry, err := s.repo.GetEntry(ctx, accountID, id)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -103,7 +125,7 @@ func (s *Service) GetEntry(ctx context.Context, accountID, id string) (*EntryDet
 
 func (s *Service) ListEntries(ctx context.Context, accountID string, params ListEntriesParams) ([]Entry, int, error) {
 	if strings.TrimSpace(accountID) == "" {
-		return nil, 0, fmt.Errorf("account id required")
+		return nil, 0, invalidInputf("account id required")
 	}
 	normalizeListParams(&params)
 	if err := validateListParams(params); err != nil {
@@ -118,6 +140,130 @@ func (s *Service) ListEntries(ctx context.Context, accountID string, params List
 		return nil, 0, err
 	}
 	return items, total, nil
+}
+
+func (s *Service) SearchEntries(ctx context.Context, owner ownership.Owner, req SearchEntriesRequest) (*SearchResponse, error) {
+	if err := validateOwner(owner); err != nil {
+		return nil, err
+	}
+	if s.retrieval == nil {
+		return nil, fmt.Errorf("retrieval service is not configured")
+	}
+	normalizeSearchRequest(&req)
+	if err := validateSearchRequest(req); err != nil {
+		return nil, err
+	}
+
+	filters := map[string]any{
+		"source_type":     "memory_entry",
+		"metadata.status": req.Status,
+	}
+	if req.ScopeType != "" {
+		filters["metadata.scope_type"] = req.ScopeType
+	}
+	if req.ScopeKey != "" {
+		filters["metadata.scope_key"] = req.ScopeKey
+	}
+	if req.MemoryType != "" {
+		filters["metadata.memory_type"] = req.MemoryType
+	}
+
+	candidateLimit := req.TopK * 3
+	if candidateLimit > 50 {
+		candidateLimit = 50
+	}
+	results, err := s.retrieval.SearchHybrid(ctx, owner, retrieval.SearchRequest{
+		Namespace: retrieval.NamespaceMemory,
+		Query:     req.Query,
+		TopK:      candidateLimit,
+		Filters:   filters,
+		Metadata: map[string]any{
+			"feature":         "memory_search",
+			"requested_top_k": req.TopK,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	items := make([]SearchItem, 0, req.TopK)
+	accessedIDs := make([]string, 0, req.TopK)
+	for _, result := range results {
+		if result.Document == nil || result.Document.SourceType != "memory_entry" {
+			continue
+		}
+		entry, err := s.repo.GetEntry(ctx, owner.Account(), result.Document.SourceID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !entryMatchesSearch(entry.Entry, req, now) {
+			continue
+		}
+		channels := searchChannels(result)
+		items = append(items, SearchItem{
+			Entry:     entry,
+			Rank:      len(items) + 1,
+			Score:     result.Score,
+			Channels:  channels,
+			HitReason: searchHitReason(entry.Entry, channels),
+		})
+		accessedIDs = append(accessedIDs, entry.ID)
+		if len(items) == req.TopK {
+			break
+		}
+	}
+	_ = s.repo.IncrementAccess(ctx, owner.Account(), accessedIDs)
+	return &SearchResponse{Items: items, Total: len(items)}, nil
+}
+
+func (s *Service) indexEntry(ctx context.Context, owner ownership.Owner, entry *EntryDetail) *IndexState {
+	if s.retrieval == nil {
+		return &IndexState{Status: "not_configured"}
+	}
+	metadata := map[string]any{
+		"memory_id":         entry.ID,
+		"scope_type":        entry.ScopeType,
+		"scope_key":         entry.ScopeKey,
+		"memory_type":       entry.MemoryType,
+		"status":            entry.Status,
+		"confidence":        entry.Confidence,
+		"importance":        entry.Importance,
+		"valid_from":        entry.ValidFrom.Format(time.RFC3339Nano),
+		"extraction_method": entry.ExtractionMethod,
+	}
+	if entry.ValidTo != nil {
+		metadata["valid_to"] = entry.ValidTo.Format(time.RFC3339Nano)
+	}
+	if entry.TTLAt != nil {
+		metadata["ttl_at"] = entry.TTLAt.Format(time.RFC3339Nano)
+	}
+	if entry.SourceEventID != nil {
+		metadata["source_event_id"] = *entry.SourceEventID
+	}
+	if len(entry.Metadata) > 0 {
+		var attributes map[string]any
+		if err := json.Unmarshal(entry.Metadata, &attributes); err == nil && len(attributes) > 0 {
+			metadata["attributes"] = attributes
+		}
+	}
+
+	document, err := s.retrieval.IndexDocument(ctx, owner, retrieval.UpsertDocumentInput{
+		Namespace:  retrieval.NamespaceMemory,
+		SourceType: "memory_entry",
+		SourceID:   entry.ID,
+		ChunkKey:   "current",
+		Title:      entry.Title,
+		Content:    memoryIndexContent(entry.Entry),
+		Metadata:   metadata,
+	})
+	if err != nil {
+		return &IndexState{Status: retrieval.StatusFailed, Error: err.Error()}
+	}
+	return &IndexState{Status: document.Status, DocumentID: document.ID}
 }
 
 func normalizeEventRequest(req *RecordEventRequest) {
@@ -142,30 +288,30 @@ func normalizeEventRequest(req *RecordEventRequest) {
 
 func validateEventRequest(req RecordEventRequest) error {
 	if !validScopeTypes[req.ScopeType] {
-		return fmt.Errorf("invalid scope_type %q", req.ScopeType)
+		return invalidInputf("invalid scope_type %q", req.ScopeType)
 	}
 	if req.ScopeType != DefaultScopeType && req.ScopeKey == "" {
-		return fmt.Errorf("scope_key required for %s scope", req.ScopeType)
+		return invalidInputf("scope_key required for %s scope", req.ScopeType)
 	}
 	if !validEventTypes[req.EventType] {
-		return fmt.Errorf("invalid event_type %q", req.EventType)
+		return invalidInputf("invalid event_type %q", req.EventType)
 	}
 	if req.IdempotencyKey == "" {
-		return fmt.Errorf("idempotency_key required")
+		return invalidInputf("idempotency_key required")
 	}
 	if len(req.IdempotencyKey) > 512 {
-		return fmt.Errorf("idempotency_key must be at most 512 characters")
+		return invalidInputf("idempotency_key must be at most 512 characters")
 	}
 	if req.SequenceNo != nil {
 		if req.SessionID == "" {
-			return fmt.Errorf("session_id required when sequence_no is set")
+			return invalidInputf("session_id required when sequence_no is set")
 		}
 		if *req.SequenceNo < 0 {
-			return fmt.Errorf("sequence_no must not be negative")
+			return invalidInputf("sequence_no must not be negative")
 		}
 	}
 	if (req.SourceType == "") != (req.SourceID == "") {
-		return fmt.Errorf("source_type and source_id must be provided together")
+		return invalidInputf("source_type and source_id must be provided together")
 	}
 	return nil
 }
@@ -184,12 +330,6 @@ func normalizeEntryRequest(req *CreateEntryRequest) {
 	if req.Status == "" {
 		req.Status = StatusActive
 	}
-	if req.Confidence == 0 {
-		req.Confidence = 0.5
-	}
-	if req.Importance == 0 {
-		req.Importance = 0.5
-	}
 	if req.SourceEventID != nil {
 		value := strings.TrimSpace(*req.SourceEventID)
 		req.SourceEventID = &value
@@ -203,42 +343,42 @@ func normalizeEntryRequest(req *CreateEntryRequest) {
 
 func validateEntryRequest(req CreateEntryRequest, now time.Time) error {
 	if !validScopeTypes[req.ScopeType] {
-		return fmt.Errorf("invalid scope_type %q", req.ScopeType)
+		return invalidInputf("invalid scope_type %q", req.ScopeType)
 	}
 	if req.ScopeType != DefaultScopeType && req.ScopeKey == "" {
-		return fmt.Errorf("scope_key required for %s scope", req.ScopeType)
+		return invalidInputf("scope_key required for %s scope", req.ScopeType)
 	}
 	if !validMemoryTypes[req.MemoryType] {
-		return fmt.Errorf("invalid memory_type %q", req.MemoryType)
+		return invalidInputf("invalid memory_type %q", req.MemoryType)
 	}
 	if req.Content == "" {
-		return fmt.Errorf("content required")
+		return invalidInputf("content required")
 	}
-	if req.Confidence < 0 || req.Confidence > 1 {
-		return fmt.Errorf("confidence must be between 0 and 1")
+	if req.Confidence != nil && (*req.Confidence < 0 || *req.Confidence > 1) {
+		return invalidInputf("confidence must be between 0 and 1")
 	}
-	if req.Importance < 0 || req.Importance > 1 {
-		return fmt.Errorf("importance must be between 0 and 1")
+	if req.Importance != nil && (*req.Importance < 0 || *req.Importance > 1) {
+		return invalidInputf("importance must be between 0 and 1")
 	}
 	if req.Status != StatusActive && req.Status != StatusPending {
-		return fmt.Errorf("status must be active or pending when creating a memory")
+		return invalidInputf("status must be active or pending when creating a memory")
 	}
 	if req.TTLAt != nil && !req.TTLAt.After(now) {
-		return fmt.Errorf("ttl_at must be in the future")
+		return invalidInputf("ttl_at must be in the future")
 	}
 	effectiveValidFrom := now
 	if req.ValidFrom != nil {
 		effectiveValidFrom = *req.ValidFrom
 	}
 	if req.ValidTo != nil && req.ValidTo.Before(effectiveValidFrom) {
-		return fmt.Errorf("valid_to must not be before valid_from")
+		return invalidInputf("valid_to must not be before valid_from")
 	}
 	if req.SourceEventID != nil && *req.SourceEventID == "" {
-		return fmt.Errorf("source_event_id must not be empty")
+		return invalidInputf("source_event_id must not be empty")
 	}
 	for i, item := range req.Evidence {
 		if item.SourceType == "" || item.SourceID == "" {
-			return fmt.Errorf("evidence[%d] source_type and source_id are required", i)
+			return invalidInputf("evidence[%d] source_type and source_id are required", i)
 		}
 	}
 	return nil
@@ -259,13 +399,13 @@ func normalizeListParams(params *ListEntriesParams) {
 
 func validateListParams(params ListEntriesParams) error {
 	if params.ScopeType != "" && !validScopeTypes[params.ScopeType] {
-		return fmt.Errorf("invalid scope_type %q", params.ScopeType)
+		return invalidInputf("invalid scope_type %q", params.ScopeType)
 	}
 	if params.MemoryType != "" && !validMemoryTypes[params.MemoryType] {
-		return fmt.Errorf("invalid memory_type %q", params.MemoryType)
+		return invalidInputf("invalid memory_type %q", params.MemoryType)
 	}
 	if params.Status != "" && !validStatuses[params.Status] {
-		return fmt.Errorf("invalid status %q", params.Status)
+		return invalidInputf("invalid status %q", params.Status)
 	}
 	return nil
 }
@@ -309,12 +449,107 @@ func hasEventEvidence(items []EvidenceInput, eventID string) bool {
 
 func validateOwner(owner ownership.Owner) error {
 	if strings.TrimSpace(owner.Account()) == "" {
-		return fmt.Errorf("account id required")
+		return invalidInputf("account id required")
 	}
 	if strings.TrimSpace(owner.UserID) == "" {
-		return fmt.Errorf("user id required")
+		return invalidInputf("user id required")
 	}
 	return nil
+}
+
+func normalizeSearchRequest(req *SearchEntriesRequest) {
+	req.Query = strings.TrimSpace(req.Query)
+	req.ScopeType = strings.ToLower(strings.TrimSpace(req.ScopeType))
+	req.ScopeKey = strings.TrimSpace(req.ScopeKey)
+	req.MemoryType = strings.ToLower(strings.TrimSpace(req.MemoryType))
+	req.Status = strings.ToLower(strings.TrimSpace(req.Status))
+	if req.Status == "" {
+		req.Status = StatusActive
+	}
+	if req.TopK <= 0 || req.TopK > 20 {
+		req.TopK = 8
+	}
+}
+
+func validateSearchRequest(req SearchEntriesRequest) error {
+	if req.Query == "" {
+		return invalidInputf("query required")
+	}
+	if req.ScopeType != "" && !validScopeTypes[req.ScopeType] {
+		return invalidInputf("invalid scope_type %q", req.ScopeType)
+	}
+	if req.ScopeKey != "" && req.ScopeType == "" {
+		return invalidInputf("scope_type required when scope_key is set")
+	}
+	if req.MemoryType != "" && !validMemoryTypes[req.MemoryType] {
+		return invalidInputf("invalid memory_type %q", req.MemoryType)
+	}
+	if !validStatuses[req.Status] {
+		return invalidInputf("invalid status %q", req.Status)
+	}
+	return nil
+}
+
+func entryMatchesSearch(entry Entry, req SearchEntriesRequest, now time.Time) bool {
+	if entry.Status != req.Status {
+		return false
+	}
+	if req.ScopeType != "" && entry.ScopeType != req.ScopeType {
+		return false
+	}
+	if req.ScopeKey != "" && entry.ScopeKey != req.ScopeKey {
+		return false
+	}
+	if req.MemoryType != "" && entry.MemoryType != req.MemoryType {
+		return false
+	}
+	if entry.ValidFrom.After(now) || (entry.ValidTo != nil && !entry.ValidTo.After(now)) {
+		return false
+	}
+	return entry.TTLAt == nil || entry.TTLAt.After(now)
+}
+
+func searchChannels(result retrieval.SearchResult) []string {
+	if raw, ok := result.Payload["channels"].([]string); ok {
+		return raw
+	}
+	if raw, ok := result.Payload["channels"].([]any); ok {
+		channels := make([]string, 0, len(raw))
+		for _, value := range raw {
+			if channel, ok := value.(string); ok {
+				channels = append(channels, channel)
+			}
+		}
+		return channels
+	}
+	if result.Stage == "" {
+		return []string{}
+	}
+	return strings.Split(result.Stage, "+")
+}
+
+func searchHitReason(entry Entry, channels []string) string {
+	reason := strings.Join(channels, "+") + " match"
+	if entry.ScopeType != DefaultScopeType {
+		reason += " in " + entry.ScopeType + ":" + entry.ScopeKey
+	}
+	return reason
+}
+
+func memoryIndexContent(entry Entry) string {
+	parts := make([]string, 0, 3)
+	if entry.Title != "" {
+		parts = append(parts, entry.Title)
+	}
+	if entry.Summary != "" {
+		parts = append(parts, entry.Summary)
+	}
+	parts = append(parts, entry.Content)
+	return strings.Join(parts, "\n\n")
+}
+
+func invalidInputf(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrInvalidInput, fmt.Sprintf(format, args...))
 }
 
 var validScopeTypes = map[string]bool{
