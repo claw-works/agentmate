@@ -1,0 +1,4 @@
+interface:
+  display_name: "AgentMate Memory"
+  short_description: "Recall and persist evidence-backed AgentMate memory"
+  default_prompt: "Use $agentmate-memory to recall relevant context and preserve durable lessons for this task."

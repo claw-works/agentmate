@@ -55,6 +55,17 @@ cp .env.example .env
 go run ./cmd/server
 ```
 
+## Agent Skills
+
+The official [AgentMate Memory skill](integrations/skills/agentmate-memory/SKILL.md)
+teaches compatible agents to recall scoped context, journal meaningful events,
+and preserve evidence-backed durable memory through the Memory MCP server.
+
+Install the complete `integrations/skills/agentmate-memory` directory in the
+agent host's skills directory, then configure its MCP client to use
+`http://localhost:26001/mcp/memory` or the deployment's corresponding URL. Keep
+the API key in the host's environment or secret manager.
+
 ## API Endpoints
 
 All REST endpoints are mounted under `/api` (kept separate from the frontend's
