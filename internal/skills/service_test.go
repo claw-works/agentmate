@@ -90,3 +90,76 @@ func TestNormalizeSnapshotFilesRejectsSHAMismatch(t *testing.T) {
 		t.Fatal("expected sha256 mismatch error")
 	}
 }
+
+func TestNormalizeSnapshotFilesRejectsPackageHashMismatch(t *testing.T) {
+	_, _, _, _, err := normalizeSnapshotFiles(SubmitLocalSnapshotRequest{
+		PackageHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Files: []SnapshotFile{{
+			Path:    "SKILL.md",
+			Content: "# Snapshot\n",
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected package_hash mismatch error")
+	}
+}
+
+func TestNormalizeSnapshotFilesRejectsTreeHashMismatch(t *testing.T) {
+	_, _, _, _, err := normalizeSnapshotFiles(SubmitLocalSnapshotRequest{
+		TreeHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Files: []SnapshotFile{{
+			Path:    "SKILL.md",
+			Content: "# Snapshot\n",
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected tree_hash mismatch error")
+	}
+}
+
+func TestPackageRevisionKeyUsesPackageIdentity(t *testing.T) {
+	packageHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if got, want := packageRevisionKey(packageHash), "package:"+packageHash; got != want {
+		t.Fatalf("packageRevisionKey() = %q, want %q", got, want)
+	}
+}
+
+func TestNormalizeSnapshotFilesRejectsSizeMismatch(t *testing.T) {
+	_, _, _, _, err := normalizeSnapshotFiles(SubmitLocalSnapshotRequest{
+		Files: []SnapshotFile{{
+			Path:      "SKILL.md",
+			SizeBytes: 999,
+			Content:   "# Snapshot\n",
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected size_bytes mismatch error")
+	}
+}
+
+func TestNormalizeSourceRequestGitDefaultsToProviderBranch(t *testing.T) {
+	req, err := normalizeSourceRequest(CreateSkillSourceRequest{
+		Type:          "git",
+		RepositoryURL: "https://github.com/acme/skills.git",
+		PackagePath:   "skills/demo",
+	})
+	if err != nil {
+		t.Fatalf("normalizeSourceRequest error: %v", err)
+	}
+	if req.SyncMode != "server_pull" {
+		t.Fatalf("SyncMode = %q, want server_pull", req.SyncMode)
+	}
+	if req.DefaultRef != "" {
+		t.Fatalf("DefaultRef = %q, want provider default branch", req.DefaultRef)
+	}
+}
+
+func TestNormalizeSourceRequestRejectsUnsupportedGitProvider(t *testing.T) {
+	_, err := normalizeSourceRequest(CreateSkillSourceRequest{
+		Type:          "git",
+		RepositoryURL: "https://git.example.com/acme/skills.git",
+	})
+	if err == nil {
+		t.Fatal("expected unsupported Git provider error")
+	}
+}

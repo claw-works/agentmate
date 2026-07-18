@@ -25,19 +25,22 @@ type SkillLog struct {
 }
 
 type SkillVersion struct {
-	ID            string    `json:"id"`
-	AccountID     *string   `json:"account_id,omitempty"`
-	UserID        *string   `json:"user_id,omitempty"`
-	KeyID         *string   `json:"key_id,omitempty"`
-	SkillName     string    `json:"skill_name"`
-	Version       string    `json:"version"`
-	Content       string    `json:"content"`
-	ContentHash   string    `json:"content_hash"`
-	AgentID       string    `json:"agent_id"`
-	ChangeSummary string    `json:"change_summary"`
-	EvalPassRate  *float64  `json:"eval_pass_rate,omitempty"`
-	IsActive      bool      `json:"is_active"`
-	PublishedAt   time.Time `json:"published_at"`
+	ID               string    `json:"id"`
+	AccountID        *string   `json:"account_id,omitempty"`
+	UserID           *string   `json:"user_id,omitempty"`
+	KeyID            *string   `json:"key_id,omitempty"`
+	SourceID         *string   `json:"source_id,omitempty"`
+	SourceRevisionID *string   `json:"source_revision_id,omitempty"`
+	SkillName        string    `json:"skill_name"`
+	Version          string    `json:"version"`
+	Content          string    `json:"content"`
+	ContentHash      string    `json:"content_hash"`
+	PackageHash      string    `json:"package_hash"`
+	AgentID          string    `json:"agent_id"`
+	ChangeSummary    string    `json:"change_summary"`
+	EvalPassRate     *float64  `json:"eval_pass_rate,omitempty"`
+	IsActive         bool      `json:"is_active"`
+	PublishedAt      time.Time `json:"published_at"`
 }
 
 type SkillSource struct {
@@ -65,6 +68,7 @@ type SkillSourceRevision struct {
 	KeyID           *string   `json:"key_id,omitempty"`
 	SourceID        string    `json:"source_id"`
 	SkillVersionID  *string   `json:"skill_version_id,omitempty"`
+	RevisionKey     string    `json:"revision_key"`
 	CommitSHA       string    `json:"commit_sha"`
 	LocalSnapshotID string    `json:"local_snapshot_id"`
 	TreeHash        string    `json:"tree_hash"`
@@ -157,6 +161,33 @@ type SubmitLocalSnapshotResponse struct {
 	Version  *SkillVersion        `json:"version"`
 	Files    []SkillVersionFile   `json:"files"`
 	Index    *IndexSkillsResponse `json:"index,omitempty"`
+}
+
+type GitSourceSyncState struct {
+	Status      string    `json:"status"`
+	Provider    string    `json:"provider,omitempty"`
+	Ref         string    `json:"ref,omitempty"`
+	CommitSHA   string    `json:"commit_sha,omitempty"`
+	PackageHash string    `json:"package_hash,omitempty"`
+	Error       string    `json:"error,omitempty"`
+	SyncedAt    time.Time `json:"synced_at"`
+}
+
+type SyncGitSourceRequest struct {
+	Ref      string `json:"ref"`
+	Activate *bool  `json:"activate"`
+	Index    *bool  `json:"index"`
+}
+
+type SyncGitSourceResponse struct {
+	Source    *SkillSource         `json:"source"`
+	Provider  string               `json:"provider"`
+	Ref       string               `json:"ref"`
+	CommitSHA string               `json:"commit_sha"`
+	Revision  *SkillSourceRevision `json:"revision"`
+	Version   *SkillVersion        `json:"version"`
+	Files     []SkillVersionFile   `json:"files"`
+	Index     *IndexSkillsResponse `json:"index,omitempty"`
 }
 
 type LogListParams struct {

@@ -130,6 +130,21 @@ func (h *Handler) SubmitLocalSnapshot(c *gin.Context) {
 	c.JSON(http.StatusCreated, resp)
 }
 
+func (h *Handler) SyncGitSource(c *gin.Context) {
+	var req SyncGitSourceRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.SyncGitSource(c.Request.Context(), owner, c.Param("id"), req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
+
 // ─── Skill Versions ───
 
 func (h *Handler) CreateVersion(c *gin.Context) {

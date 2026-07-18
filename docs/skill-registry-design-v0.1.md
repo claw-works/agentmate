@@ -2,7 +2,7 @@
 
 **版本**：v0.1
 **日期**：2026-07-18
-**状态**：IN PROGRESS（package identity foundation 已实现；GitHub/GitLab sync 实现中）
+**状态**：IN PROGRESS（package identity foundation 与公共 GitHub/GitLab sync 核心已实现）
 **范围**：`internal/skills`、`migrations/000017_refactor_skill_package_identity.*.sql`、Skills REST/MCP 与检索集成。
 
 ---
@@ -243,9 +243,9 @@ Client
 
 成功 ingest 会把处于 `error` 的 source 恢复为 `active`；`disabled` source 不允许继续 ingest。
 
-### 4.2 Git sync（实现中）
+### 4.2 Git sync（已实现）
 
-计划流程：
+当前流程：
 
 ```text
 Client / Agent
@@ -263,14 +263,14 @@ Client / Agent
   -> return provider/ref/commit/revision/version/files
 ```
 
-当前已经实现公共 URL/provider 解析：
+已实现公共 URL/provider 解析、默认分支与指定 ref 解析、immutable commit SHA、受限 tar.gz 下载和 `package_path` 提取：
 
 - `https://github.com/<owner>/<repo>[.git]`
 - `https://gitlab.com/<namespace...>/<project>[.git]`
 
-拒绝 HTTP、URL credentials、query/fragment、仓库子页面、自建域名和非 GitHub/GitLab provider。
+拒绝 HTTP、URL credentials、query/fragment、仓库子页面、自建域名和非 GitHub/GitLab provider。archive 解析拒绝 traversal、link 和多 root，并限制下载大小、文件数、单文件及 package 总大小。
 
-下一实现批次包括：provider API client、commit resolution、tar.gz 下载与 package 提取。
+同步成功会持久化 `metadata.git_sync` 并恢复 source 为 `active`；provider、archive、normalization 或 ingest 失败会将 source 标记为 `error`，后续成功同步可恢复。相同 package 在不同 commit 上幂等复用 canonical revision/version。
 
 ---
 
@@ -325,7 +325,7 @@ provider client 使用标准库 `net/http`、`archive/tar` 和 `compress/gzip`�
 | `GET /api/skills/sources/:id` | 已实现 | 获取 source |
 | `GET /api/skills/sources/:id/revisions` | 已实现 | 列出 immutable revisions |
 | `POST /api/skills/sources/:id/snapshots` | 已实现 | 推送 local package snapshot |
-| `POST /api/skills/sources/:id/sync` | 规划中 | 拉取并同步 Git source |
+| `POST /api/skills/sources/:id/sync` | 已实现 | 拉取并同步 Git source |
 | `GET /api/skills/versions` | 已实现 | 列出 release versions |
 | `GET /api/skills/versions/active` | 已实现 | 获取 active version |
 | `GET /api/skills/versions/:id/files` | 已实现 | 获取 package 文件清单 |
@@ -469,7 +469,7 @@ PostgreSQL 集成测试由 `AGENTMATE_TEST_DATABASE_URL` 显式启用，默认�
 - local snapshot strict validation；
 - concurrency/idempotency integration test。
 
-### Phase 2：Public Git sync（实现中）
+### Phase 2：Public Git sync（核心已实现）
 
 - GitHub/GitLab provider；
 - ref -> immutable commit；
@@ -504,7 +504,8 @@ PostgreSQL 集成测试由 `AGENTMATE_TEST_DATABASE_URL` 显式启用，默认�
 | `internal/skills/model.go` | Registry API/domain models |
 | `internal/skills/repo.go` | PostgreSQL 事务、不变量与查询 |
 | `internal/skills/service.go` | source/snapshot normalization、hash、index orchestration |
-| `internal/skills/git_provider.go` | GitHub/GitLab provider 解析与后续 client |
+| `internal/skills/git_provider.go` | GitHub/GitLab URL、ref、commit 与 archive endpoint |
+| `internal/skills/git_archive.go` | 受限 tar.gz 下载和 package 提取 |
 | `internal/skills/handler.go` | REST handlers |
 | `internal/skills/mcp.go` | Skills MCP tools |
 | `internal/skills/repo_integration_test.go` | PostgreSQL concurrency/identity tests |

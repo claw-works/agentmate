@@ -57,6 +57,9 @@ go run ./cmd/server
 
 ## Agent Skills
 
+The architecture and implementation roadmap for the Git-backed registry are documented in
+[Skill Registry Design v0.1](docs/skill-registry-design-v0.1.md).
+
 The official [AgentMate Memory skill](integrations/skills/agentmate-memory/SKILL.md)
 teaches compatible agents to recall scoped context, journal meaningful events,
 and preserve evidence-backed durable memory through the Memory MCP server.
@@ -145,6 +148,7 @@ if embedding or Qdrant indexing fails, creation still succeeds with
 - `GET /api/skills/sources` — List skill sources (scope: `skills:r`)
 - `GET /api/skills/sources/:id/revisions` — List source revisions (scope: `skills:r`)
 - `POST /api/skills/sources/:id/snapshots` — Push a local skill package snapshot (scope: `skills:rw`)
+- `POST /api/skills/sources/:id/sync` — Pull and sync a public GitHub/GitLab skill package (scope: `skills:rw`)
 - `POST /api/skills/index` — Index active skill versions into retrieval (scope: `skills:rw`)
 - `POST /api/skills/search` — Semantic search across indexed active skills (scope: `skills:r`)
 - `GET /api/skills/versions/active?skill_name=` — Get active skill version (scope: `skills:r`)
@@ -235,7 +239,7 @@ integration opt into only the modules it needs.
 | `POST /mcp/bookmarks` | `bookmark_create`, `bookmark_get`, `bookmark_list`, `bookmark_update`, `bookmark_delete` |
 | `POST /mcp/expenses` | `expense_create`, `expense_get`, `expense_list`, `expense_summary`, `expense_update`, `expense_delete` |
 | `POST /mcp/memory` | `memory_record`, `memory_store`, `memory_search`, `memory_get` |
-| `POST /mcp/skills` | `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active` |
+| `POST /mcp/skills` | `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_source_sync`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active` |
 
 Authenticate with a valid API key via `X-Api-Key` header, `Authorization: Bearer ak_xxx`,
 or `?api_key=ak_xxx` query param. MCP tool calls enforce the same API key scopes as REST

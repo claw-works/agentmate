@@ -18,6 +18,7 @@ var toolScopes = map[string]string{
 	"skill_signals":            "skills:r",
 	"skill_logs_list":          "skills:r",
 	"skill_search":             "skills:r",
+	"skill_source_sync":        "skills:rw",
 	"skill_index_active":       "skills:rw",
 }
 
@@ -169,6 +170,30 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 			IncludeContent: mcpauth.BoolArg(args, "include_content"),
 		}
 		result, err := svc.Search(ctx, owner, searchReq)
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(result)
+	})
+
+	// skill_source_sync
+	s.AddTool(mcp.NewTool("skill_source_sync",
+		mcp.WithDescription("Sync a public GitHub or GitLab skill source. Resolves a ref to an immutable commit, imports the configured package_path, and optionally activates and indexes the resulting version."),
+		mcp.WithString("source_id", mcp.Required(), mcp.Description("Registered Git skill source ID")),
+		mcp.WithString("ref", mcp.Description("Optional branch, tag, or commit; defaults to source default_ref or repository default branch")),
+		mcp.WithBoolean("activate", mcp.Description("Activate the synced version (default true)")),
+		mcp.WithBoolean("index", mcp.Description("Index the active version (default true)")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		arguments := req.GetArguments()
+		result, err := svc.SyncGitSource(ctx, owner, mcpauth.StrArg(arguments, "source_id"), SyncGitSourceRequest{
+			Ref:      mcpauth.StrArg(arguments, "ref"),
+			Activate: mcpauth.BoolPtrArg(arguments, "activate"),
+			Index:    mcpauth.BoolPtrArg(arguments, "index"),
+		})
 		if err != nil {
 			return mcpauth.ErrResult(err.Error()), nil
 		}

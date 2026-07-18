@@ -16,12 +16,13 @@ import (
 )
 
 type Service struct {
-	repo      *Repo
-	retrieval *retrieval.Service
+	repo        *Repo
+	retrieval   *retrieval.Service
+	gitProvider *gitProviderClient
 }
 
 func NewService(repo *Repo, retrievalSvc ...*retrieval.Service) *Service {
-	s := &Service{repo: repo}
+	s := &Service{repo: repo, gitProvider: newGitProviderClient(nil)}
 	if len(retrievalSvc) > 0 {
 		s.retrieval = retrievalSvc[0]
 	}
@@ -101,6 +102,9 @@ func (s *Service) SubmitLocalSnapshot(ctx context.Context, owner ownership.Owner
 	if source.Type != "local" {
 		return nil, fmt.Errorf("snapshots are only supported for local sources")
 	}
+	if source.Status == "disabled" {
+		return nil, fmt.Errorf("source is disabled")
+	}
 
 	files, skillContent, packageHash, treeHash, err := normalizeSnapshotFiles(req)
 	if err != nil {
@@ -150,11 +154,12 @@ func (s *Service) SubmitLocalSnapshot(ctx context.Context, owner ownership.Owner
 		Activate:      activate,
 	}
 	revisionIn := SkillSourceRevision{
+		RevisionKey:     packageRevisionKey(packageHash),
 		LocalSnapshotID: snapshotID,
 		TreeHash:        treeHash,
 		PackageHash:     packageHash,
 	}
-	revision, skillVersion, storedFiles, err := s.repo.IngestLocalSnapshot(ctx, owner, source, versionReq, revisionIn, files)
+	revision, skillVersion, storedFiles, err := s.repo.IngestSourceRevision(ctx, owner, source, versionReq, revisionIn, files, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -173,9 +178,107 @@ func (s *Service) SubmitLocalSnapshot(ctx context.Context, owner ownership.Owner
 				Errors:  []IndexError{{SkillName: skillName, Error: err.Error()}},
 			}
 		}
+
 		resp.Index = indexResp
 	}
 	return resp, nil
+}
+
+func (s *Service) SyncGitSource(ctx context.Context, owner ownership.Owner, sourceID string, req SyncGitSourceRequest) (*SyncGitSourceResponse, error) {
+	source, err := s.repo.GetSource(ctx, owner.Account(), sourceID)
+	if err != nil {
+		return nil, err
+	}
+	if source.Type != "git" {
+		return nil, fmt.Errorf("sync is only supported for git sources")
+	}
+	if source.Status == "disabled" {
+		return nil, fmt.Errorf("source is disabled")
+	}
+
+	state := GitSourceSyncState{}
+	resolved, err := s.gitProvider.Resolve(ctx, source.RepositoryURL, req.Ref, source.DefaultRef)
+	if err != nil {
+		return nil, s.recordGitSyncFailure(ctx, owner.Account(), source.ID, state, err)
+	}
+	state.Provider = resolved.Provider
+	state.Ref = resolved.Ref
+	state.CommitSHA = resolved.CommitSHA
+
+	snapshotFiles, err := s.gitProvider.FetchPackage(ctx, resolved, source.PackagePath)
+	if err != nil {
+		return nil, s.recordGitSyncFailure(ctx, owner.Account(), source.ID, state, err)
+	}
+	files, skillContent, packageHash, treeHash, err := normalizeSnapshotFiles(SubmitLocalSnapshotRequest{Files: snapshotFiles})
+	if err != nil {
+		return nil, s.recordGitSyncFailure(ctx, owner.Account(), source.ID, state, err)
+	}
+	state.PackageHash = packageHash
+
+	metadata := extractSkillMetadata(skillContent)
+	skillName := strings.TrimSpace(metadata["name"])
+	if skillName == "" {
+		skillName = source.Name
+	}
+	if skillName == "" {
+		skillName = "git-skill"
+	}
+	if len(skillName) > 100 {
+		err = fmt.Errorf("skill_name must be 100 characters or fewer")
+		return nil, s.recordGitSyncFailure(ctx, owner.Account(), source.ID, state, err)
+	}
+
+	versionReq := CreateVersionRequest{
+		SkillName:     skillName,
+		Version:       "git-" + shortHash(resolved.CommitSHA),
+		Content:       skillContent,
+		AgentID:       "agentmate-git-sync",
+		ChangeSummary: fmt.Sprintf("Synced %s %s@%s", resolved.Provider, resolved.ProjectPath, shortHash(resolved.CommitSHA)),
+		Activate:      boolDefault(req.Activate, true),
+	}
+	revisionIn := SkillSourceRevision{
+		RevisionKey: packageRevisionKey(packageHash),
+		CommitSHA:   resolved.CommitSHA,
+		TreeHash:    treeHash,
+		PackageHash: packageHash,
+	}
+	state.Status = "succeeded"
+	state.SyncedAt = time.Now().UTC()
+	revision, skillVersion, storedFiles, err := s.repo.IngestSourceRevision(ctx, owner, source, versionReq, revisionIn, files, &state)
+	if err != nil {
+		return nil, s.recordGitSyncFailure(ctx, owner.Account(), source.ID, state, err)
+	}
+
+	response := &SyncGitSourceResponse{
+		Source:    source,
+		Provider:  resolved.Provider,
+		Ref:       resolved.Ref,
+		CommitSHA: resolved.CommitSHA,
+		Revision:  revision,
+		Version:   skillVersion,
+		Files:     storedFiles,
+	}
+	if boolDefault(req.Index, true) {
+		indexResponse, indexErr := s.IndexActiveVersions(ctx, owner, skillName)
+		if indexErr != nil {
+			indexResponse = &IndexSkillsResponse{
+				Indexed: []IndexedSkill{},
+				Errors:  []IndexError{{SkillName: skillName, Error: indexErr.Error()}},
+			}
+		}
+		response.Index = indexResponse
+	}
+	return response, nil
+}
+
+func (s *Service) recordGitSyncFailure(ctx context.Context, accountID, sourceID string, state GitSourceSyncState, syncErr error) error {
+	state.Status = "failed"
+	state.Error = syncErr.Error()
+	state.SyncedAt = time.Now().UTC()
+	if _, err := s.repo.UpdateSourceSyncState(ctx, accountID, sourceID, "error", state); err != nil {
+		return fmt.Errorf("%w; record Git sync failure: %v", syncErr, err)
+	}
+	return syncErr
 }
 
 func (s *Service) IndexActiveVersions(ctx context.Context, owner ownership.Owner, skillName string) (*IndexSkillsResponse, error) {
@@ -201,14 +304,17 @@ func (s *Service) IndexActiveVersions(ctx context.Context, owner ownership.Owner
 			Title:      version.SkillName,
 			Content:    skillIndexContent(version),
 			Metadata: map[string]any{
-				"skill_name":     version.SkillName,
-				"version":        version.Version,
-				"version_id":     version.ID,
-				"agent_id":       version.AgentID,
-				"change_summary": version.ChangeSummary,
-				"published_at":   version.PublishedAt.Format(time.RFC3339),
-				"is_active":      version.IsActive,
-				"description":    extractSkillDescription(version.Content),
+				"skill_name":         version.SkillName,
+				"version":            version.Version,
+				"version_id":         version.ID,
+				"source_id":          version.SourceID,
+				"source_revision_id": version.SourceRevisionID,
+				"package_hash":       version.PackageHash,
+				"agent_id":           version.AgentID,
+				"change_summary":     version.ChangeSummary,
+				"published_at":       version.PublishedAt.Format(time.RFC3339),
+				"is_active":          version.IsActive,
+				"description":        extractSkillDescription(version.Content),
 			},
 		})
 		if err != nil {
@@ -318,11 +424,11 @@ func normalizeSourceRequest(req CreateSkillSourceRequest) (CreateSkillSourceRequ
 		return req, fmt.Errorf("package_path must be relative")
 	}
 	if req.Type == "git" {
+		if _, err := parseGitRepositoryURL(req.RepositoryURL); err != nil {
+			return req, err
+		}
 		if req.SyncMode == "" {
 			req.SyncMode = "server_pull"
-		}
-		if req.DefaultRef == "" {
-			req.DefaultRef = "main"
 		}
 	} else if req.SyncMode == "" {
 		req.SyncMode = "client_push"
@@ -402,11 +508,15 @@ func normalizeSnapshotFiles(req SubmitLocalSnapshotRequest) ([]SkillVersionFile,
 		if size == 0 {
 			size = input.Size
 		}
-		if size == 0 && content != "" {
-			size = int64(len(contentBytes))
-		}
 		if size < 0 {
 			return nil, "", "", "", fmt.Errorf("size_bytes must be non-negative for %s", normalizedPath)
+		}
+		if content != "" {
+			actualSize := int64(len(contentBytes))
+			if size != 0 && size != actualSize {
+				return nil, "", "", "", fmt.Errorf("size_bytes mismatch for %s", normalizedPath)
+			}
+			size = actualSize
 		}
 
 		mimeType := strings.TrimSpace(input.MimeType)
@@ -444,18 +554,28 @@ func normalizeSnapshotFiles(req SubmitLocalSnapshotRequest) ([]SkillVersionFile,
 		return nil, "", "", "", fmt.Errorf("root SKILL.md required")
 	}
 
+	computedPackageHash := computePackageHash(files)
 	packageHash := strings.TrimSpace(strings.ToLower(req.PackageHash))
-	if packageHash == "" {
-		packageHash = computePackageHash(files)
-	} else if !isSHA256Hex(packageHash) {
-		return nil, "", "", "", fmt.Errorf("invalid package_hash")
+	if packageHash != "" {
+		if !isSHA256Hex(packageHash) {
+			return nil, "", "", "", fmt.Errorf("invalid package_hash")
+		}
+		if packageHash != computedPackageHash {
+			return nil, "", "", "", fmt.Errorf("package_hash does not match snapshot files")
+		}
 	}
+	packageHash = computedPackageHash
+
 	treeHash := strings.TrimSpace(strings.ToLower(req.TreeHash))
-	if treeHash == "" {
-		treeHash = packageHash
-	} else if !isSHA256Hex(treeHash) {
-		return nil, "", "", "", fmt.Errorf("invalid tree_hash")
+	if treeHash != "" {
+		if !isSHA256Hex(treeHash) {
+			return nil, "", "", "", fmt.Errorf("invalid tree_hash")
+		}
+		if treeHash != packageHash {
+			return nil, "", "", "", fmt.Errorf("tree_hash does not match local package hash")
+		}
 	}
+	treeHash = packageHash
 	return files, skillContent, packageHash, treeHash, nil
 }
 
@@ -597,6 +717,10 @@ func isIndexableText(filePath, mimeType string) bool {
 	default:
 		return false
 	}
+}
+
+func packageRevisionKey(packageHash string) string {
+	return "package:" + packageHash
 }
 
 func computePackageHash(files []SkillVersionFile) string {

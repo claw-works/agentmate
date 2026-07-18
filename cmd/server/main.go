@@ -178,6 +178,7 @@ func main() {
 	protected.POST("/skills/logs", auth.RequireScope("skills:rw"), skillsHandler.CreateLog)
 	protected.POST("/skills/sources", auth.RequireScope("skills:rw"), skillsHandler.CreateSource)
 	protected.POST("/skills/sources/:id/snapshots", auth.RequireScope("skills:rw"), skillsHandler.SubmitLocalSnapshot)
+	protected.POST("/skills/sources/:id/sync", auth.RequireScope("skills:rw"), skillsHandler.SyncGitSource)
 	protected.POST("/skills/versions", auth.RequireScope("skills:rw"), skillsHandler.CreateVersion)
 	protected.POST("/skills/versions/:id/activate", auth.RequireScope("skills:rw"), skillsHandler.ActivateVersion)
 	protected.POST("/skills/index", auth.RequireScope("skills:rw"), skillsHandler.IndexActiveVersions)

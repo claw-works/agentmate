@@ -17,6 +17,9 @@ type Repo struct {
 	pool *pgxpool.Pool
 }
 
+const skillVersionColumns = `id, account_id, user_id, key_id, source_id, source_revision_id, skill_name, version, content, content_hash, package_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at`
+const skillRevisionColumns = `id, account_id, user_id, key_id, source_id, skill_version_id, revision_key, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error, created_at`
+
 func NewRepo(pool *pgxpool.Pool) *Repo {
 	return &Repo{pool: pool}
 }
@@ -94,12 +97,33 @@ func (r *Repo) GetSource(ctx context.Context, accountID, id string) (*SkillSourc
 	return &s, nil
 }
 
+func (r *Repo) UpdateSourceSyncState(ctx context.Context, accountID, sourceID, status string, state GitSourceSyncState) (*SkillSource, error) {
+	stateJSON, err := json.Marshal(state)
+	if err != nil {
+		return nil, err
+	}
+	var source SkillSource
+	err = r.pool.QueryRow(ctx,
+		`UPDATE skill_sources
+		 SET status = $3,
+		     metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('git_sync', $4::jsonb),
+		     updated_at = NOW()
+		 WHERE id = $1 AND account_id = $2
+		 RETURNING id, account_id, user_id, key_id, name, type, repository_url, package_path, default_ref, sync_mode, visibility, status, metadata, created_at, updated_at`,
+		sourceID, accountID, status, string(stateJSON),
+	).Scan(scanSource(&source)...)
+	if err != nil {
+		return nil, err
+	}
+	return &source, nil
+}
+
 func (r *Repo) ListSourceRevisions(ctx context.Context, accountID, sourceID string, limit, offset int) ([]SkillSourceRevision, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, account_id, user_id, key_id, source_id, skill_version_id, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error, created_at
+		`SELECT id, account_id, user_id, key_id, source_id, skill_version_id, revision_key, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error, created_at
 		 FROM skill_source_revisions
 		 WHERE account_id = $1 AND source_id = $2
 		 ORDER BY created_at DESC
@@ -205,6 +229,10 @@ func (r *Repo) CreateVersion(ctx context.Context, owner ownership.Owner, req Cre
 	}
 	defer tx.Rollback(ctx)
 
+	if err := lockSkillTx(ctx, tx, owner.Account(), req.SkillName); err != nil {
+		return nil, err
+	}
+
 	if req.Activate {
 		_, err = tx.Exec(ctx,
 			`UPDATE skill_versions SET is_active = false WHERE skill_name = $1 AND account_id = $2 AND is_active = true`,
@@ -216,11 +244,12 @@ func (r *Repo) CreateVersion(ctx context.Context, owner ownership.Owner, req Cre
 
 	var v SkillVersion
 	err = tx.QueryRow(ctx,
-		`INSERT INTO skill_versions (account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		 RETURNING id, account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at`,
+		`INSERT INTO skill_versions
+		 (account_id, user_id, key_id, source_id, source_revision_id, skill_name, version, content, content_hash, package_hash, agent_id, change_summary, eval_pass_rate, is_active)
+		 VALUES ($1, $2, $3, NULL, NULL, $4, $5, $6, $7, $7, $8, $9, $10, $11)
+		 RETURNING `+skillVersionColumns,
 		nullableString(owner.Account()), nullableString(owner.UserID), owner.KeyID, req.SkillName, req.Version, req.Content, contentHash, req.AgentID, req.ChangeSummary, req.EvalPassRate, req.Activate,
-	).Scan(&v.ID, &v.AccountID, &v.UserID, &v.KeyID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt)
+	).Scan(scanVersion(&v)...)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +266,7 @@ func (r *Repo) ListVersions(ctx context.Context, accountID string, params Versio
 		limit = 20
 	}
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at
+		`SELECT `+skillVersionColumns+`
 		 FROM skill_versions
 		 WHERE account_id = $1 AND ($2 = '' OR skill_name = $2)
 		 ORDER BY published_at DESC LIMIT $3 OFFSET $4`,
@@ -250,22 +279,22 @@ func (r *Repo) ListVersions(ctx context.Context, accountID string, params Versio
 	items := make([]SkillVersion, 0)
 	for rows.Next() {
 		var v SkillVersion
-		if err := rows.Scan(&v.ID, &v.AccountID, &v.UserID, &v.KeyID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt); err != nil {
+		if err := rows.Scan(scanVersion(&v)...); err != nil {
 			return nil, err
 		}
 		items = append(items, v)
 	}
-	return items, nil
+	return items, rows.Err()
 }
 
 func (r *Repo) GetActiveVersion(ctx context.Context, accountID, skillName string) (*SkillVersion, error) {
 	var v SkillVersion
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at
+		`SELECT `+skillVersionColumns+`
 		 FROM skill_versions
 		 WHERE account_id = $1 AND skill_name = $2 AND is_active = true`,
 		accountID, skillName,
-	).Scan(&v.ID, &v.AccountID, &v.UserID, &v.KeyID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt)
+	).Scan(scanVersion(&v)...)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +303,7 @@ func (r *Repo) GetActiveVersion(ctx context.Context, accountID, skillName string
 
 func (r *Repo) ListActiveVersions(ctx context.Context, accountID, skillName string) ([]SkillVersion, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at
+		`SELECT `+skillVersionColumns+`
 		 FROM skill_versions
 		 WHERE account_id = $1 AND is_active = true AND ($2 = '' OR skill_name = $2)
 		 ORDER BY skill_name, published_at DESC`,
@@ -287,7 +316,7 @@ func (r *Repo) ListActiveVersions(ctx context.Context, accountID, skillName stri
 	items := make([]SkillVersion, 0)
 	for rows.Next() {
 		var v SkillVersion
-		if err := rows.Scan(&v.ID, &v.AccountID, &v.UserID, &v.KeyID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt); err != nil {
+		if err := rows.Scan(scanVersion(&v)...); err != nil {
 			return nil, err
 		}
 		items = append(items, v)
@@ -302,10 +331,12 @@ func (r *Repo) ActivateVersion(ctx context.Context, accountID, id string) (*Skil
 	}
 	defer tx.Rollback(ctx)
 
-	// Get the version to find its skill_name
 	var skillName string
 	err = tx.QueryRow(ctx, `SELECT skill_name FROM skill_versions WHERE id = $1 AND account_id = $2`, id, accountID).Scan(&skillName)
 	if err != nil {
+		return nil, err
+	}
+	if err := lockSkillTx(ctx, tx, accountID, skillName); err != nil {
 		return nil, err
 	}
 
@@ -317,9 +348,9 @@ func (r *Repo) ActivateVersion(ctx context.Context, accountID, id string) (*Skil
 	var v SkillVersion
 	err = tx.QueryRow(ctx,
 		`UPDATE skill_versions SET is_active = true WHERE id = $1 AND account_id = $2
-		 RETURNING id, account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at`,
+		 RETURNING `+skillVersionColumns,
 		id, accountID,
-	).Scan(&v.ID, &v.AccountID, &v.UserID, &v.KeyID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt)
+	).Scan(scanVersion(&v)...)
 	if err != nil {
 		return nil, err
 	}
@@ -332,10 +363,11 @@ func (r *Repo) ActivateVersion(ctx context.Context, accountID, id string) (*Skil
 
 func (r *Repo) ListVersionFiles(ctx context.Context, accountID, versionID string) ([]SkillVersionFile, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, account_id, user_id, key_id, source_revision_id, version_id, path, kind, sha256, size_bytes, mime_type, indexable, content_snapshot, created_at
-		 FROM skill_version_files
-		 WHERE account_id = $1 AND version_id = $2
-		 ORDER BY path`,
+		`SELECT file.id, file.account_id, file.user_id, file.key_id, file.source_revision_id, file.version_id, file.path, file.kind, file.sha256, file.size_bytes, file.mime_type, file.indexable, file.content_snapshot, file.created_at
+		 FROM skill_version_files AS file
+		 JOIN skill_versions AS version ON version.source_revision_id = file.source_revision_id
+		 WHERE version.account_id = $1 AND file.account_id = $1 AND version.id = $2
+		 ORDER BY file.path`,
 		accountID, versionID,
 	)
 	if err != nil {
@@ -353,7 +385,11 @@ func (r *Repo) ListVersionFiles(ctx context.Context, accountID, versionID string
 	return items, rows.Err()
 }
 
-func (r *Repo) IngestLocalSnapshot(ctx context.Context, owner ownership.Owner, source *SkillSource, versionReq CreateVersionRequest, revisionIn SkillSourceRevision, fileInputs []SkillVersionFile) (*SkillSourceRevision, *SkillVersion, []SkillVersionFile, error) {
+func (r *Repo) IngestSourceRevision(ctx context.Context, owner ownership.Owner, source *SkillSource, versionReq CreateVersionRequest, revisionIn SkillSourceRevision, fileInputs []SkillVersionFile, syncState *GitSourceSyncState) (*SkillSourceRevision, *SkillVersion, []SkillVersionFile, error) {
+	if revisionIn.RevisionKey == "" {
+		return nil, nil, nil, fmt.Errorf("revision_key required")
+	}
+
 	hash := sha256.Sum256([]byte(versionReq.Content))
 	contentHash := hex.EncodeToString(hash[:])
 
@@ -363,108 +399,301 @@ func (r *Repo) IngestLocalSnapshot(ctx context.Context, owner ownership.Owner, s
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx,
-		`UPDATE skill_sources SET status = 'active', updated_at = NOW() WHERE id = $1 AND account_id = $2`,
-		source.ID, owner.Account(),
-	); err != nil {
+	if err := lockSkillTx(ctx, tx, owner.Account(), versionReq.SkillName); err != nil {
 		return nil, nil, nil, err
+	}
+	if err := lockSourceTx(ctx, tx, source.ID); err != nil {
+		return nil, nil, nil, err
+	}
+
+	updatedSource, err := updateSourceActiveTx(ctx, tx, owner.Account(), source.ID, syncState)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	rev, err := findRevisionByIdentityTx(ctx, tx, owner.Account(), source.ID, revisionIn.RevisionKey, revisionIn.LocalSnapshotID, revisionIn.CommitSHA)
+	if err == nil {
+		if rev.PackageHash != revisionIn.PackageHash || rev.TreeHash != revisionIn.TreeHash {
+			return nil, nil, nil, fmt.Errorf("snapshot identity already exists with different package content")
+		}
+		if rev.SkillVersionID == nil {
+			return nil, nil, nil, fmt.Errorf("source revision %s is missing its skill version", rev.ID)
+		}
+
+		var version SkillVersion
+		err = tx.QueryRow(ctx,
+			`SELECT `+skillVersionColumns+` FROM skill_versions WHERE id = $1 AND account_id = $2`,
+			*rev.SkillVersionID, owner.Account(),
+		).Scan(scanVersion(&version)...)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if version.SourceID == nil || *version.SourceID != source.ID ||
+			version.SourceRevisionID == nil || *version.SourceRevisionID != rev.ID ||
+			version.PackageHash != rev.PackageHash {
+			return nil, nil, nil, fmt.Errorf("source revision %s has inconsistent package identity", rev.ID)
+		}
+		if version.SkillName != versionReq.SkillName {
+			return nil, nil, nil, fmt.Errorf("source revision already belongs to skill %s", version.SkillName)
+		}
+		if versionReq.Activate && !version.IsActive {
+			if _, err := tx.Exec(ctx,
+				`UPDATE skill_versions SET is_active = false WHERE skill_name = $1 AND account_id = $2 AND is_active = true`,
+				version.SkillName, owner.Account(),
+			); err != nil {
+				return nil, nil, nil, err
+			}
+			err = tx.QueryRow(ctx,
+				`UPDATE skill_versions SET is_active = true WHERE id = $1 AND account_id = $2 RETURNING `+skillVersionColumns,
+				version.ID, owner.Account(),
+			).Scan(scanVersion(&version)...)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+		}
+
+		files, err := listRevisionFilesTx(ctx, tx, owner.Account(), rev.ID)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, nil, nil, err
+		}
+		*source = *updatedSource
+		return rev, &version, files, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, nil, err
+	}
+
+	rev = &SkillSourceRevision{}
+	err = tx.QueryRow(ctx,
+		`INSERT INTO skill_source_revisions
+		 (account_id, user_id, key_id, source_id, skill_version_id, revision_key, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error)
+		 VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8, $9, 'ingested', '')
+		 RETURNING id, account_id, user_id, key_id, source_id, skill_version_id, revision_key, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error, created_at`,
+		owner.Account(), owner.UserID, owner.KeyID, source.ID, revisionIn.RevisionKey, revisionIn.CommitSHA, revisionIn.LocalSnapshotID, revisionIn.TreeHash, revisionIn.PackageHash,
+	).Scan(scanRevision(rev)...)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if revisionIn.LocalSnapshotID != "" {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO skill_source_revision_aliases
+			 (account_id, user_id, key_id, source_id, revision_id, local_snapshot_id)
+			 VALUES ($1, $2, $3, $4, $5, $6)`,
+			owner.Account(), owner.UserID, owner.KeyID, source.ID, rev.ID, revisionIn.LocalSnapshotID,
+		); err != nil {
+			return nil, nil, nil, err
+		}
 	}
 
 	if versionReq.Activate {
-		_, err = tx.Exec(ctx,
+		if _, err := tx.Exec(ctx,
 			`UPDATE skill_versions SET is_active = false WHERE skill_name = $1 AND account_id = $2 AND is_active = true`,
-			versionReq.SkillName, owner.Account())
-		if err != nil {
+			versionReq.SkillName, owner.Account(),
+		); err != nil {
 			return nil, nil, nil, err
 		}
 	}
 
-	var v SkillVersion
+	var version SkillVersion
 	err = tx.QueryRow(ctx,
-		`SELECT id, account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at
-		 FROM skill_versions
-		 WHERE account_id = $1 AND skill_name = $2 AND content_hash = $3`,
-		owner.Account(), versionReq.SkillName, contentHash,
-	).Scan(&v.ID, &v.AccountID, &v.UserID, &v.KeyID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		err = tx.QueryRow(ctx,
-			`INSERT INTO skill_versions (account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-			 RETURNING id, account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at`,
-			nullableString(owner.Account()), nullableString(owner.UserID), owner.KeyID, versionReq.SkillName, versionReq.Version, versionReq.Content, contentHash, versionReq.AgentID, versionReq.ChangeSummary, versionReq.EvalPassRate, versionReq.Activate,
-		).Scan(&v.ID, &v.AccountID, &v.UserID, &v.KeyID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-	} else if err != nil {
+		`INSERT INTO skill_versions
+		 (account_id, user_id, key_id, source_id, source_revision_id, skill_name, version, content, content_hash, package_hash, agent_id, change_summary, eval_pass_rate, is_active)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		 RETURNING `+skillVersionColumns,
+		nullableString(owner.Account()), nullableString(owner.UserID), owner.KeyID, source.ID, rev.ID, versionReq.SkillName, versionReq.Version, versionReq.Content, contentHash, revisionIn.PackageHash, versionReq.AgentID, versionReq.ChangeSummary, versionReq.EvalPassRate, versionReq.Activate,
+	).Scan(scanVersion(&version)...)
+	if err != nil {
 		return nil, nil, nil, err
-	} else if versionReq.Activate {
-		err = tx.QueryRow(ctx,
-			`UPDATE skill_versions SET is_active = true WHERE id = $1 AND account_id = $2
-			 RETURNING id, account_id, user_id, key_id, skill_name, version, content, content_hash, agent_id, change_summary, eval_pass_rate, is_active, published_at`,
-			v.ID, owner.Account(),
-		).Scan(&v.ID, &v.AccountID, &v.UserID, &v.KeyID, &v.SkillName, &v.Version, &v.Content, &v.ContentHash, &v.AgentID, &v.ChangeSummary, &v.EvalPassRate, &v.IsActive, &v.PublishedAt)
-		if err != nil {
-			return nil, nil, nil, err
-		}
 	}
 
-	var rev SkillSourceRevision
 	err = tx.QueryRow(ctx,
-		`SELECT id, account_id, user_id, key_id, source_id, skill_version_id, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error, created_at
-		 FROM skill_source_revisions
-		 WHERE account_id = $1 AND source_id = $2 AND local_snapshot_id = $3`,
-		owner.Account(), source.ID, revisionIn.LocalSnapshotID,
-	).Scan(scanRevision(&rev)...)
-	if errors.Is(err, pgx.ErrNoRows) {
-		err = tx.QueryRow(ctx,
-			`INSERT INTO skill_source_revisions
-			 (account_id, user_id, key_id, source_id, skill_version_id, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error)
-			 VALUES ($1, $2, $3, $4, $5, '', $6, $7, $8, 'ingested', '')
-			 RETURNING id, account_id, user_id, key_id, source_id, skill_version_id, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error, created_at`,
-			owner.Account(), owner.UserID, owner.KeyID, source.ID, v.ID, revisionIn.LocalSnapshotID, revisionIn.TreeHash, revisionIn.PackageHash,
-		).Scan(scanRevision(&rev)...)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-	} else if err != nil {
+		`UPDATE skill_source_revisions
+		 SET skill_version_id = $1
+		 WHERE id = $2 AND account_id = $3
+		 RETURNING id, account_id, user_id, key_id, source_id, skill_version_id, revision_key, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error, created_at`,
+		version.ID, rev.ID, owner.Account(),
+	).Scan(scanRevision(rev)...)
+	if err != nil {
 		return nil, nil, nil, err
-	} else {
-		err = tx.QueryRow(ctx,
-			`UPDATE skill_source_revisions
-			 SET skill_version_id = $1, tree_hash = $2, package_hash = $3, status = 'ingested', error = ''
-			 WHERE id = $4 AND account_id = $5
-			 RETURNING id, account_id, user_id, key_id, source_id, skill_version_id, commit_sha, local_snapshot_id, tree_hash, package_hash, status, error, created_at`,
-			v.ID, revisionIn.TreeHash, revisionIn.PackageHash, rev.ID, owner.Account(),
-		).Scan(scanRevision(&rev)...)
-		if err != nil {
-			return nil, nil, nil, err
-		}
 	}
 
-	if _, err := tx.Exec(ctx, `DELETE FROM skill_version_files WHERE source_revision_id = $1 AND account_id = $2`, rev.ID, owner.Account()); err != nil {
-		return nil, nil, nil, err
-	}
 	files := make([]SkillVersionFile, 0, len(fileInputs))
 	for _, input := range fileInputs {
-		var f SkillVersionFile
+		var file SkillVersionFile
 		err = tx.QueryRow(ctx,
 			`INSERT INTO skill_version_files
 			 (account_id, user_id, key_id, source_revision_id, version_id, path, kind, sha256, size_bytes, mime_type, indexable, content_snapshot)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 			 RETURNING id, account_id, user_id, key_id, source_revision_id, version_id, path, kind, sha256, size_bytes, mime_type, indexable, content_snapshot, created_at`,
-			owner.Account(), owner.UserID, owner.KeyID, rev.ID, v.ID, input.Path, input.Kind, input.SHA256, input.SizeBytes, input.MimeType, input.Indexable, input.ContentSnapshot,
-		).Scan(scanVersionFile(&f)...)
+			owner.Account(), owner.UserID, owner.KeyID, rev.ID, version.ID, input.Path, input.Kind, input.SHA256, input.SizeBytes, input.MimeType, input.Indexable, input.ContentSnapshot,
+		).Scan(scanVersionFile(&file)...)
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		files = append(files, f)
+		files = append(files, file)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, nil, nil, err
 	}
-	return &rev, &v, files, nil
+	*source = *updatedSource
+	return rev, &version, files, nil
+}
+
+func updateSourceActiveTx(ctx context.Context, tx pgx.Tx, accountID, sourceID string, syncState *GitSourceSyncState) (*SkillSource, error) {
+	var source SkillSource
+	if syncState == nil {
+		err := tx.QueryRow(ctx,
+			`UPDATE skill_sources
+			 SET status = 'active', updated_at = NOW()
+			 WHERE id = $1 AND account_id = $2
+			 RETURNING id, account_id, user_id, key_id, name, type, repository_url, package_path, default_ref, sync_mode, visibility, status, metadata, created_at, updated_at`,
+			sourceID, accountID,
+		).Scan(scanSource(&source)...)
+		if err != nil {
+			return nil, err
+		}
+		return &source, nil
+	}
+
+	stateJSON, err := json.Marshal(syncState)
+	if err != nil {
+		return nil, err
+	}
+	err = tx.QueryRow(ctx,
+		`UPDATE skill_sources
+		 SET status = 'active',
+		     metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('git_sync', $3::jsonb),
+		     updated_at = NOW()
+		 WHERE id = $1 AND account_id = $2
+		 RETURNING id, account_id, user_id, key_id, name, type, repository_url, package_path, default_ref, sync_mode, visibility, status, metadata, created_at, updated_at`,
+		sourceID, accountID, string(stateJSON),
+	).Scan(scanSource(&source)...)
+	if err != nil {
+		return nil, err
+	}
+	return &source, nil
+}
+
+func findRevisionByIdentityTx(ctx context.Context, tx pgx.Tx, accountID, sourceID, revisionKey, localSnapshotID, commitSHA string) (*SkillSourceRevision, error) {
+	byKey, err := getRevisionByIdentityTx(ctx, tx, accountID, sourceID, "revision_key", revisionKey)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+
+	var bySnapshot *SkillSourceRevision
+	if localSnapshotID != "" {
+		bySnapshot, err = getRevisionBySnapshotAliasTx(ctx, tx, accountID, sourceID, localSnapshotID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+	}
+
+	var byCommit *SkillSourceRevision
+	if commitSHA != "" {
+		byCommit, err = getRevisionByIdentityTx(ctx, tx, accountID, sourceID, "commit_sha", commitSHA)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+	}
+
+	if byKey != nil && bySnapshot != nil && byKey.ID != bySnapshot.ID {
+		return nil, fmt.Errorf("revision key and local snapshot ID refer to different source revisions")
+	}
+	if byKey != nil && byCommit != nil && byKey.ID != byCommit.ID {
+		return nil, fmt.Errorf("revision key and commit SHA refer to different source revisions")
+	}
+	if byKey != nil {
+		if localSnapshotID != "" && bySnapshot == nil && byKey.LocalSnapshotID != localSnapshotID {
+			return nil, fmt.Errorf("revision key is already bound to a different local snapshot ID")
+		}
+		return byKey, nil
+	}
+	if bySnapshot != nil {
+		if bySnapshot.RevisionKey != revisionKey {
+			return nil, fmt.Errorf("local snapshot ID is already bound to a different revision key")
+		}
+		return bySnapshot, nil
+	}
+	if byCommit != nil {
+		return nil, fmt.Errorf("commit SHA is already bound to a different revision key")
+	}
+	return nil, pgx.ErrNoRows
+}
+
+func getRevisionBySnapshotAliasTx(ctx context.Context, tx pgx.Tx, accountID, sourceID, localSnapshotID string) (*SkillSourceRevision, error) {
+	var revision SkillSourceRevision
+	err := tx.QueryRow(ctx,
+		`SELECT `+skillRevisionColumns+`
+		 FROM skill_source_revisions
+		 WHERE account_id = $1
+		   AND source_id = $2
+		   AND id = (
+		     SELECT revision_id
+		     FROM skill_source_revision_aliases
+		     WHERE account_id = $1 AND source_id = $2 AND local_snapshot_id = $3
+		   )`,
+		accountID, sourceID, localSnapshotID,
+	).Scan(scanRevision(&revision)...)
+	if err != nil {
+		return nil, err
+	}
+	return &revision, nil
+}
+
+func getRevisionByIdentityTx(ctx context.Context, tx pgx.Tx, accountID, sourceID, column, value string) (*SkillSourceRevision, error) {
+	var revision SkillSourceRevision
+	err := tx.QueryRow(ctx,
+		`SELECT `+skillRevisionColumns+` FROM skill_source_revisions WHERE account_id = $1 AND source_id = $2 AND `+column+` = $3`,
+		accountID, sourceID, value,
+	).Scan(scanRevision(&revision)...)
+	if err != nil {
+		return nil, err
+	}
+	return &revision, nil
+}
+
+func lockSkillTx(ctx context.Context, tx pgx.Tx, accountID, skillName string) error {
+	_, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		fmt.Sprintf("skill-version:%d:%s:%s", len(accountID), accountID, skillName),
+	)
+	return err
+}
+
+func lockSourceTx(ctx context.Context, tx pgx.Tx, sourceID string) error {
+	_, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		"skill-source:"+sourceID,
+	)
+	return err
+}
+
+func listRevisionFilesTx(ctx context.Context, tx pgx.Tx, accountID, revisionID string) ([]SkillVersionFile, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT id, account_id, user_id, key_id, source_revision_id, version_id, path, kind, sha256, size_bytes, mime_type, indexable, content_snapshot, created_at
+		 FROM skill_version_files
+		 WHERE account_id = $1 AND source_revision_id = $2
+		 ORDER BY path`,
+		accountID, revisionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	files := make([]SkillVersionFile, 0)
+	for rows.Next() {
+		var file SkillVersionFile
+		if err := rows.Scan(scanVersionFile(&file)...); err != nil {
+			return nil, err
+		}
+		files = append(files, file)
+	}
+	return files, rows.Err()
 }
 
 // ─── Stats (for SkillEvolver) ───
@@ -562,6 +791,7 @@ func scanRevision(rev *SkillSourceRevision) []any {
 		&rev.KeyID,
 		&rev.SourceID,
 		&rev.SkillVersionID,
+		&rev.RevisionKey,
 		&rev.CommitSHA,
 		&rev.LocalSnapshotID,
 		&rev.TreeHash,
@@ -569,6 +799,27 @@ func scanRevision(rev *SkillSourceRevision) []any {
 		&rev.Status,
 		&rev.Error,
 		&rev.CreatedAt,
+	}
+}
+
+func scanVersion(version *SkillVersion) []any {
+	return []any{
+		&version.ID,
+		&version.AccountID,
+		&version.UserID,
+		&version.KeyID,
+		&version.SourceID,
+		&version.SourceRevisionID,
+		&version.SkillName,
+		&version.Version,
+		&version.Content,
+		&version.ContentHash,
+		&version.PackageHash,
+		&version.AgentID,
+		&version.ChangeSummary,
+		&version.EvalPassRate,
+		&version.IsActive,
+		&version.PublishedAt,
 	}
 }
 
