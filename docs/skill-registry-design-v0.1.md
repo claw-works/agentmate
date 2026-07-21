@@ -328,34 +328,42 @@ provider client 使用标准库 `net/http`、`archive/tar` 和 `compress/gzip`�
 | `POST /api/skills/sources/:id/sync` | 已实现 | 拉取并同步 Git source |
 | `GET /api/skills/versions` | 已实现 | 列出 release versions |
 | `GET /api/skills/versions/active` | 已实现 | 获取 active version |
-| `GET /api/skills/versions/:id/files` | 已实现 | 获取 package 文件清单 |
-| `POST /api/skills/versions/:id/activate` | 已实现 | 切换 active version |
-| `POST /api/skills/index` | 已实现 | 重建 active Skill 路由索引 |
-| `POST /api/skills/search` | 已实现 | 搜索 active Skills |
+| `GET /api/skills/versions/:id/files` | 已实现 | 获取内部 package 文件记录（兼容接口） |
+| `POST /api/skills/versions/:id/activate` | 已实现 | 切换 active version，并尽力刷新 artifact |
+| `POST /api/skills/compile` | 已实现 | 编译/重编译单个 version，或回填全部 active versions |
+| `GET /api/skills/catalog` | 已实现 | 稳定分页和 query 的 active L0 catalog |
+| `GET /api/skills/versions/:id/instructions` | 已实现 | 加载 L1 instructions，响应禁止缓存 |
+| `GET /api/skills/versions/:id/resources` | 已实现 | 加载无正文的 L2 resource manifest |
+| `GET /api/skills/versions/:id/resources/:file_id` | 已实现 | 严格 account/version/file 绑定后加载单个文本 resource |
+| `POST /api/skills/index` | 已实现 | 用 compiled L0 card 重建 active Skill 路由索引 |
+| `POST /api/skills/search` | 已实现 | 搜索 L0 cards，兼容 `include_content` |
 
 ### 6.2 MCP
 
-当前 MCP 主要覆盖日志、直接发布、active version、统计、信号、搜索和索引。
+当前 MCP 覆盖日志、直接发布、Git sync、active version、统计、信号、搜索、索引和渐进式披露。Phase 3 新增：
 
-Git sync 阶段计划新增：
+- `skill_catalog_list`：稳定分页查询 active L0 cards；
+- `skill_compile`：编译一个 version，或回填全部 active versions；
+- `skill_version_instructions`：加载 L1 `SKILL.md`；
+- `skill_version_resources`：加载不含正文的 L2 manifest；
+- `skill_resource_get`：通过 account-scoped version/file 对加载单个文本 resource。
 
-- `skill_source_sync`：同步一个 Git source，可选覆盖 ref、activate、index；
-- 后续 `skill_source_get` / `skill_source_list`：让 Agent 查询 source 和同步状态；
-- 后续 `skill_version_files` / `skill_resource_get`：按需加载已选 Skill 的资源。
-
-MCP 与 REST 使用相同 service 和 account scope，不维护第二套业务语义。
+MCP 与 REST 使用相同 service、account scope 和 toolScopes，不维护第二套业务语义。
 
 ---
 
 ## 7. 检索与渐进式披露
 
-当前 active version 会写入 `retrieval_documents` 的 `skills` namespace。索引 metadata 包括：
+当前 active version 会将 compiled L0 card 写入 `retrieval_documents` 的 `skills` namespace。索引 metadata 包括：
 
 - `skill_name`、`version`、`version_id`；
 - `source_id`、`source_revision_id`、`package_hash`；
-- description、change summary、published time。
+- description、triggers、capabilities、constraints、dependencies；
+- compiler name/version、compiled time、resource count、published time。
 
-当前索引内容仍以根 `SKILL.md` 为主。目标披露层级：
+索引正文只包含 L0 card，不包含完整 `SKILL.md` instructions 或 resource 正文。`000018` 会把升级前可能含完整 instructions 的 Skill retrieval document 改写为 bounded basic card，并把状态设为 `failed`，使旧 Qdrant point 无法回表参与 vector hydration，同时保留安全的 PostgreSQL lexical fallback。升级后应依次调用 compile 与 index 重建 artifact 和 embedding。显式 `include_content=true` 会在搜索选中后按 account/version 从 PostgreSQL 加载 L1，不会把正文重新放回 retrieval index。
+
+披露层级：
 
 ```text
 L0 Catalog / Skill Card
@@ -371,14 +379,15 @@ L3 Complete Package
   仅执行器或审计流程需要完整文件清单/原始 Git 内容
 ```
 
-未来 compiler 会从 package 构建：
+Phase 3 deterministic compiler 已从 `SKILL.md` frontmatter 和文件快照构建：
 
 - Skill Card；
-- capability/trigger/constraint 图；
-- resource manifest；
-- 依赖关系与组合 DAG；
-- lint/eval 结果；
-- routing index document。
+- triggers、capabilities、constraints、dependencies；
+- 稳定排序且不包含根 `SKILL.md` 的 resource manifest；
+- compiler name/version 与 input package hash；
+- compiled L0 routing index document。
+
+artifact 不保存 resource 正文，可由 immutable package snapshot 重建。catalog 中的 `skill_name` 始终来自 `skill_versions.skill_name`；frontmatter `name` 不能在编译时重命名控制面身份，二者不一致将由后续 lint 报告。DAG、lint 和 eval 仍属于后续阶段。
 
 编译产物是可重建派生数据，不能替代 Git package 或 PostgreSQL registry identity。
 
@@ -478,14 +487,15 @@ PostgreSQL 集成测试由 `AGENTMATE_TEST_DATABASE_URL` 显式启用，默认�
 - source error/recovery 状态；
 - provider/archive tests 与公开仓库 smoke test。
 
-### Phase 3：Compiled catalog 与渐进式披露
+### Phase 3：Compiled catalog 与渐进式披露（核心已实现）
 
-- Skill Card schema；
-- capability/constraint/resource manifest；
-- catalog/search API；
-- selected resource fetch；
-- DAG/组合路由；
-- index compiler versioning。
+- deterministic Skill Card compiler 与 compiler versioning；
+- triggers/capabilities/constraints/dependencies；
+- 可重建 artifact 与无正文 resource manifest；
+- active catalog 稳定分页/query 和 basic fallback；
+- L1 instructions、L2 manifest、selected text resource fetch；
+- compiled card index/search 与 ingest/publish/activate best-effort refresh；
+- DAG/组合路由留待后续增量。
 
 ### Phase 4：Eval、lint 与 Git 演化闭环
 
@@ -504,12 +514,16 @@ PostgreSQL 集成测试由 `AGENTMATE_TEST_DATABASE_URL` 显式启用，默认�
 | `internal/skills/model.go` | Registry API/domain models |
 | `internal/skills/repo.go` | PostgreSQL 事务、不变量与查询 |
 | `internal/skills/service.go` | source/snapshot normalization、hash、index orchestration |
+| `internal/skills/compiler.go` | deterministic frontmatter compiler 与 stable resource manifest |
+| `internal/skills/catalog_repo.go` | compiled artifact、catalog 分页和 scoped resource 查询 |
+| `internal/skills/catalog_service.go` | compile/fallback 与 L0/L1/L2 disclosure |
 | `internal/skills/git_provider.go` | GitHub/GitLab URL、ref、commit 与 archive endpoint |
 | `internal/skills/git_archive.go` | 受限 tar.gz 下载和 package 提取 |
 | `internal/skills/handler.go` | REST handlers |
 | `internal/skills/mcp.go` | Skills MCP tools |
 | `internal/skills/repo_integration_test.go` | PostgreSQL concurrency/identity tests |
 | `migrations/000017_refactor_skill_package_identity.*.sql` | package identity schema migration |
+| `migrations/000018_create_skill_compiled_catalogs.*.sql` | compiled catalog artifact schema migration |
 
 设计原则只有一条主线：
 

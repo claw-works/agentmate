@@ -42,7 +42,12 @@ func (s *Service) CountLogs(ctx context.Context, accountID string, params LogLis
 }
 
 func (s *Service) CreateVersion(ctx context.Context, owner ownership.Owner, req CreateVersionRequest) (*SkillVersion, error) {
-	return s.repo.CreateVersion(ctx, owner, req)
+	version, err := s.repo.CreateVersion(ctx, owner, req)
+	if err != nil {
+		return nil, err
+	}
+	s.bestEffortCompile(ctx, owner.Account(), version.ID)
+	return version, nil
 }
 
 func (s *Service) ListVersions(ctx context.Context, accountID string, params VersionListParams) ([]SkillVersion, error) {
@@ -54,7 +59,12 @@ func (s *Service) GetActiveVersion(ctx context.Context, accountID, skillName str
 }
 
 func (s *Service) ActivateVersion(ctx context.Context, accountID, id string) (*SkillVersion, error) {
-	return s.repo.ActivateVersion(ctx, accountID, id)
+	version, err := s.repo.ActivateVersion(ctx, accountID, id)
+	if err != nil {
+		return nil, err
+	}
+	s.bestEffortCompile(ctx, accountID, version.ID)
+	return version, nil
 }
 
 func (s *Service) GetSkillStats(ctx context.Context, accountID, skillName string) (*SkillStats, error) {
@@ -163,6 +173,7 @@ func (s *Service) SubmitLocalSnapshot(ctx context.Context, owner ownership.Owner
 	if err != nil {
 		return nil, err
 	}
+	s.bestEffortCompile(ctx, owner.Account(), skillVersion.ID)
 
 	resp := &SubmitLocalSnapshotResponse{
 		Source:   source,
@@ -248,6 +259,7 @@ func (s *Service) SyncGitSource(ctx context.Context, owner ownership.Owner, sour
 	if err != nil {
 		return nil, s.recordGitSyncFailure(ctx, owner.Account(), source.ID, state, err)
 	}
+	s.bestEffortCompile(ctx, owner.Account(), skillVersion.ID)
 
 	response := &SyncGitSourceResponse{
 		Source:    source,
@@ -296,25 +308,40 @@ func (s *Service) IndexActiveVersions(ctx context.Context, owner ownership.Owner
 		Errors:  make([]IndexError, 0),
 	}
 	for _, version := range versions {
+		artifact, err := s.compileLoadedVersion(ctx, version)
+		if err != nil {
+			resp.Errors = append(resp.Errors, IndexError{SkillName: version.SkillName, Error: err.Error()})
+			continue
+		}
+		card := catalogItemFromArtifact(*artifact, true)
 		doc, err := s.retrieval.IndexDocument(ctx, owner, retrieval.UpsertDocumentInput{
 			Namespace:  retrieval.NamespaceSkills,
 			SourceType: "skill_version",
 			SourceID:   version.SkillName,
 			ChunkKey:   "active",
-			Title:      version.SkillName,
-			Content:    skillIndexContent(version),
+			Title:      card.SkillName,
+			Content:    compiledCatalogIndexContent(card),
 			Metadata: map[string]any{
-				"skill_name":         version.SkillName,
-				"version":            version.Version,
-				"version_id":         version.ID,
-				"source_id":          version.SourceID,
+				"skill_name":         card.SkillName,
+				"version":            card.Version,
+				"version_id":         card.SkillVersionID,
+				"source_id":          card.SourceID,
 				"source_revision_id": version.SourceRevisionID,
-				"package_hash":       version.PackageHash,
+				"package_hash":       card.PackageHash,
 				"agent_id":           version.AgentID,
-				"change_summary":     version.ChangeSummary,
-				"published_at":       version.PublishedAt.Format(time.RFC3339),
+				"change_summary":     truncateRunes(version.ChangeSummary, maxChangeSummaryRunes),
+				"published_at":       card.PublishedAt.Format(time.RFC3339),
+				"compiled_at":        card.CompiledAt.Format(time.RFC3339),
 				"is_active":          version.IsActive,
-				"description":        extractSkillDescription(version.Content),
+				"description":        card.Description,
+				"triggers":           card.Triggers,
+				"capabilities":       card.Capabilities,
+				"constraints":        card.Constraints,
+				"dependencies":       card.Dependencies,
+				"compiler_name":      card.CompilerName,
+				"compiler_version":   card.CompilerVersion,
+				"resource_count":     card.ResourceCount,
+				"resource_kinds":     card.ResourceKinds,
 			},
 		})
 		if err != nil {
@@ -331,6 +358,37 @@ func (s *Service) IndexActiveVersions(ctx context.Context, owner ownership.Owner
 	return resp, nil
 }
 
+func compiledCatalogIndexContent(card SkillCatalogItem) string {
+	parts := []string{
+		"Skill: " + card.SkillName,
+		"Version: " + card.Version,
+	}
+	if card.Description != "" {
+		parts = append(parts, "Description: "+card.Description)
+	}
+	for _, group := range []struct {
+		label  string
+		values []string
+	}{
+		{"Triggers", card.Triggers},
+		{"Capabilities", card.Capabilities},
+		{"Constraints", card.Constraints},
+		{"Dependencies", card.Dependencies},
+	} {
+		if len(group.values) > 0 {
+			parts = append(parts, group.label+": "+strings.Join(group.values, "; "))
+		}
+	}
+	parts = append(parts,
+		"Compiler: "+card.CompilerName+"/"+card.CompilerVersion,
+		fmt.Sprintf("Resources: %d", card.ResourceCount),
+	)
+	if len(card.ResourceKinds) > 0 {
+		parts = append(parts, "Resource kinds: "+strings.Join(card.ResourceKinds, ", "))
+	}
+	return truncateRunes(strings.Join(parts, "\n"), maxCatalogIndexRunes)
+}
+
 func (s *Service) Search(ctx context.Context, owner ownership.Owner, req SearchSkillsRequest) (*SearchSkillsResponse, error) {
 	if s.retrieval == nil {
 		return nil, fmt.Errorf("retrieval service is not configured")
@@ -343,7 +401,7 @@ func (s *Service) Search(ctx context.Context, owner ownership.Owner, req SearchS
 	if topK <= 0 || topK > 20 {
 		topK = 5
 	}
-	results, err := s.retrieval.Search(ctx, owner, retrieval.SearchRequest{
+	results, err := s.retrieval.SearchHybrid(ctx, owner, retrieval.SearchRequest{
 		Namespace: retrieval.NamespaceSkills,
 		Query:     req.Query,
 		TopK:      topK,
@@ -365,43 +423,45 @@ func (s *Service) Search(ctx context.Context, owner ownership.Owner, req SearchS
 		}
 		meta := documentMetadata(result.Document.Metadata)
 		item := SkillSearchItem{
-			SkillName:     stringMeta(meta, "skill_name", result.Document.SourceID),
-			Version:       stringMeta(meta, "version", ""),
-			VersionID:     stringMeta(meta, "version_id", ""),
-			Title:         result.Document.Title,
-			Description:   stringMeta(meta, "description", ""),
-			Score:         result.Score,
-			Rank:          result.Rank,
-			DocumentID:    result.Document.ID,
-			ChangeSummary: stringMeta(meta, "change_summary", ""),
+			SkillName:       stringMeta(meta, "skill_name", result.Document.SourceID),
+			Version:         stringMeta(meta, "version", ""),
+			VersionID:       stringMeta(meta, "version_id", ""),
+			SourceID:        optionalStringMeta(meta, "source_id"),
+			Title:           result.Document.Title,
+			Description:     stringMeta(meta, "description", ""),
+			Triggers:        stringSliceMeta(meta, "triggers"),
+			Capabilities:    stringSliceMeta(meta, "capabilities"),
+			Constraints:     stringSliceMeta(meta, "constraints"),
+			Dependencies:    stringSliceMeta(meta, "dependencies"),
+			CompilerName:    stringMeta(meta, "compiler_name", ""),
+			CompilerVersion: stringMeta(meta, "compiler_version", ""),
+			PackageHash:     stringMeta(meta, "package_hash", ""),
+			ResourceCount:   intMeta(meta, "resource_count"),
+			ResourceKinds:   stringSliceMeta(meta, "resource_kinds"),
+			Score:           result.Score,
+			Rank:            result.Rank,
+			DocumentID:      result.Document.ID,
+			ChangeSummary:   truncateRunes(stringMeta(meta, "change_summary", ""), maxChangeSummaryRunes),
 		}
 		if publishedAt := stringMeta(meta, "published_at", ""); publishedAt != "" {
-			if t, err := time.Parse(time.RFC3339, publishedAt); err == nil {
-				item.PublishedAt = t
+			if parsed, err := time.Parse(time.RFC3339, publishedAt); err == nil {
+				item.PublishedAt = parsed
 			}
 		}
-		if req.IncludeContent {
-			item.Content = result.Document.Content
+		if compiledAt := stringMeta(meta, "compiled_at", ""); compiledAt != "" {
+			if parsed, err := time.Parse(time.RFC3339, compiledAt); err == nil {
+				item.CompiledAt = parsed
+			}
+		}
+		if req.IncludeContent && item.VersionID != "" {
+			version, versionErr := s.repo.GetVersion(ctx, owner.Account(), item.VersionID)
+			if versionErr == nil {
+				item.Content = version.Content
+			}
 		}
 		items = append(items, item)
 	}
 	return &SearchSkillsResponse{Items: items, Total: len(items)}, nil
-}
-
-func skillIndexContent(version SkillVersion) string {
-	description := extractSkillDescription(version.Content)
-	parts := []string{
-		"Skill: " + version.SkillName,
-		"Version: " + version.Version,
-	}
-	if description != "" {
-		parts = append(parts, "Description: "+description)
-	}
-	if version.ChangeSummary != "" {
-		parts = append(parts, "Change summary: "+version.ChangeSummary)
-	}
-	parts = append(parts, "Instructions:\n"+trimForEmbedding(version.Content))
-	return strings.Join(parts, "\n\n")
 }
 
 func normalizeSourceRequest(req CreateSkillSourceRequest) (CreateSkillSourceRequest, error) {
@@ -580,7 +640,11 @@ func normalizeSnapshotFiles(req SubmitLocalSnapshotRequest) ([]SkillVersionFile,
 }
 
 func extractSkillDescription(content string) string {
-	return extractSkillMetadata(content)["description"]
+	metadata, err := parseSkillFrontmatter(content)
+	if err != nil || validateSkillFrontmatter(metadata) != nil {
+		return ""
+	}
+	return metadata.Description
 }
 
 func extractSkillMetadata(content string) map[string]string {
@@ -607,15 +671,6 @@ func extractSkillMetadata(content string) map[string]string {
 	return values
 }
 
-func trimForEmbedding(content string) string {
-	const maxRunes = 20000
-	runes := []rune(content)
-	if len(runes) <= maxRunes {
-		return content
-	}
-	return string(runes[:maxRunes])
-}
-
 func documentMetadata(raw json.RawMessage) map[string]any {
 	if len(raw) == 0 {
 		return map[string]any{}
@@ -632,10 +687,54 @@ func stringMeta(metadata map[string]any, key, fallback string) string {
 	if !ok || value == nil {
 		return fallback
 	}
-	if s, ok := value.(string); ok {
-		return s
+	if text, ok := value.(string); ok {
+		return text
 	}
 	return fallback
+}
+
+func optionalStringMeta(metadata map[string]any, key string) *string {
+	value := stringMeta(metadata, key, "")
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func stringSliceMeta(metadata map[string]any, key string) []string {
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return []string{}
+	}
+	switch values := value.(type) {
+	case []string:
+		return nonNilStrings(values)
+	case []any:
+		result := make([]string, 0, len(values))
+		for _, item := range values {
+			if text, ok := item.(string); ok {
+				result = append(result, text)
+			}
+		}
+		return result
+	default:
+		return []string{}
+	}
+}
+
+func intMeta(metadata map[string]any, key string) int {
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return 0
+	}
+	switch number := value.(type) {
+	case float64:
+		return int(number)
+	case int:
+		return number
+	default:
+		return 0
+	}
 }
 
 func normalizeOptionalRelativePath(value string) string {

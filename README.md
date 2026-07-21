@@ -58,7 +58,9 @@ go run ./cmd/server
 ## Agent Skills
 
 The architecture and implementation roadmap for the Git-backed registry are documented in
-[Skill Registry Design v0.1](docs/skill-registry-design-v0.1.md).
+[Skill Registry Design v0.1](docs/skill-registry-design-v0.1.md). Skill Registry Phase 3
+(compiled L0 catalog, deterministic compiler, L1/L2 progressive disclosure, and selected
+text-resource loading) is implemented; DAG composition remains a later increment.
 
 The official [AgentMate Memory skill](integrations/skills/agentmate-memory/SKILL.md)
 teaches compatible agents to recall scoped context, journal meaningful events,
@@ -149,11 +151,25 @@ if embedding or Qdrant indexing fails, creation still succeeds with
 - `GET /api/skills/sources/:id/revisions` — List source revisions (scope: `skills:r`)
 - `POST /api/skills/sources/:id/snapshots` — Push a local skill package snapshot (scope: `skills:rw`)
 - `POST /api/skills/sources/:id/sync` — Pull and sync a public GitHub/GitLab skill package (scope: `skills:rw`)
-- `POST /api/skills/index` — Index active skill versions into retrieval (scope: `skills:rw`)
-- `POST /api/skills/search` — Semantic search across indexed active skills (scope: `skills:r`)
+- `POST /api/skills/compile` — Compile/recompile one version, or backfill all active versions (scope: `skills:rw`)
+- `GET /api/skills/catalog?query=&limit=&offset=` — List active L0 cards with stable pagination (scope: `skills:r`)
+- `GET /api/skills/versions/:id/instructions` — Load L1 `SKILL.md` instructions (scope: `skills:r`)
+- `GET /api/skills/versions/:id/resources?limit=&offset=` — Load the paginated L2 resource manifest without content (scope: `skills:r`)
+- `GET /api/skills/versions/:id/resources/:file_id` — Load one selected text resource (scope: `skills:r`)
+- `POST /api/skills/index` — Index compiled active skill cards into retrieval (scope: `skills:rw`)
+- `POST /api/skills/search` — Semantic search across indexed L0 cards; `include_content` remains supported (scope: `skills:r`)
 - `GET /api/skills/versions/active?skill_name=` — Get active skill version (scope: `skills:r`)
-- `GET /api/skills/versions/:id/files` — List files captured for a skill version (scope: `skills:r`)
+- `GET /api/skills/versions/:id/files` — List internal package file records (compatibility endpoint, scope: `skills:r`)
 - `POST /api/skills/versions/:id/activate` — Activate a skill version (scope: `skills:rw`)
+
+Successful local/Git ingest, direct publish, and activation attempt to refresh the compiled artifact after the package transaction commits. A compiler failure never rolls back package identity. Catalog reads return a basic card when an artifact is missing; call `/api/skills/compile` to backfill it. Instruction and resource-content responses use `Cache-Control: private, no-store`.
+
+Migration `000018` replaces any pre-compiler Skill retrieval document that may contain full
+instructions with a bounded basic L0 card, marks its stale vector as non-hydratable, and keeps
+a safe PostgreSQL lexical fallback. Run `POST /api/skills/compile` and then
+`POST /api/skills/index` after upgrading to rebuild current artifacts and embeddings.
+`include_content=true` remains compatible by loading the selected L1 instructions from
+PostgreSQL after search; instructions are never stored in the retrieval index.
 
 Skill sources keep registry metadata and deterministic file snapshots. Git sources are registered as server-pull sources; local sources are client-push sources where the client sends a package snapshot. `SKILL.md` remains the compatibility content for `skill_versions`, while additional files are tracked as revision file metadata and indexable text snapshots.
 
@@ -239,7 +255,7 @@ integration opt into only the modules it needs.
 | `POST /mcp/bookmarks` | `bookmark_create`, `bookmark_get`, `bookmark_list`, `bookmark_update`, `bookmark_delete` |
 | `POST /mcp/expenses` | `expense_create`, `expense_get`, `expense_list`, `expense_summary`, `expense_update`, `expense_delete` |
 | `POST /mcp/memory` | `memory_record`, `memory_store`, `memory_search`, `memory_get` |
-| `POST /mcp/skills` | `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_source_sync`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active` |
+| `POST /mcp/skills` | `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_source_sync`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active`, `skill_catalog_list`, `skill_compile`, `skill_version_instructions`, `skill_version_resources`, `skill_resource_get` |
 
 Authenticate with a valid API key via `X-Api-Key` header, `Authorization: Bearer ak_xxx`,
 or `?api_key=ak_xxx` query param. MCP tool calls enforce the same API key scopes as REST

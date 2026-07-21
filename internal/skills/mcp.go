@@ -2,6 +2,8 @@ package skills
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"net/http"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -11,15 +13,20 @@ import (
 )
 
 var toolScopes = map[string]string{
-	"skill_log_add":            "skills:rw",
-	"skill_version_publish":    "skills:rw",
-	"skill_version_get_active": "skills:r",
-	"skill_stats":              "skills:r",
-	"skill_signals":            "skills:r",
-	"skill_logs_list":          "skills:r",
-	"skill_search":             "skills:r",
-	"skill_source_sync":        "skills:rw",
-	"skill_index_active":       "skills:rw",
+	"skill_log_add":              "skills:rw",
+	"skill_version_publish":      "skills:rw",
+	"skill_version_get_active":   "skills:r",
+	"skill_stats":                "skills:r",
+	"skill_signals":              "skills:r",
+	"skill_logs_list":            "skills:r",
+	"skill_search":               "skills:r",
+	"skill_source_sync":          "skills:rw",
+	"skill_index_active":         "skills:rw",
+	"skill_catalog_list":         "skills:r",
+	"skill_compile":              "skills:rw",
+	"skill_version_instructions": "skills:r",
+	"skill_version_resources":    "skills:r",
+	"skill_resource_get":         "skills:r",
 }
 
 func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
@@ -216,6 +223,106 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		return mcpauth.JSONResult(result)
 	})
 
+	// skill_catalog_list
+	s.AddTool(mcp.NewTool("skill_catalog_list",
+		mcp.WithDescription("List active skill L0 catalog cards with stable pagination. Cards contain compiled routing metadata but no instruction or resource content."),
+		mcp.WithString("query", mcp.Description("Optional name, description, trigger, or capability filter")),
+		mcp.WithNumber("limit", mcp.Description("Page size (default 20, max 100)")),
+		mcp.WithNumber("offset", mcp.Description("Non-negative page offset")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		limit, offset, paginationErr := strictMCPPagination(args)
+		if paginationErr != nil {
+			return mcpauth.ErrResult(paginationErr.Error()), nil
+		}
+		response, err := svc.ListCatalog(ctx, owner.Account(), SkillCatalogListParams{
+			Query:  mcpauth.StrArg(args, "query"),
+			Limit:  limit,
+			Offset: offset,
+		})
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	// skill_compile
+	s.AddTool(mcp.NewTool("skill_compile",
+		mcp.WithDescription("Compile or recompile a skill version catalog artifact. Omit version_id to backfill all active versions."),
+		mcp.WithString("version_id", mcp.Description("Optional skill version ID")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		response, err := svc.Compile(ctx, owner.Account(), mcpauth.StrArg(req.GetArguments(), "version_id"))
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	// skill_version_instructions
+	s.AddTool(mcp.NewTool("skill_version_instructions",
+		mcp.WithDescription("Load L1 instructions for one account-owned skill version."),
+		mcp.WithString("version_id", mcp.Required(), mcp.Description("Skill version ID")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		response, err := svc.GetInstructions(ctx, owner.Account(), mcpauth.StrArg(req.GetArguments(), "version_id"))
+		if err != nil {
+			return mcpauth.ErrResult("not found"), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	// skill_version_resources
+	s.AddTool(mcp.NewTool("skill_version_resources",
+		mcp.WithDescription("Load the L2 resource manifest for one account-owned skill version. The manifest never includes resource content."),
+		mcp.WithString("version_id", mcp.Required(), mcp.Description("Skill version ID")),
+		mcp.WithNumber("limit", mcp.Description("Page size (default 20, max 100)")),
+		mcp.WithNumber("offset", mcp.Description("Non-negative page offset")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		limit, offset, paginationErr := strictMCPPagination(args)
+		if paginationErr != nil {
+			return mcpauth.ErrResult(paginationErr.Error()), nil
+		}
+		response, err := svc.GetResources(ctx, owner.Account(), mcpauth.StrArg(args, "version_id"), SkillResourceListParams{Limit: limit, Offset: offset})
+		if err != nil {
+			return mcpauth.ErrResult("not found"), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	// skill_resource_get
+	s.AddTool(mcp.NewTool("skill_resource_get",
+		mcp.WithDescription("Load one selected text resource using an account-scoped version_id and file_id pair."),
+		mcp.WithString("version_id", mcp.Required(), mcp.Description("Skill version ID")),
+		mcp.WithString("file_id", mcp.Required(), mcp.Description("Resource file ID from skill_version_resources")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		response, err := svc.GetResource(ctx, owner.Account(), mcpauth.StrArg(args, "version_id"), mcpauth.StrArg(args, "file_id"))
+		if err != nil {
+			return mcpauth.ErrResult("not found"), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
 	// skill_logs_list
 	s.AddTool(mcp.NewTool("skill_logs_list",
 		mcp.WithDescription("List skill execution logs. Filter by skill_name, agent_id, or outcome."),
@@ -245,4 +352,31 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 	})
 
 	return server.NewStreamableHTTPServer(s, server.WithHTTPContextFunc(mcpauth.HTTPContextFunc(authSvc)))
+}
+
+func strictMCPPagination(args map[string]interface{}) (int, int, error) {
+	limit, err := strictMCPInteger(args, "limit", 20, 1, 100)
+	if err != nil {
+		return 0, 0, err
+	}
+	offset, err := strictMCPInteger(args, "offset", 0, 0, math.MaxInt)
+	if err != nil {
+		return 0, 0, err
+	}
+	return limit, offset, nil
+}
+
+func strictMCPInteger(args map[string]interface{}, key string, fallback, minimum, maximum int) (int, error) {
+	raw, present := args[key]
+	if !present {
+		return fallback, nil
+	}
+	number, ok := raw.(float64)
+	if !ok || math.IsNaN(number) || math.IsInf(number, 0) || math.Trunc(number) != number || number < float64(minimum) || number > float64(maximum) {
+		if key == "limit" {
+			return 0, fmt.Errorf("limit must be an integer between 1 and 100")
+		}
+		return 0, fmt.Errorf("offset must be a non-negative integer")
+	}
+	return int(number), nil
 }

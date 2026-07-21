@@ -247,6 +247,105 @@ func (h *Handler) Search(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+func (h *Handler) Compile(c *gin.Context) {
+	var req CompileSkillsRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.Compile(c.Request.Context(), owner.Account(), req.VersionID)
+	if err != nil {
+		if isNotFound(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) ListCatalog(c *gin.Context) {
+	limit, offset, err := strictPagination(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateCatalogQuery(c.Query("query")); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.ListCatalog(c.Request.Context(), owner.Account(), SkillCatalogListParams{
+		Query:  c.Query("query"),
+		Limit:  limit,
+		Offset: offset,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) GetInstructions(c *gin.Context) {
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.GetInstructions(c.Request.Context(), owner.Account(), c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) GetResources(c *gin.Context) {
+	limit, offset, err := strictPagination(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.GetResources(c.Request.Context(), owner.Account(), c.Param("id"), SkillResourceListParams{Limit: limit, Offset: offset})
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) GetResource(c *gin.Context) {
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.GetResource(c.Request.Context(), owner.Account(), c.Param("id"), c.Param("file_id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusOK, response)
+}
+
+func strictPagination(c *gin.Context) (int, int, error) {
+	limit := 20
+	if rawLimit, present := c.GetQuery("limit"); present {
+		parsed, err := strconv.Atoi(rawLimit)
+		if err != nil || parsed < 1 || parsed > 100 {
+			return 0, 0, errors.New("limit must be an integer between 1 and 100")
+		}
+		limit = parsed
+	}
+	offset := 0
+	if rawOffset, present := c.GetQuery("offset"); present {
+		parsed, err := strconv.Atoi(rawOffset)
+		if err != nil || parsed < 0 {
+			return 0, 0, errors.New("offset must be a non-negative integer")
+		}
+		offset = parsed
+	}
+	return limit, offset, nil
+}
+
 func (h *Handler) GetStats(c *gin.Context) {
 	owner := auth.OwnerFromContext(c)
 	skillName := c.Query("skill_name")

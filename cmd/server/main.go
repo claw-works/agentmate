@@ -170,6 +170,10 @@ func main() {
 	protected.GET("/skills/sources/:id/revisions", auth.RequireScope("skills:r"), skillsHandler.ListSourceRevisions)
 	protected.GET("/skills/versions", auth.RequireScope("skills:r"), skillsHandler.ListVersions)
 	protected.GET("/skills/versions/active", auth.RequireScope("skills:r"), skillsHandler.GetActiveVersion)
+	protected.GET("/skills/catalog", auth.RequireScope("skills:r"), skillsHandler.ListCatalog)
+	protected.GET("/skills/versions/:id/instructions", auth.RequireScope("skills:r"), skillsHandler.GetInstructions)
+	protected.GET("/skills/versions/:id/resources", auth.RequireScope("skills:r"), skillsHandler.GetResources)
+	protected.GET("/skills/versions/:id/resources/:file_id", auth.RequireScope("skills:r"), skillsHandler.GetResource)
 	protected.GET("/skills/versions/:id/files", auth.RequireScope("skills:r"), skillsHandler.ListVersionFiles)
 	protected.GET("/skills/stats", auth.RequireScope("skills:r"), skillsHandler.GetStats)
 	protected.GET("/skills/signals", auth.RequireScope("skills:r"), skillsHandler.GetSignals)
@@ -181,6 +185,7 @@ func main() {
 	protected.POST("/skills/sources/:id/sync", auth.RequireScope("skills:rw"), skillsHandler.SyncGitSource)
 	protected.POST("/skills/versions", auth.RequireScope("skills:rw"), skillsHandler.CreateVersion)
 	protected.POST("/skills/versions/:id/activate", auth.RequireScope("skills:rw"), skillsHandler.ActivateVersion)
+	protected.POST("/skills/compile", auth.RequireScope("skills:rw"), skillsHandler.Compile)
 	protected.POST("/skills/index", auth.RequireScope("skills:rw"), skillsHandler.IndexActiveVersions)
 
 	// Admin

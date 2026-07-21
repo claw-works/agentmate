@@ -244,15 +244,134 @@ type SearchSkillsResponse struct {
 }
 
 type SkillSearchItem struct {
-	SkillName     string    `json:"skill_name"`
-	Version       string    `json:"version"`
-	VersionID     string    `json:"version_id"`
-	Title         string    `json:"title"`
-	Description   string    `json:"description"`
-	Score         float64   `json:"score"`
-	Rank          int       `json:"rank"`
-	DocumentID    string    `json:"document_id"`
-	Content       string    `json:"content,omitempty"`
-	PublishedAt   time.Time `json:"published_at,omitempty"`
-	ChangeSummary string    `json:"change_summary,omitempty"`
+	SkillName       string    `json:"skill_name"`
+	Version         string    `json:"version"`
+	VersionID       string    `json:"version_id"`
+	SourceID        *string   `json:"source_id,omitempty"`
+	Title           string    `json:"title"`
+	Description     string    `json:"description"`
+	Triggers        []string  `json:"triggers"`
+	Capabilities    []string  `json:"capabilities"`
+	Constraints     []string  `json:"constraints"`
+	Dependencies    []string  `json:"dependencies"`
+	CompilerName    string    `json:"compiler_name"`
+	CompilerVersion string    `json:"compiler_version"`
+	PackageHash     string    `json:"package_hash"`
+	ResourceCount   int       `json:"resource_count"`
+	ResourceKinds   []string  `json:"resource_kinds"`
+	Score           float64   `json:"score"`
+	Rank            int       `json:"rank"`
+	DocumentID      string    `json:"document_id"`
+	Content         string    `json:"content,omitempty"`
+	PublishedAt     time.Time `json:"published_at,omitempty"`
+	CompiledAt      time.Time `json:"compiled_at,omitempty"`
+	ChangeSummary   string    `json:"change_summary,omitempty"`
+}
+
+type SkillResourceManifestItem struct {
+	FileID        string `json:"file_id"`
+	Path          string `json:"path"`
+	Kind          string `json:"kind"`
+	SHA256        string `json:"sha256"`
+	SizeBytes     int64  `json:"size_bytes"`
+	MimeType      string `json:"mime_type"`
+	Indexable     bool   `json:"indexable"`
+	TextAvailable bool   `json:"text_available"`
+}
+
+type CompiledSkillCatalog struct {
+	ID               string                      `json:"-"`
+	AccountID        string                      `json:"-"`
+	SkillVersionID   string                      `json:"version_id"`
+	SourceID         *string                     `json:"-"`
+	SkillName        string                      `json:"skill_name"`
+	Version          string                      `json:"version"`
+	CompilerName     string                      `json:"compiler_name"`
+	CompilerVersion  string                      `json:"compiler_version"`
+	InputPackageHash string                      `json:"input_package_hash"`
+	Description      string                      `json:"description"`
+	Triggers         []string                    `json:"triggers"`
+	Capabilities     []string                    `json:"capabilities"`
+	Constraints      []string                    `json:"constraints"`
+	Dependencies     []string                    `json:"dependencies"`
+	ResourceManifest []SkillResourceManifestItem `json:"resources"`
+	CompiledAt       time.Time                   `json:"compiled_at"`
+	PublishedAt      time.Time                   `json:"published_at"`
+}
+
+type SkillCatalogItem struct {
+	SkillVersionID    string    `json:"version_id"`
+	SkillName         string    `json:"skill_name"`
+	Version           string    `json:"version"`
+	SourceID          *string   `json:"source_id,omitempty"`
+	Description       string    `json:"description"`
+	Triggers          []string  `json:"triggers"`
+	Capabilities      []string  `json:"capabilities"`
+	Constraints       []string  `json:"constraints"`
+	Dependencies      []string  `json:"dependencies"`
+	CompilerName      string    `json:"compiler_name"`
+	CompilerVersion   string    `json:"compiler_version"`
+	PackageHash       string    `json:"package_hash"`
+	ResourceCount     int       `json:"resource_count"`
+	ResourceKinds     []string  `json:"resource_kinds"`
+	CompiledAt        time.Time `json:"compiled_at,omitempty"`
+	PublishedAt       time.Time `json:"published_at"`
+	ArtifactAvailable bool      `json:"artifact_available"`
+}
+
+type SkillCatalogListParams struct {
+	Query  string
+	Limit  int
+	Offset int
+}
+
+type SkillCatalogListResponse struct {
+	Items  []SkillCatalogItem `json:"items"`
+	Total  int                `json:"total"`
+	Limit  int                `json:"limit"`
+	Offset int                `json:"offset"`
+}
+
+type CompileSkillsRequest struct {
+	VersionID string `json:"version_id"`
+}
+
+type CompileSkillsResponse struct {
+	Items  []SkillCatalogItem `json:"items"`
+	Errors []IndexError       `json:"errors"`
+}
+
+type SkillInstructionsResponse struct {
+	VersionID    string    `json:"version_id"`
+	SkillName    string    `json:"skill_name"`
+	Version      string    `json:"version"`
+	Instructions string    `json:"instructions"`
+	ContentHash  string    `json:"content_hash"`
+	PublishedAt  time.Time `json:"published_at"`
+}
+
+type SkillResourceListParams struct {
+	Limit  int
+	Offset int
+}
+
+type SkillResourcesResponse struct {
+	VersionID string                      `json:"version_id"`
+	SkillName string                      `json:"skill_name"`
+	Version   string                      `json:"version"`
+	Items     []SkillResourceManifestItem `json:"items"`
+	Total     int                         `json:"total"`
+	Limit     int                         `json:"limit"`
+	Offset    int                         `json:"offset"`
+}
+
+type SkillResourceResponse struct {
+	VersionID string `json:"version_id"`
+	FileID    string `json:"file_id"`
+	Path      string `json:"path"`
+	Kind      string `json:"kind"`
+	SHA256    string `json:"sha256"`
+	SizeBytes int64  `json:"size_bytes"`
+	MimeType  string `json:"mime_type"`
+	Content   string `json:"content"`
 }
