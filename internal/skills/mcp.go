@@ -27,6 +27,8 @@ var toolScopes = map[string]string{
 	"skill_version_instructions": "skills:r",
 	"skill_version_resources":    "skills:r",
 	"skill_resource_get":         "skills:r",
+	"skill_quality_run":          "skills:rw",
+	"skill_quality_get":          "skills:r",
 }
 
 func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
@@ -38,7 +40,8 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		mcp.WithString("skill_name", mcp.Required(), mcp.Description("Skill name, e.g. 'agentmate', 'sa-weekly-kpi'")),
 		mcp.WithString("outcome", mcp.Required(), mcp.Description("success/failure/partial/user_corrected")),
 		mcp.WithString("agent_id", mcp.Description("Agent that executed the skill")),
-		mcp.WithString("skill_version", mcp.Description("Skill version, e.g. 'v1'")),
+		mcp.WithString("skill_version_id", mcp.Description("Optional immutable AgentMate skill version ID; must be account-owned and match skill_name")),
+		mcp.WithString("skill_version", mcp.Description("Legacy version label; canonicalized from skill_version_id when provided")),
 		mcp.WithString("session_id", mcp.Description("Session/conversation ID")),
 		mcp.WithString("trigger_text", mcp.Description("Original user input that triggered this skill")),
 		mcp.WithBoolean("was_triggered", mcp.Description("false if silent-bypass: skill appeared valid but was never invoked")),
@@ -55,6 +58,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 			SkillName:      mcpauth.StrArg(args, "skill_name"),
 			Outcome:        mcpauth.StrArg(args, "outcome"),
 			AgentID:        mcpauth.StrArg(args, "agent_id"),
+			SkillVersionID: mcpauth.StrArg(args, "skill_version_id"),
 			SkillVersion:   mcpauth.StrArg(args, "skill_version"),
 			SessionID:      mcpauth.StrArg(args, "session_id"),
 			TriggerText:    mcpauth.StrArg(args, "trigger_text"),
@@ -349,6 +353,42 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 			return mcpauth.ErrResult(err.Error()), nil
 		}
 		return mcpauth.JSONResult(list)
+	})
+
+	// skill_quality_run
+	s.AddTool(mcp.NewTool("skill_quality_run",
+		mcp.WithDescription("Run offline deterministic package lint, platform contract checks, same-skill release comparison, and version-bound telemetry snapshot. This does not publish, activate, index, call providers, or produce a composite score."),
+		mcp.WithString("version_id", mcp.Required(), mcp.Description("Account-owned skill version ID")),
+		mcp.WithString("baseline_version_id", mcp.Description("Optional account-owned baseline version ID for the same skill; defaults to the previous release")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		run, err := svc.RunQuality(ctx, owner.Account(), mcpauth.StrArg(args, "version_id"), CreateQualityRunRequest{
+			BaselineVersionID: mcpauth.StrArg(args, "baseline_version_id"),
+		})
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(run)
+	})
+
+	// skill_quality_get
+	s.AddTool(mcp.NewTool("skill_quality_get",
+		mcp.WithDescription("Get one account-scoped deterministic quality run by run_id."),
+		mcp.WithString("run_id", mcp.Required(), mcp.Description("Quality run ID")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		run, err := svc.GetQualityRun(ctx, owner.Account(), mcpauth.StrArg(req.GetArguments(), "run_id"))
+		if err != nil {
+			return mcpauth.ErrResult("not found"), nil
+		}
+		return mcpauth.JSONResult(run)
 	})
 
 	return server.NewStreamableHTTPServer(s, server.WithHTTPContextFunc(mcpauth.HTTPContextFunc(authSvc)))

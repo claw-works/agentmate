@@ -58,9 +58,12 @@ go run ./cmd/server
 ## Agent Skills
 
 The architecture and implementation roadmap for the Git-backed registry are documented in
-[Skill Registry Design v0.1](docs/skill-registry-design-v0.1.md). Skill Registry Phase 3
-(compiled L0 catalog, deterministic compiler, L1/L2 progressive disclosure, and selected
-text-resource loading) is implemented; DAG composition remains a later increment.
+[Skill Registry Design v0.1](docs/skill-registry-design-v0.1.md). Skill Registry Phase 4 is
+implemented as an offline deterministic quality layer: package lint, platform contract checks,
+same-skill release comparison (including package identity and resource behavior metadata), and
+strictly version-bound telemetry suggestions. It does not call
+LLMs, providers, Qdrant, publish/activate/index versions, produce a composite score, or claim
+semantic evaluation/reinforcement learning. DAG composition remains a later increment.
 
 The official [AgentMate Memory skill](integrations/skills/agentmate-memory/SKILL.md)
 teaches compatible agents to recall scoped context, journal meaningful events,
@@ -157,6 +160,9 @@ if embedding or Qdrant indexing fails, creation still succeeds with
 - `GET /api/skills/versions/:id/resources?limit=&offset=` — Load the paginated L2 resource manifest without content (scope: `skills:r`)
 - `GET /api/skills/versions/:id/resources/:file_id` — Load one selected text resource (scope: `skills:r`)
 - `POST /api/skills/index` — Index compiled active skill cards into retrieval (scope: `skills:rw`)
+- `POST /api/skills/versions/:id/quality-runs` — Run offline deterministic quality checks with an optional `baseline_version_id` (scope: `skills:rw`)
+- `GET /api/skills/versions/:id/quality-runs?limit=&offset=` — List report-free quality run summaries with stable pagination (scope: `skills:r`)
+- `GET /api/skills/quality-runs/:run_id` — Get one account-scoped full quality report (scope: `skills:r`)
 - `POST /api/skills/search` — Semantic search across indexed L0 cards; `include_content` remains supported (scope: `skills:r`)
 - `GET /api/skills/versions/active?skill_name=` — Get active skill version (scope: `skills:r`)
 - `GET /api/skills/versions/:id/files` — List internal package file records (compatibility endpoint, scope: `skills:r`)
@@ -170,6 +176,24 @@ a safe PostgreSQL lexical fallback. Run `POST /api/skills/compile` and then
 `POST /api/skills/index` after upgrading to rebuild current artifacts and embeddings.
 `include_content=true` remains compatible by loading the selected L1 instructions from
 PostgreSQL after search; instructions are never stored in the retrieval index.
+
+Phase 4 quality runs are synchronous, offline, and side-effect free except for their own audit row.
+Each run reads its version, optional same-skill baseline, compiled artifacts, files, cutoff, and latest
+version-bound logs from one read-only repeatable-read snapshot. `skill_log_add` accepts an optional immutable `skill_version_id`; when present it must belong to the
+same account and `skill_name`, and the server canonicalizes the legacy version label. Logs without
+that ID remain unassigned and are excluded from quality telemetry. Reports use at most the latest
+200 logs before a fixed cutoff, require 20 triggered samples for suggestions, and contain counts,
+fingerprints, and log IDs rather than instruction, resource, or log bodies. Direct body-only versions
+validate `sha256(content) == content_hash == package_hash`. Each check carries a deterministic
+`blocker`, `error`, or `warning` severity. Release comparison reports both `package_hash_changed`
+and `resource_manifest_changed`; the latter compares static resource behavior metadata such as
+kind, MIME type, indexability, and text availability without changing the Phase 1 package hash.
+Quality-run list responses contain summaries only; the detail endpoint loads the full report.
+
+Migration `000019` keeps audit targets append-only: deleting a target version referenced by a
+version-bound log or quality run is rejected by the default `NO ACTION` foreign keys. Account
+deletion still cascades quality runs, while deleting a baseline version only clears the
+`baseline_version_id` column.
 
 Skill sources keep registry metadata and deterministic file snapshots. Git sources are registered as server-pull sources; local sources are client-push sources where the client sends a package snapshot. `SKILL.md` remains the compatibility content for `skill_versions`, while additional files are tracked as revision file metadata and indexable text snapshots.
 
@@ -255,7 +279,7 @@ integration opt into only the modules it needs.
 | `POST /mcp/bookmarks` | `bookmark_create`, `bookmark_get`, `bookmark_list`, `bookmark_update`, `bookmark_delete` |
 | `POST /mcp/expenses` | `expense_create`, `expense_get`, `expense_list`, `expense_summary`, `expense_update`, `expense_delete` |
 | `POST /mcp/memory` | `memory_record`, `memory_store`, `memory_search`, `memory_get` |
-| `POST /mcp/skills` | `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_source_sync`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active`, `skill_catalog_list`, `skill_compile`, `skill_version_instructions`, `skill_version_resources`, `skill_resource_get` |
+| `POST /mcp/skills` | `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_source_sync`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active`, `skill_catalog_list`, `skill_compile`, `skill_version_instructions`, `skill_version_resources`, `skill_resource_get`, `skill_quality_run`, `skill_quality_get` |
 
 Authenticate with a valid API key via `X-Api-Key` header, `Authorization: Bearer ak_xxx`,
 or `?api_key=ak_xxx` query param. MCP tool calls enforce the same API key scopes as REST

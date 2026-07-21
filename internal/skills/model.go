@@ -10,6 +10,7 @@ type SkillLog struct {
 	AccountID      *string         `json:"account_id,omitempty"`
 	UserID         *string         `json:"user_id,omitempty"`
 	KeyID          *string         `json:"key_id,omitempty"`
+	SkillVersionID *string         `json:"skill_version_id,omitempty"`
 	SkillName      string          `json:"skill_name"`
 	SkillVersion   string          `json:"skill_version"`
 	AgentID        string          `json:"agent_id"`
@@ -97,6 +98,7 @@ type SkillVersionFile struct {
 
 type CreateLogRequest struct {
 	SkillName      string          `json:"skill_name" binding:"required"`
+	SkillVersionID string          `json:"skill_version_id"`
 	SkillVersion   string          `json:"skill_version"`
 	AgentID        string          `json:"agent_id" binding:"required"`
 	SessionID      string          `json:"session_id"`

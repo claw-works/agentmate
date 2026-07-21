@@ -163,13 +163,12 @@ func (r *Repo) CreateLog(ctx context.Context, owner ownership.Owner, req CreateL
 
 	var l SkillLog
 	err := r.pool.QueryRow(ctx,
-		`INSERT INTO skill_logs (account_id, user_id, key_id, skill_name, skill_version, agent_id, session_id, trigger_text, was_triggered, outcome, failure_reason, user_correction, tool_calls, duration_ms)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-		 RETURNING id, account_id, user_id, key_id, skill_name, skill_version, agent_id, session_id, trigger_text, was_triggered, outcome, failure_reason, user_correction, tool_calls, duration_ms, created_at`,
-		nullableString(owner.Account()), nullableString(owner.UserID), owner.KeyID, req.SkillName, version, req.AgentID, req.SessionID, req.TriggerText,
+		`INSERT INTO skill_logs (account_id, user_id, key_id, skill_version_id, skill_name, skill_version, agent_id, session_id, trigger_text, was_triggered, outcome, failure_reason, user_correction, tool_calls, duration_ms)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		 RETURNING id, account_id, user_id, key_id, skill_version_id, skill_name, skill_version, agent_id, session_id, trigger_text, was_triggered, outcome, failure_reason, user_correction, tool_calls, duration_ms, created_at`,
+		nullableString(owner.Account()), nullableString(owner.UserID), owner.KeyID, nullableString(req.SkillVersionID), req.SkillName, version, req.AgentID, req.SessionID, req.TriggerText,
 		wasTriggered, req.Outcome, req.FailureReason, req.UserCorrection, toolCalls, req.DurationMs,
-	).Scan(&l.ID, &l.AccountID, &l.UserID, &l.KeyID, &l.SkillName, &l.SkillVersion, &l.AgentID, &l.SessionID, &l.TriggerText,
-		&l.WasTriggered, &l.Outcome, &l.FailureReason, &l.UserCorrection, &l.ToolCalls, &l.DurationMs, &l.CreatedAt)
+	).Scan(scanSkillLog(&l)...)
 	return &l, err
 }
 
@@ -179,7 +178,7 @@ func (r *Repo) ListLogs(ctx context.Context, accountID string, params LogListPar
 		limit = 20
 	}
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, account_id, user_id, key_id, skill_name, skill_version, agent_id, session_id, trigger_text, was_triggered, outcome, failure_reason, user_correction, tool_calls, duration_ms, created_at
+		`SELECT id, account_id, user_id, key_id, skill_version_id, skill_name, skill_version, agent_id, session_id, trigger_text, was_triggered, outcome, failure_reason, user_correction, tool_calls, duration_ms, created_at
 		 FROM skill_logs
 		 WHERE account_id = $1
 		   AND ($2 = '' OR skill_name = $2)
@@ -195,13 +194,12 @@ func (r *Repo) ListLogs(ctx context.Context, accountID string, params LogListPar
 	items := make([]SkillLog, 0)
 	for rows.Next() {
 		var l SkillLog
-		if err := rows.Scan(&l.ID, &l.AccountID, &l.UserID, &l.KeyID, &l.SkillName, &l.SkillVersion, &l.AgentID, &l.SessionID, &l.TriggerText,
-			&l.WasTriggered, &l.Outcome, &l.FailureReason, &l.UserCorrection, &l.ToolCalls, &l.DurationMs, &l.CreatedAt); err != nil {
+		if err := rows.Scan(scanSkillLog(&l)...); err != nil {
 			return nil, err
 		}
 		items = append(items, l)
 	}
-	return items, nil
+	return items, rows.Err()
 }
 
 func (r *Repo) CountLogs(ctx context.Context, accountID string, params LogListParams) (int, error) {
@@ -731,7 +729,7 @@ func (r *Repo) SkillSignals(ctx context.Context, accountID, skillName string, li
 		limit = 10
 	}
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, account_id, user_id, key_id, skill_name, skill_version, agent_id, session_id, trigger_text, was_triggered, outcome, failure_reason, user_correction, tool_calls, duration_ms, created_at
+		`SELECT id, account_id, user_id, key_id, skill_version_id, skill_name, skill_version, agent_id, session_id, trigger_text, was_triggered, outcome, failure_reason, user_correction, tool_calls, duration_ms, created_at
 		 FROM skill_logs
 		 WHERE account_id = $1 AND skill_name = $2 AND outcome IN ('failure', 'user_corrected', 'partial')
 		 ORDER BY created_at DESC LIMIT $3`,
@@ -744,13 +742,12 @@ func (r *Repo) SkillSignals(ctx context.Context, accountID, skillName string, li
 	items := make([]SkillLog, 0)
 	for rows.Next() {
 		var l SkillLog
-		if err := rows.Scan(&l.ID, &l.AccountID, &l.UserID, &l.KeyID, &l.SkillName, &l.SkillVersion, &l.AgentID, &l.SessionID, &l.TriggerText,
-			&l.WasTriggered, &l.Outcome, &l.FailureReason, &l.UserCorrection, &l.ToolCalls, &l.DurationMs, &l.CreatedAt); err != nil {
+		if err := rows.Scan(scanSkillLog(&l)...); err != nil {
 			return nil, err
 		}
 		items = append(items, l)
 	}
-	return items, nil
+	return items, rows.Err()
 }
 
 func sourceMetadata(raw json.RawMessage) ([]byte, error) {
@@ -847,4 +844,26 @@ func nullableString(s string) any {
 		return nil
 	}
 	return s
+}
+
+func scanSkillLog(logEntry *SkillLog) []any {
+	return []any{
+		&logEntry.ID,
+		&logEntry.AccountID,
+		&logEntry.UserID,
+		&logEntry.KeyID,
+		&logEntry.SkillVersionID,
+		&logEntry.SkillName,
+		&logEntry.SkillVersion,
+		&logEntry.AgentID,
+		&logEntry.SessionID,
+		&logEntry.TriggerText,
+		&logEntry.WasTriggered,
+		&logEntry.Outcome,
+		&logEntry.FailureReason,
+		&logEntry.UserCorrection,
+		&logEntry.ToolCalls,
+		&logEntry.DurationMs,
+		&logEntry.CreatedAt,
+	}
 }

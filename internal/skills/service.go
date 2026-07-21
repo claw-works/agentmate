@@ -30,6 +30,18 @@ func NewService(repo *Repo, retrievalSvc ...*retrieval.Service) *Service {
 }
 
 func (s *Service) CreateLog(ctx context.Context, owner ownership.Owner, req CreateLogRequest) (*SkillLog, error) {
+	req.SkillName = strings.TrimSpace(req.SkillName)
+	req.SkillVersionID = strings.TrimSpace(req.SkillVersionID)
+	if req.SkillVersionID != "" {
+		version, err := s.repo.GetVersion(ctx, owner.Account(), req.SkillVersionID)
+		if err != nil {
+			return nil, err
+		}
+		if version.SkillName != req.SkillName {
+			return nil, fmt.Errorf("skill_version_id must belong to skill_name")
+		}
+		req.SkillVersion = version.Version
+	}
 	return s.repo.CreateLog(ctx, owner, req)
 }
 

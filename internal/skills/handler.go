@@ -376,3 +376,60 @@ func (h *Handler) GetSignals(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"items": signals})
 }
+
+// ─── Skill Quality ───
+
+func (h *Handler) RunQuality(c *gin.Context) {
+	setQualityNoStore(c)
+	var req CreateQualityRunRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	run, err := h.svc.RunQuality(c.Request.Context(), owner.Account(), c.Param("id"), req)
+	if err != nil {
+		if isNotFound(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, run)
+}
+
+func (h *Handler) ListQualityRuns(c *gin.Context) {
+	setQualityNoStore(c)
+	limit, offset, err := strictPagination(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.ListQualityRuns(c.Request.Context(), owner.Account(), c.Param("id"), QualityRunListParams{Limit: limit, Offset: offset})
+	if err != nil {
+		if isNotFound(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) GetQualityRun(c *gin.Context) {
+	setQualityNoStore(c)
+	owner := auth.OwnerFromContext(c)
+	run, err := h.svc.GetQualityRun(c.Request.Context(), owner.Account(), c.Param("run_id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.JSON(http.StatusOK, run)
+}
+
+func setQualityNoStore(c *gin.Context) {
+	c.Header("Cache-Control", "private, no-store")
+}

@@ -47,3 +47,13 @@ func TestValidateCatalogQueryLimit(t *testing.T) {
 		t.Fatal("expected oversized query error")
 	}
 }
+
+func TestSetQualityNoStore(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	setQualityNoStore(context)
+	if got := recorder.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("Cache-Control = %q, want private, no-store", got)
+	}
+}

@@ -2,8 +2,8 @@
 
 **版本**：v0.1
 **日期**：2026-07-18
-**状态**：IN PROGRESS（package identity foundation 与公共 GitHub/GitLab sync 核心已实现）
-**范围**：`internal/skills`、`migrations/000017_refactor_skill_package_identity.*.sql`、Skills REST/MCP 与检索集成。
+**状态**：IN PROGRESS（Phase 1-4 核心已实现）
+**范围**：`internal/skills`、`migrations/000017`-`000019`、Skills REST/MCP 与检索集成。
 
 ---
 
@@ -13,7 +13,7 @@ AgentMate Skill Registry 不是新的 Git 文件托管服务，也不是把全�
 
 它是建立在 GitHub/GitLab 之上的 Skill 控制面：
 
-> **Git 仓库保存实际 Skill package；AgentMate 管理 source 同步、不可变 package revision/release、active version、编译后的路由索引、渐进式披露、使用遥测，以及后续 lint/eval/compiler 工作流。**
+> **Git 仓库保存实际 Skill package；AgentMate 管理 source 同步、不可变 package revision/release、active version、编译后的路由索引、渐进式披露、version-bound 遥测，以及离线 deterministic lint/eval/comparison。**
 
 当前阶段的核心成果是修正 Skill 身份模型：完整 package，而不是根目录中的 `SKILL.md`，决定一个 Skill version 的不可变身份。
 
@@ -79,7 +79,10 @@ RetrievalDocument(namespace=skills)
   可重建的路由/搜索索引
 
 SkillLog
-  执行结果、失败、纠正和性能遥测
+  执行结果、失败、纠正和性能遥测；可选绑定 immutable SkillVersion
+
+SkillQualityRun
+  单个 version 的离线确定性 lint/eval/comparison/telemetry 审计报告
 ```
 
 ### 2.1 `SkillSource`
@@ -335,6 +338,9 @@ provider client 使用标准库 `net/http`、`archive/tar` 和 `compress/gzip`�
 | `GET /api/skills/versions/:id/instructions` | 已实现 | 加载 L1 instructions，响应禁止缓存 |
 | `GET /api/skills/versions/:id/resources` | 已实现 | 加载无正文的 L2 resource manifest |
 | `GET /api/skills/versions/:id/resources/:file_id` | 已实现 | 严格 account/version/file 绑定后加载单个文本 resource |
+| `POST /api/skills/versions/:id/quality-runs` | 已实现 | 同步运行离线确定性质量检查，可选同 skill baseline |
+| `GET /api/skills/versions/:id/quality-runs` | 已实现 | 按 created_at/id 稳定分页列出报告 |
+| `GET /api/skills/quality-runs/:run_id` | 已实现 | 读取 account-scoped 报告，禁止缓存 |
 | `POST /api/skills/index` | 已实现 | 用 compiled L0 card 重建 active Skill 路由索引 |
 | `POST /api/skills/search` | 已实现 | 搜索 L0 cards，兼容 `include_content` |
 
@@ -348,7 +354,12 @@ provider client 使用标准库 `net/http`、`archive/tar` 和 `compress/gzip`�
 - `skill_version_resources`：加载不含正文的 L2 manifest；
 - `skill_resource_get`：通过 account-scoped version/file 对加载单个文本 resource。
 
-MCP 与 REST 使用相同 service、account scope 和 toolScopes，不维护第二套业务语义。
+Phase 4 只新增：
+
+- `skill_quality_run`：运行同步、离线、确定性的质量检查；
+- `skill_quality_get`：按 account 读取一条质量审计记录。
+
+`skill_log_add` 增加可选 `skill_version_id`。显式 ID 必须属于当前 account 且匹配 `skill_name`，服务端以 version 表中的标签覆盖调用方文本标签；未传 ID 的旧日志继续兼容，但保持 unassigned，不进入 Phase 4 telemetry。
 
 ---
 
@@ -387,31 +398,28 @@ Phase 3 deterministic compiler 已从 `SKILL.md` frontmatter 和文件快照构�
 - compiler name/version 与 input package hash；
 - compiled L0 routing index document。
 
-artifact 不保存 resource 正文，可由 immutable package snapshot 重建。catalog 中的 `skill_name` 始终来自 `skill_versions.skill_name`；frontmatter `name` 不能在编译时重命名控制面身份，二者不一致将由后续 lint 报告。DAG、lint 和 eval 仍属于后续阶段。
+artifact 不保存 resource 正文，可由 immutable package snapshot 重建。catalog 中的 `skill_name` 始终来自 `skill_versions.skill_name`；frontmatter `name` 不能在编译时重命名控制面身份，二者不一致由 Phase 4 lint 报告。DAG/组合路由仍属于后续阶段。
 
 编译产物是可重建派生数据，不能替代 Git package 或 PostgreSQL registry identity。
 
 ---
 
-## 8. 遥测、评估与演化
+## 8. Phase 4 离线质量层
 
-`skill_logs` 当前记录：
+Phase 4 是同步、离线、确定性的审计层。每次运行在单个只读 `REPEATABLE READ` 一致快照内读取 immutable version、严格 version files、已有 compiled artifact、同 skill baseline，以及 cutoff 前绑定到该 `skill_version_id` 的最近 200 条日志；唯一写副作用是一条 `skill_quality_runs` 审计记录。
 
-- 是否触发；
-- success/failure/partial/user_corrected；
-- failure reason 和 user correction；
-- agent/session/trigger；
-- tool calls 和 duration。
+检查集包括：
 
-这些信号将支持：
+- package lint：根 `SKILL.md`/content、account/version 文件关系、canonical package hash、文本快照 hash/size、frontmatter name/description/routing metadata、重复项、自依赖、compiled artifact freshness 和 manifest 一致性；无 files 的 direct version 必须满足 `sha256(content) == content_hash == package_hash`；
+- platform contract eval：重复编译一致、文件顺序不变、L0 不含正文、manifest 精确稳定、selected-resource 隔离与大小边界；
+- release comparison：只允许同 account、同 `skill_name` baseline，显式指定或自动选择 previous release；输出 `package_hash_changed`、`resource_manifest_changed`、文件 hash diff、compiled routing diff 和 lint/eval regressions。resource manifest 使用内存编译结果（失败时可回退现有 artifact）比较 path/kind/MIME/indexable/text_available 等行为元数据，不修改 Phase 1 package hash 算法；
+- telemetry snapshot：未绑定 `skill_version_id` 的历史日志完全排除；outcome 比率只以 triggered 为分母；triggered 少于 20 时为 `insufficient`；bypass/correction/failure/partial 仅在计数至少 3 且比率至少 10% 时产生固定建议。
 
-1. 路由质量评估：应该触发却未触发、错误触发、选错版本。
-2. Skill 质量评估：成功率、纠正率、失败类型。
-3. 版本比较：新 release 是否比旧 release 更好。
-4. compiler/evolver 建议：生成补丁，而不是直接修改 registry 内容。
-5. Git PR/MR 工作流：AgentMate 生成改进分支与说明，由仓库维护者评审合并。
+comparison status 只使用：`not_available`、`blocked`、`static_regression_detected`、`review_required`、`no_static_regression_detected`。package hash 或 resource behavior manifest 不同时至少为 `review_required`。每个 check 包含确定性 severity：identity/root 为 `blocker`，frontmatter/manifest/self-dependency 与 platform eval 为 `error`，description/routing/duplicate/artifact 为 `warning`。报告不产生综合 quality score，不使用 legacy `eval_pass_rate`，不保存 instructions、resource 或 log 正文；建议只保存计数、分母、比率、fingerprint 和 log IDs。
 
-在积累足够反馈前，不实现自动强化学习或自动发布。
+质量运行列表只查询、返回不含 `report` 的 `QualityRunSummary`，保持 `created_at DESC, id DESC` 的稳定分页；只有 detail endpoint 解码完整 JSON report。`000019` 对 `skill_logs` 和 `skill_quality_runs` 的 target version 复合外键使用默认 `NO ACTION`，禁止单独删除被审计目标；quality run 的 account FK 保持 `ON DELETE CASCADE`，baseline FK 保持 column-list `ON DELETE SET NULL (baseline_version_id)`。
+
+明确限制：该层不调用网络、LLM、provider、Qdrant，不发布、激活或索引 version，不创建 PR/MR，也不声称 semantic eval 或 reinforcement learning。Git 演化和人工审批仍是未来独立增量。
 
 ---
 
@@ -497,13 +505,14 @@ PostgreSQL 集成测试由 `AGENTMATE_TEST_DATABASE_URL` 显式启用，默认�
 - compiled card index/search 与 ingest/publish/activate best-effort refresh；
 - DAG/组合路由留待后续增量。
 
-### Phase 4：Eval、lint 与 Git 演化闭环
+### Phase 4：离线 deterministic quality（核心已实现）
 
-- package lint 和 compatibility checks；
-- eval suite 与 release comparison；
-- telemetry-driven 改进建议；
-- GitHub Pull Request / GitLab Merge Request；
-- 人工批准后由 Git sync 产生新 immutable release。
+- package lint 与 platform contract checks；
+- 同 account、同 skill release comparison，显式报告 package hash 和 resource behavior manifest 变化；
+- check severity 与 blocker/error/warning findings；
+- 严格 `skill_version_id` telemetry snapshot 与固定阈值 suggestions；
+- append-only target FK、单表 account-scoped audit runs、summary list/full detail REST/MCP；
+- GitHub Pull Request / GitLab Merge Request、语义评估、自动强化学习继续留待后续，且不在本阶段暗示已实现。
 
 ---
 
@@ -517,6 +526,9 @@ PostgreSQL 集成测试由 `AGENTMATE_TEST_DATABASE_URL` 显式启用，默认�
 | `internal/skills/compiler.go` | deterministic frontmatter compiler 与 stable resource manifest |
 | `internal/skills/catalog_repo.go` | compiled artifact、catalog 分页和 scoped resource 查询 |
 | `internal/skills/catalog_service.go` | compile/fallback 与 L0/L1/L2 disclosure |
+| `internal/skills/quality_engine.go` | 纯 deterministic lint/eval/comparison/telemetry 引擎 |
+| `internal/skills/quality_service.go` | 只读输入编排、same-skill baseline 与 audit run |
+| `internal/skills/quality_repo.go` | version-bound telemetry 和 account-scoped quality runs |
 | `internal/skills/git_provider.go` | GitHub/GitLab URL、ref、commit 与 archive endpoint |
 | `internal/skills/git_archive.go` | 受限 tar.gz 下载和 package 提取 |
 | `internal/skills/handler.go` | REST handlers |
@@ -524,6 +536,7 @@ PostgreSQL 集成测试由 `AGENTMATE_TEST_DATABASE_URL` 显式启用，默认�
 | `internal/skills/repo_integration_test.go` | PostgreSQL concurrency/identity tests |
 | `migrations/000017_refactor_skill_package_identity.*.sql` | package identity schema migration |
 | `migrations/000018_create_skill_compiled_catalogs.*.sql` | compiled catalog artifact schema migration |
+| `migrations/000019_create_skill_quality_runs.*.sql` | version-bound logs 与单表 quality audit schema |
 
 设计原则只有一条主线：
 

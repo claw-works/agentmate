@@ -175,6 +175,8 @@ func main() {
 	protected.GET("/skills/versions/:id/resources", auth.RequireScope("skills:r"), skillsHandler.GetResources)
 	protected.GET("/skills/versions/:id/resources/:file_id", auth.RequireScope("skills:r"), skillsHandler.GetResource)
 	protected.GET("/skills/versions/:id/files", auth.RequireScope("skills:r"), skillsHandler.ListVersionFiles)
+	protected.GET("/skills/versions/:id/quality-runs", auth.RequireScope("skills:r"), skillsHandler.ListQualityRuns)
+	protected.GET("/skills/quality-runs/:run_id", auth.RequireScope("skills:r"), skillsHandler.GetQualityRun)
 	protected.GET("/skills/stats", auth.RequireScope("skills:r"), skillsHandler.GetStats)
 	protected.GET("/skills/signals", auth.RequireScope("skills:r"), skillsHandler.GetSignals)
 	protected.POST("/skills/search", auth.RequireScope("skills:r"), skillsHandler.Search)
@@ -185,6 +187,7 @@ func main() {
 	protected.POST("/skills/sources/:id/sync", auth.RequireScope("skills:rw"), skillsHandler.SyncGitSource)
 	protected.POST("/skills/versions", auth.RequireScope("skills:rw"), skillsHandler.CreateVersion)
 	protected.POST("/skills/versions/:id/activate", auth.RequireScope("skills:rw"), skillsHandler.ActivateVersion)
+	protected.POST("/skills/versions/:id/quality-runs", auth.RequireScope("skills:rw"), skillsHandler.RunQuality)
 	protected.POST("/skills/compile", auth.RequireScope("skills:rw"), skillsHandler.Compile)
 	protected.POST("/skills/index", auth.RequireScope("skills:rw"), skillsHandler.IndexActiveVersions)
 
