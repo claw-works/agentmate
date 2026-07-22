@@ -2,9 +2,9 @@
 
 ## 本地 rollout
 
-- [ ] 登录本地 AgentMate，打开 `/skills`。
-- [ ] 执行“编译全部 active”，确认当前 9 个 active versions 都生成 compiled artifact；预期 artifact 数由 0 变为 9。
-- [ ] 执行“索引全部 active”，确认待重建的 3 个安全 lexical fallback 文档完成重索引，pending reindex 由 3 变为 0。
+- [ ] 登录本地 AgentMate，打开 `/skills`；所有 compile、index 和 Quality 操作都只作用于当前登录账号。
+- [x] 2026-07-22 核对当前账号：2 个 active Skill（`agentmate`、`skill-evolver`），均为 direct publish；`skill_compiled_catalogs` 中已有 2 个 current artifact。Compiled artifact 是 PostgreSQL 中的可重建 L0 catalog row，不要求 Skill 挂在 Git 仓库。
+- [ ] 如果当前账号需要 semantic search，再执行“索引全部 active”；按当前账号的 active versions 验证 indexed documents，不使用整库其他账号的 failed/pending 数量作为预期。
 - [ ] 随机选择一个 active version，打开 Quality 页签并运行确定性检查；确认报告显示 package lint、平台契约断言、release comparison 和 version-bound telemetry。
 - [ ] 后续调用 `skill_log_add` 时尽量传 `skill_version_id`；历史及未绑定日志不会被猜测归因，也不会进入版本质量报告。
 
