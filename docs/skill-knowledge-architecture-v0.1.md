@@ -1,8 +1,8 @@
-# AgentMate Skill + Knowledge Architecture v0.1
+# AgentMate Skill + Knowledge Architecture v0.2
 
-**日期**：2026-07-23  
+**日期**：2026-07-23（v0.1 初稿；v0.2 增补 Memory Plane 与四层信息模型）  
 **状态**：PROPOSED（后续实现依据；当前代码尚未实现 Knowledge Registry）  
-**范围**：Skill Registry、未来 Knowledge Registry、Knowledge Compiler、运行时 Knowledge Resolution。
+**范围**：Skill Registry、未来 Knowledge Registry、Knowledge Compiler、运行时 Knowledge Resolution、Memory Plane 集成。
 
 ## 0. 决策摘要
 
@@ -400,7 +400,99 @@ MCP /mcp/knowledge
 - external KB provider adapter；
 - branch/PR-based wiki export 与审批。
 
-## 13. 当前实现兼容说明
+## 13. Memory Plane 与四层信息模型（v0.2 增补）
+
+Skill 和 KnowledgeBase 之外，AgentMate 已实现的 Memory 模块与 todos/notes 等业务模块构成完整的四层信息模型。四层回答不同问题，权威性来源不同，不能共享同一 retrieval namespace（当前实现为同一 Qdrant collection 内按 account + namespace payload 过滤隔离），但共享同一套 retrieval 基础设施。
+
+### 13.1 四层定义
+
+| 层 | 回答的问题 | 生命周期 | 策展程度 | 权威性来源 | 现状 |
+|---|---|---|---|---|---|
+| Skill | 该怎么做 | versioned release + activation（promotion 规划中） | 高 | 版本评测与 promotion | 已实现（promotion 除外） |
+| KnowledgeBase | 领域内什么是真的 | source revision + compiled build | 高 | source citation 与编译审查 | 规划中 |
+| Memory | 经历过什么、学到什么 | event 永久追加；durable memory 可 supersede | 低-中 | evidence（真实发生的事件） | 已实现 |
+| App Facts（todos/notes/expenses/bookmarks） | 用户当前事务状态 | 用户 CRUD，随时可变 | 无 | 用户最新写入 | 已实现 |
+
+冲突裁决顺序：用户当前指令 > 当前事实（App Facts/代码/工具输出） > KnowledgeBase > Memory。
+
+### 13.2 Memory 的四个运行时角色
+
+1. **Recall**：执行前检索相关经验、已知失败和用户纠正，位置在 Knowledge discover 之后、执行之前。KB 提供“文档说应该怎样”，Memory 提供“上次实际发生了什么”。
+2. **Journal**：执行中的 append-only 审计流。`skill_logs` 是逐次执行的结构化信号（含简短 `failure_reason`/`user_correction` 字段）；Phase 4 质量报告只取计数与 log IDs，不复制正文。更丰富的证据正文（完整失败过程、纠正上下文、决策链）归 memory events。
+3. **Evidence for Skill evolution**：未来 Skill 演化提案的证据包 = version-bound telemetry 计数 + 通过 `skill_version_id`/`session_id` 关联的 memory correction/failure 正文。
+4. **Promotion source**：KB 的原料，见 13.3。
+
+### 13.3 Memory → KB promotion 管道
+
+Karpathy 模型中“好答案写回 wiki、知识复利”的 SaaS 化落点。Agent 不直接写 KB：
+
+```text
+执行产生 episodic/semantic memory（带 evidence）
+  ↓ 反复被 recall 且反馈 useful，达到 promotion 门槛
+KB candidate page proposal（citation 指向 memory entries + events）
+  ↓ lint / 矛盾检测 / 人工或策略审批
+KB build 正式 page
+  ↓
+原 memory entry 标记 promoted / superseded-by-knowledge
+```
+
+约束：
+
+- **门槛是使用信号，不是生成信号**：写入不代表值得进 KB；多次 recall 且反馈 useful 才是候选，与 Phase 4 telemetry 的样本门槛哲学一致。
+- **promotion 跨信任边界**：Memory 是 account 私有；KB 可能 workspace 共享。私有经验进入共享知识必须过审批，这是权限模型要求。
+- **反向矛盾检测**：promotion 后若后续 memory correction 与 KB 页面矛盾，触发 KB contradiction lint。
+
+### 13.4 App Facts 的两条利用路径
+
+- **运行时 source facts（轻，先做）**：Skill 执行时按需实时查询 todos/notes；不进入 embedding 索引，避免任务状态索引永远过期。
+- **Notes 作为个人 KB raw source（重，K3 之后）**：新增 `KnowledgeSource type: app_notes`，把选定 tag/时间范围的 notes 作为 raw source 编译成个人 wiki build。Todos 是任务状态而非知识，不走此路径。
+
+### 13.5 Skill contract 的 memory 段
+
+对齐 Knowledge Discovery Contract，Skill 可声明记忆需求：
+
+```yaml
+memory:
+  recall:
+    scopes: [repository, project]
+    include: [correction, failure, procedural]
+    top_k: 5
+  journal:
+    required_events: [decision, outcome]
+  promote:
+    allowed: true   # 本 Skill 的经验是否可提名进 KB
+```
+
+平台强制 account scope 与 `memory:r/rw` 权限；contract 只声明行为，不扩权。lint 可检查声明与实际记录行为的一致性。
+
+### 13.6 Context Pack
+
+执行时由 Context Compiler 合成四层最小上下文，每条内容带来源标签，供模型区分权威性：
+
+```text
+Context Pack
+├── [SKILL]     S1 instructions + 选中 assets
+├── [KNOWLEDGE] K2 evidence + citations
+├── [MEMORY]    相关经验 + 失败史 + 纠正
+├── [FACTS]     相关 todos / notes / 业务状态
+└── [TASK]      goal contract + checkpoint
+```
+
+### 13.7 反模式
+
+1. **Memory 自动进 KB**：没有使用反馈门槛和审批的 promotion 会把幻觉复利化。
+2. **App Facts 向量化进知识索引**：任务状态随时变化，应走实时查询。
+3. **用 Memory 替代 KB**：Memory 无编译、无 citation graph、无共享治理；把它当大 KB 用会退化为无结构碎片。
+
+### 13.8 Memory 侧实施增量
+
+与 K1–K5 主线并行，不互相阻塞：
+
+- **M1**（可先做）：`skill_logs` 与 memory events 通过 `skill_version_id` + `session_id` 关联查询；Quality suggestion 可链接证据正文。
+- **M2**（K2 之后）：Context Pack API，一次调用返回带来源标签的四层最小上下文。
+- **M3**（K3 之后）：Memory → KB promotion 管道；notes 作为个人 KB source。
+
+## 14. 当前实现兼容说明
 
 当前代码只实现 Skill Registry 的 L0/L1/L2 selected resource API，没有实现本设计中的 KnowledgeBase、KnowledgeBuildRevision、KnowledgeProfile 或 KnowledgeResolutionRun。
 
