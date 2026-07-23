@@ -65,6 +65,13 @@ strictly version-bound telemetry suggestions. It does not call
 LLMs, providers, Qdrant, publish/activate/index versions, produce a composite score, or claim
 semantic evaluation/reinforcement learning. DAG composition remains a later increment.
 
+Skills and knowledge are separate domains. Skill packages carry behavior and execution
+assets; domain knowledge corpora belong to a planned standalone Knowledge Registry that
+skills discover at runtime through a Knowledge Discovery Contract instead of fixed bindings.
+The target model (K0/K1/K2 disclosure, knowledge builds, runtime KnowledgeResolutionRun) is
+specified in [Skill + Knowledge Architecture v0.1](docs/skill-knowledge-architecture-v0.1.md)
+and is not implemented yet.
+
 The official [AgentMate Memory skill](integrations/skills/agentmate-memory/SKILL.md)
 teaches compatible agents to recall scoped context, journal meaningful events,
 and preserve evidence-backed durable memory through the Memory MCP server.

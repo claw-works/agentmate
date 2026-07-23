@@ -161,13 +161,15 @@ Karpathy 最后的判断是：模型智能已经明显领先于 integrations、t
 ```text
 skill-package/
   SKILL.md              # 核心说明与边界
-  references/           # 深入知识和规范
+  references/           # 过渡期：与执行紧密相关的规范摘要
   templates/            # 输出或代码模板
   schemas/              # 数据和接口约束
   scripts/              # 可执行或辅助工具
   tests/                # 成功标准与回归验证
   examples/             # 少量高质量示例
 ```
+
+> 边界更新（2026-07-23）：Skill package 中的资源定位为 **execution assets**。独立领域知识语料（产品文档、政策、事实库、持久化 wiki）属于未来独立 Knowledge Registry，Skill 通过 Knowledge Discovery Contract 在运行时发现并引用，而不是打包进 Skill；见 [Skill + Knowledge Architecture v0.1](skill-knowledge-architecture-v0.1.md)。`references/` 仅保留与执行流程强绑定的紧凑规范摘要。
 
 根 `SKILL.md` 只负责说明：
 
@@ -190,7 +192,8 @@ L1  Core Instructions
     SKILL.md 的核心流程和决策边界
 
 L2  Task-specific References
-    与当前问题相关的规范、示例、schema 和历史经验
+    与当前执行流程直接相关的规范摘要、示例和 schema；
+    独立领域知识语料走 Knowledge Registry 的 K0/K1/K2 轴
 
 L3  Executable Resources
     scripts、templates、tests、tool definitions
@@ -214,9 +217,9 @@ Agent 先搜索轻量 Skill Card，而不是加载完整 Skill。Card 应回答�
 
 只有 Skill 被选中后，Agent 才加载核心说明。此时信息仍应保持紧凑，重点是流程、约束和验证，而不是百科全书。
 
-#### L2：相关知识
+#### L2：执行相关规范摘要
 
-Agent 根据任务中的实体、错误、代码模块和阶段，选择性加载 reference。比如 Git 同步任务只需要 provider API、archive 边界和 package identity，不需要加载未来的 eval/compiler 全部设计。
+Agent 根据任务中的实体、错误、代码模块和阶段，选择性加载与执行流程强绑定的规范摘要。比如 Git 同步任务只需要 provider 同步规范摘要、archive 边界和 package identity 约束，不需要加载未来的 eval/compiler 全部设计。独立领域知识语料（完整 API 文档、产品手册、事实库）走 Knowledge Registry 的 K0/K1/K2 轴。
 
 #### L3：行动资源
 
@@ -245,7 +248,7 @@ Agent 执行任务时会使用五类不同信息：
 | 类型 | 回答的问题 | AgentMate 载体 |
 |---|---|---|
 | Parametric Knowledge | 模型通常知道什么 | 基础模型 |
-| Source Facts | 当前代码、文档和数据实际上是什么 | Git、PostgreSQL、业务 API |
+| Source Facts | 当前代码、文档和数据实际上是什么 | Git、PostgreSQL、业务 API（规划：Knowledge Registry） |
 | Skills | 这类任务应该如何执行 | Git-backed Skill Registry |
 | Durable Memory | 过去学到了哪些可复用经验 | Memory entries + evidence |
 | Working Memory | 当前任务进行到哪里 | events + checkpoints |
@@ -411,6 +414,8 @@ AgentMate Memory 提供：
 
 Knowledge Plane 回答“当前真实状态是什么”和“以前发生过什么”。
 
+Knowledge Plane 未来将扩展为两个子域：**Memory**（执行经验与证据，当前已实现）与 **Knowledge Registry**（领域事实语料与持久化 wiki builds，规划中）。二者共享 retrieval 基础设施，但 identity、生命周期和 promotion 规则不同；Skill 通过 Knowledge Discovery Contract 在运行时发现 KB，而不是把知识打包进 Skill package。详见 [Skill + Knowledge Architecture v0.1](skill-knowledge-architecture-v0.1.md)。
+
 ### 5.2 Capability Plane
 
 Git-backed Skill Registry 提供：
@@ -481,7 +486,7 @@ success criteria:
 1. L0 搜索到 `git-provider-sync`、`go-web-service`、`postgres-concurrency` 三个 Skill Card。
 2. Coordinator 选择 `git-provider-sync` 作为主 Skill。
 3. L1 加载 provider 工作流和 archive 安全边界。
-4. L2 只加载 GitHub API reference 与现有 package identity 设计。
+4. L2 只加载 provider 同步规范摘要与现有 package identity 设计。
 5. L3 在实现 archive parser 时加载对应测试模板。
 6. 完成审计时才读取 L4 完整 package/diff。
 

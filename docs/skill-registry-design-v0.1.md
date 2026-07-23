@@ -26,6 +26,10 @@ AgentMate Skill Registry 不是新的 Git 文件托管服务，也不是把全�
 5. **PostgreSQL 是 registry 事实源**：Qdrant/retrieval document 是可重建的派生路由索引。
 6. **渐进式披露优先**：搜索先返回轻量 Skill Card，只有被选中的 Skill 才加载说明或资源。
 7. **先支持公开 GitHub/GitLab**：初始同步不处理私有仓库凭据、自建 GitLab 或任意 Git 协议。
+8. **Skill 与 Knowledge 是独立业务域**：Skill package 保存行为、约束、工具和 execution assets；领域事实、文档语料与持久化 wiki 属于独立 Knowledge Registry。
+9. **动态发现而非固定绑定**：未来 Skill 只声明 Knowledge Discovery Contract，由 Agent 在 account/workspace 授权范围内运行时选择 KB，并把最终选择保存为 KnowledgeResolutionRun；初始模型不要求显式 BindingRevision。
+
+完整目标架构见 [Skill + Knowledge Architecture v0.1](skill-knowledge-architecture-v0.1.md)。
 
 ---
 
@@ -47,6 +51,7 @@ AgentMate Skill Registry 不是新的 Git 文件托管服务，也不是把全�
 - 不在 AgentMate 中实现 Git object database、分支管理或代码评审系统。
 - 不复制 GitHub/GitLab 的仓库权限和协作模型。
 - 不把任意文档目录都解释为 Skill。
+- 不把 Skill Registry 用作通用领域知识库：领域文档、事实语料和持久化 wiki 属于未来独立的 Knowledge Registry（见 [Skill + Knowledge Architecture v0.1](skill-knowledge-architecture-v0.1.md)）。
 - 第一阶段不支持私有 repository token、SSH、Git LFS 或 submodule。
 - 第一阶段不自动修改上游仓库；后续 compiler/evolver 只通过 Pull/Merge Request 提交建议。
 - 第一阶段不实现完整 DAG 编译器或自动训练路由模型。
@@ -384,11 +389,13 @@ L1 Instructions
   选中后加载 SKILL.md
 
 L2 Selected Resources
-  按任务需要加载 references、templates、schemas 或脚本说明
+  按任务需要加载 Skill 执行资产：templates、schemas、tests、行为示例或脚本说明
 
 L3 Complete Package
   仅执行器或审计流程需要完整文件清单/原始 Git 内容
 ```
+
+L2 resource manifest 的语义是 **Skill execution assets**，不是通用领域知识。领域文档和事实语料属于未来独立 Knowledge Registry 的 K0/K1/K2 披露轴；过渡期内既有 reference 文件仍可通过现有 API 加载，但不应再向 Skill package 中新增独立知识语料（见 [Skill + Knowledge Architecture v0.1](skill-knowledge-architecture-v0.1.md)）。
 
 Phase 3 deterministic compiler 已从 `SKILL.md` frontmatter 和文件快照构建：
 
@@ -513,6 +520,18 @@ PostgreSQL 集成测试由 `AGENTMATE_TEST_DATABASE_URL` 显式启用，默认�
 - 严格 `skill_version_id` telemetry snapshot 与固定阈值 suggestions；
 - append-only target FK、单表 account-scoped audit runs、summary list/full detail REST/MCP；
 - GitHub Pull Request / GitLab Merge Request、语义评估、自动强化学习继续留待后续，且不在本阶段暗示已实现。
+
+### Phase 5+：Knowledge Registry 与动态知识发现（未实现）
+
+独立于 Skill Registry 的 Knowledge 域按 [Skill + Knowledge Architecture v0.1](skill-knowledge-architecture-v0.1.md) 的 K1–K5 路线推进（K1–K5 是实施里程碑编号，与知识披露层级 K0–K3 无关）：
+
+- K1 Knowledge source 与 immutable identity；
+- K2 Knowledge catalog 与 K0/K1/K2 检索；
+- K3 Knowledge compiler / persistent wiki 与 promotion；
+- K4 Skill Knowledge Discovery Contract、`knowledge_discover` 与 KnowledgeResolutionRun；
+- K5 企业扩展（private credentials、object storage、external KB provider）。
+
+Skill Registry 在 K4 前不修改现有 package identity 或 L0/L1/L2 API 契约。
 
 ---
 
