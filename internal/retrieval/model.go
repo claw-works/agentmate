@@ -6,8 +6,9 @@ import (
 )
 
 const (
-	NamespaceSkills = "skills"
-	NamespaceMemory = "memory"
+	NamespaceSkills    = "skills"
+	NamespaceMemory    = "memory"
+	NamespaceKnowledge = "knowledge"
 
 	StatusPending = "pending"
 	StatusIndexed = "indexed"

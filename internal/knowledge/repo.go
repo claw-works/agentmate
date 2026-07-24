@@ -171,11 +171,13 @@ func (r *Repo) GetRevision(ctx context.Context, accountID, id string) (*Knowledg
 }
 
 // IngestRevision creates one immutable revision plus its documents and moves
-// the source active pointer inside a single transaction. Replaying the same
-// package_hash is idempotent: the existing revision is returned and the
-// active pointer is re-targeted at it. Concurrency is serialized with an
-// advisory lock per source, mirroring the skills lock pattern.
-func (r *Repo) IngestRevision(ctx context.Context, owner ownership.Owner, source *KnowledgeSource, revisionIn KnowledgeSourceRevision, documents []KnowledgeDocument, syncState *GitSourceSyncState) (*KnowledgeSourceRevision, []KnowledgeDocumentSummary, error) {
+// the source active pointer inside a single transaction. Package-internal
+// Markdown links are written in the same transaction as a rebuildable
+// derivation. Replaying the same package_hash is idempotent: the existing
+// revision is returned and the active pointer is re-targeted at it.
+// Concurrency is serialized with an advisory lock per source, mirroring the
+// skills lock pattern.
+func (r *Repo) IngestRevision(ctx context.Context, owner ownership.Owner, source *KnowledgeSource, revisionIn KnowledgeSourceRevision, documents []KnowledgeDocument, links []DocumentLinkInput, syncState *GitSourceSyncState) (*KnowledgeSourceRevision, []KnowledgeDocumentSummary, error) {
 	if revisionIn.RevisionKey == "" {
 		return nil, nil, fmt.Errorf("revision_key required")
 	}
@@ -229,6 +231,7 @@ func (r *Repo) IngestRevision(ctx context.Context, owner ownership.Owner, source
 	}
 
 	summaries := make([]KnowledgeDocumentSummary, 0, len(documents))
+	documentIDsByPath := make(map[string]string, len(documents))
 	for _, document := range documents {
 		var summary KnowledgeDocumentSummary
 		err = tx.QueryRow(ctx,
@@ -242,6 +245,11 @@ func (r *Repo) IngestRevision(ctx context.Context, owner ownership.Owner, source
 			return nil, nil, err
 		}
 		summaries = append(summaries, summary)
+		documentIDsByPath[summary.Path] = summary.ID
+	}
+
+	if err := upsertRevisionLinksTx(ctx, tx, owner.Account(), revision.ID, documentIDsByPath, links); err != nil {
+		return nil, nil, err
 	}
 
 	updatedSource, err := setActiveRevisionTx(ctx, tx, owner.Account(), source.ID, revision.ID, syncState)
@@ -314,6 +322,196 @@ func (r *Repo) GetDocument(ctx context.Context, accountID, revisionID, documentI
 		return nil, err
 	}
 	return &document, nil
+}
+
+// GetDocumentByID loads one account-scoped document without requiring the
+// caller to know its revision.
+func (r *Repo) GetDocumentByID(ctx context.Context, accountID, documentID string) (*KnowledgeDocument, error) {
+	var document KnowledgeDocument
+	err := r.pool.QueryRow(ctx,
+		`SELECT id, account_id, source_id, revision_id, path, sha256, size_bytes, mime_type, indexable, content_snapshot, created_at
+		 FROM knowledge_documents
+		 WHERE id = $1 AND account_id = $2`,
+		documentID, accountID,
+	).Scan(
+		&document.ID,
+		&document.AccountID,
+		&document.SourceID,
+		&document.RevisionID,
+		&document.Path,
+		&document.SHA256,
+		&document.SizeBytes,
+		&document.MimeType,
+		&document.Indexable,
+		&document.ContentSnapshot,
+		&document.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &document, nil
+}
+
+// ListRevisionIndexableDocuments loads full indexable text documents of one
+// revision in stable path order for chunking. The result stays bounded by
+// the per-package snapshot file cap enforced at ingest.
+func (r *Repo) ListRevisionIndexableDocuments(ctx context.Context, accountID, revisionID string) ([]KnowledgeDocument, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT id, account_id, source_id, revision_id, path, sha256, size_bytes, mime_type, indexable, content_snapshot, created_at
+		 FROM knowledge_documents
+		 WHERE account_id = $1 AND revision_id = $2 AND indexable = true AND content_snapshot <> ''
+		 ORDER BY path`,
+		accountID, revisionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]KnowledgeDocument, 0)
+	for rows.Next() {
+		var document KnowledgeDocument
+		if err := rows.Scan(
+			&document.ID,
+			&document.AccountID,
+			&document.SourceID,
+			&document.RevisionID,
+			&document.Path,
+			&document.SHA256,
+			&document.SizeBytes,
+			&document.MimeType,
+			&document.Indexable,
+			&document.ContentSnapshot,
+			&document.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, document)
+	}
+	return items, rows.Err()
+}
+
+// ─── Document links ───
+
+// RebuildRevisionLinks re-derives the link rows of one immutable revision.
+// Revisions never change, so re-deriving produces the same set; the upsert
+// keeps replays idempotent.
+func (r *Repo) RebuildRevisionLinks(ctx context.Context, accountID, revisionID string, documentIDsByPath map[string]string, links []DocumentLinkInput) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := upsertRevisionLinksTx(ctx, tx, accountID, revisionID, documentIDsByPath, links); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func upsertRevisionLinksTx(ctx context.Context, tx pgx.Tx, accountID, revisionID string, documentIDsByPath map[string]string, links []DocumentLinkInput) error {
+	for _, link := range links {
+		sourceID, ok := documentIDsByPath[link.SourcePath]
+		if !ok {
+			continue
+		}
+		var targetID any
+		if resolved, ok := documentIDsByPath[link.TargetPath]; ok {
+			targetID = resolved
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO knowledge_document_links
+			 (account_id, revision_id, source_document_id, target_document_id, target_path)
+			 VALUES ($1, $2, $3, $4, $5)
+			 ON CONFLICT (revision_id, source_document_id, target_path)
+			 DO UPDATE SET target_document_id = EXCLUDED.target_document_id`,
+			accountID, revisionID, sourceID, targetID, link.TargetPath,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ListDocumentLinks returns both directions of one document's links in a
+// stable order: outgoing links (by target path) before incoming links (by
+// linking document path).
+func (r *Repo) ListDocumentLinks(ctx context.Context, accountID, documentID string, limit, offset int) ([]KnowledgeDocumentLinkItem, error) {
+	rows, err := r.pool.Query(ctx,
+		`(SELECT 'out' AS direction, link.target_document_id AS document_id, link.target_path AS path
+		  FROM knowledge_document_links AS link
+		  WHERE link.account_id = $1 AND link.source_document_id = $2)
+		 UNION ALL
+		 (SELECT 'in' AS direction, link.source_document_id, source_document.path
+		  FROM knowledge_document_links AS link
+		  JOIN knowledge_documents AS source_document
+		    ON source_document.id = link.source_document_id AND source_document.account_id = link.account_id
+		  WHERE link.account_id = $1 AND link.target_document_id = $2)
+		 ORDER BY direction DESC, path, document_id
+		 LIMIT $3 OFFSET $4`,
+		accountID, documentID, limit, offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]KnowledgeDocumentLinkItem, 0)
+	for rows.Next() {
+		var item KnowledgeDocumentLinkItem
+		if err := rows.Scan(&item.Direction, &item.DocumentID, &item.Path); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *Repo) CountDocumentLinks(ctx context.Context, accountID, documentID string) (int, error) {
+	var total int
+	err := r.pool.QueryRow(ctx,
+		`SELECT
+		   (SELECT count(*) FROM knowledge_document_links WHERE account_id = $1 AND source_document_id = $2)
+		 + (SELECT count(*) FROM knowledge_document_links WHERE account_id = $1 AND target_document_id = $2)`,
+		accountID, documentID,
+	).Scan(&total)
+	return total, err
+}
+
+// ListLinksForDocuments batch-loads both directions of links for a bounded
+// hit set, grouped by the anchor document ID. Per-document totals stay
+// bounded by the per-document link cap enforced at derivation time.
+func (r *Repo) ListLinksForDocuments(ctx context.Context, accountID string, documentIDs []string, perDocumentLimit int) (map[string][]KnowledgeDocumentLinkItem, error) {
+	result := make(map[string][]KnowledgeDocumentLinkItem, len(documentIDs))
+	if len(documentIDs) == 0 {
+		return result, nil
+	}
+	rows, err := r.pool.Query(ctx,
+		`(SELECT link.source_document_id::text AS anchor, 'out' AS direction, link.target_document_id AS document_id, link.target_path AS path
+		  FROM knowledge_document_links AS link
+		  WHERE link.account_id = $1 AND link.source_document_id::text = ANY($2))
+		 UNION ALL
+		 (SELECT link.target_document_id::text, 'in', link.source_document_id, source_document.path
+		  FROM knowledge_document_links AS link
+		  JOIN knowledge_documents AS source_document
+		    ON source_document.id = link.source_document_id AND source_document.account_id = link.account_id
+		  WHERE link.account_id = $1 AND link.target_document_id::text = ANY($2))
+		 ORDER BY anchor, direction DESC, path, document_id`,
+		accountID, documentIDs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var anchor string
+		var item KnowledgeDocumentLinkItem
+		if err := rows.Scan(&anchor, &item.Direction, &item.DocumentID, &item.Path); err != nil {
+			return nil, err
+		}
+		if perDocumentLimit > 0 && len(result[anchor]) >= perDocumentLimit {
+			continue
+		}
+		result[anchor] = append(result[anchor], item)
+	}
+	return result, rows.Err()
 }
 
 // ─── helpers ───

@@ -185,6 +185,56 @@ func (r *Repo) SearchDocumentsTextFiltered(
 	return items, rows.Err()
 }
 
+// DeleteDocumentsByMetadata removes account-scoped documents in one
+// namespace/source_type whose metadata contains `match` and does not contain
+// `exclude`. An empty exclude keeps every match eligible for deletion. Stale
+// Qdrant points are intentionally left behind: vector hits are re-verified
+// against PostgreSQL during hydration, so orphaned points become
+// non-hydratable (same safety model as the 000018 skill reindex migration).
+func (r *Repo) DeleteDocumentsByMetadata(ctx context.Context, accountID, namespace, sourceType string, match, exclude map[string]any) (int64, error) {
+	matchJSON, err := marshalMetadata(match)
+	if err != nil {
+		return 0, err
+	}
+	excludeJSON, err := marshalMetadata(exclude)
+	if err != nil {
+		return 0, err
+	}
+	tag, err := r.pool.Exec(ctx,
+		`DELETE FROM retrieval_documents
+		 WHERE account_id = $1
+		   AND namespace = $2
+		   AND source_type = $3
+		   AND metadata @> $4::jsonb
+		   AND ($5::jsonb = '{}'::jsonb OR NOT metadata @> $5::jsonb)`,
+		accountID, namespace, sourceType, matchJSON, excludeJSON,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// DeleteSourceChunksOutsideKeys removes rows of one source document whose
+// chunk_key is not in keepKeys (an empty set deletes every chunk of the
+// document). Orphaned Qdrant points stay non-hydratable, matching
+// DeleteDocumentsByMetadata semantics.
+func (r *Repo) DeleteSourceChunksOutsideKeys(ctx context.Context, accountID, namespace, sourceType, sourceID string, keepKeys []string) (int64, error) {
+	tag, err := r.pool.Exec(ctx,
+		`DELETE FROM retrieval_documents
+		 WHERE account_id = $1
+		   AND namespace = $2
+		   AND source_type = $3
+		   AND source_id = $4
+		   AND NOT (chunk_key = ANY($5::text[]))`,
+		accountID, namespace, sourceType, sourceID, keepKeys,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 func (r *Repo) CreateIndexJob(ctx context.Context, owner ownership.Owner, namespace, sourceType, sourceID string) (string, error) {
 	var id string
 	err := r.pool.QueryRow(ctx,

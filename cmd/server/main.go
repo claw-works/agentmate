@@ -79,7 +79,7 @@ func main() {
 	skillsHandler := skills.NewHandler(skillsSvc)
 
 	knowledgeRepo := knowledge.NewRepo(pool)
-	knowledgeSvc := knowledge.NewService(knowledgeRepo)
+	knowledgeSvc := knowledge.NewService(knowledgeRepo, retrievalSvc)
 	knowledgeHandler := knowledge.NewHandler(knowledgeSvc)
 
 	// Router
@@ -201,10 +201,14 @@ func main() {
 	protected.GET("/knowledge/sources/:id/revisions", auth.RequireScope("knowledge:r"), knowledgeHandler.ListSourceRevisions)
 	protected.GET("/knowledge/revisions/:id/documents", auth.RequireScope("knowledge:r"), knowledgeHandler.ListRevisionDocuments)
 	protected.GET("/knowledge/revisions/:id/documents/:doc_id", auth.RequireScope("knowledge:r"), knowledgeHandler.GetDocument)
+	protected.GET("/knowledge/catalog", auth.RequireScope("knowledge:r"), knowledgeHandler.ListCatalog)
+	protected.GET("/knowledge/documents/:doc_id/links", auth.RequireScope("knowledge:r"), knowledgeHandler.ListDocumentLinks)
+	protected.POST("/knowledge/search", auth.RequireScope("knowledge:r"), knowledgeHandler.Search)
 	// Knowledge - write
 	protected.POST("/knowledge/sources", auth.RequireScope("knowledge:rw"), knowledgeHandler.CreateSource)
 	protected.POST("/knowledge/sources/:id/snapshots", auth.RequireScope("knowledge:rw"), knowledgeHandler.SubmitSnapshot)
 	protected.POST("/knowledge/sources/:id/sync", auth.RequireScope("knowledge:rw"), knowledgeHandler.SyncGitSource)
+	protected.POST("/knowledge/index", auth.RequireScope("knowledge:rw"), knowledgeHandler.IndexActiveRevisions)
 
 	// Admin
 	adminHandler := admin.NewHandler(pool)

@@ -14,6 +14,7 @@ import (
 
 	"github.com/wellxie/agentmate/internal/gitfetch"
 	"github.com/wellxie/agentmate/internal/ownership"
+	"github.com/wellxie/agentmate/internal/retrieval"
 )
 
 const (
@@ -26,11 +27,18 @@ const (
 
 type Service struct {
 	repo      *Repo
+	retrieval *retrieval.Service
 	gitClient *gitfetch.Client
 }
 
-func NewService(repo *Repo) *Service {
-	return &Service{repo: repo, gitClient: gitfetch.NewClient(nil)}
+// NewService keeps the retrieval dependency optional (mirroring the skills
+// constructor): catalog/index/search require it, K1 ingest paths do not.
+func NewService(repo *Repo, retrievalSvc ...*retrieval.Service) *Service {
+	s := &Service{repo: repo, gitClient: gitfetch.NewClient(nil)}
+	if len(retrievalSvc) > 0 {
+		s.retrieval = retrievalSvc[0]
+	}
+	return s
 }
 
 // ─── Sources ───
@@ -94,7 +102,7 @@ func (s *Service) SubmitSnapshot(ctx context.Context, owner ownership.Owner, sou
 		PackageHash:     packageHash,
 		Manifest:        manifestJSON,
 	}
-	revision, summaries, err := s.repo.IngestRevision(ctx, owner, source, revisionIn, documents, nil)
+	revision, summaries, err := s.repo.IngestRevision(ctx, owner, source, revisionIn, documents, deriveDocumentLinks(documents), nil)
 	if err != nil {
 		return nil, s.recordIngestFailure(ctx, owner.Account(), source.ID, GitSourceSyncState{PackageHash: packageHash}, err)
 	}
@@ -152,7 +160,7 @@ func (s *Service) SyncGitSource(ctx context.Context, owner ownership.Owner, sour
 		PackageHash: packageHash,
 		Manifest:    manifestJSON,
 	}
-	revision, summaries, err := s.repo.IngestRevision(ctx, owner, source, revisionIn, documents, &state)
+	revision, summaries, err := s.repo.IngestRevision(ctx, owner, source, revisionIn, documents, deriveDocumentLinks(documents), &state)
 	if err != nil {
 		return nil, s.recordIngestFailure(ctx, owner.Account(), source.ID, state, err)
 	}

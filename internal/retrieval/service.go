@@ -101,6 +101,48 @@ func (s *Service) IndexDocument(ctx context.Context, owner ownership.Owner, in U
 	return s.repo.GetDocument(ctx, owner.Account(), doc.ID)
 }
 
+// DeleteDocumentsByMetadata removes account-scoped derived documents by
+// metadata containment. See Repo.DeleteDocumentsByMetadata for the stale
+// Qdrant point semantics.
+func (s *Service) DeleteDocumentsByMetadata(ctx context.Context, owner ownership.Owner, namespace, sourceType string, match, exclude map[string]any) (int64, error) {
+	if owner.Account() == "" {
+		return 0, fmt.Errorf("account id required")
+	}
+	if namespace == "" {
+		return 0, fmt.Errorf("namespace required")
+	}
+	if sourceType == "" {
+		return 0, fmt.Errorf("source_type required")
+	}
+	if len(match) == 0 {
+		return 0, fmt.Errorf("match metadata required")
+	}
+	return s.repo.DeleteDocumentsByMetadata(ctx, owner.Account(), namespace, sourceType, match, exclude)
+}
+
+// DeleteDocumentChunksOutsideKeys removes account-scoped derived rows of one
+// source document whose chunk_key falls outside keepKeys. Stale Qdrant
+// points become non-hydratable, matching DeleteDocumentsByMetadata.
+func (s *Service) DeleteDocumentChunksOutsideKeys(ctx context.Context, owner ownership.Owner, namespace, sourceType, sourceID string, keepKeys map[string]struct{}) (int64, error) {
+	if owner.Account() == "" {
+		return 0, fmt.Errorf("account id required")
+	}
+	if namespace == "" {
+		return 0, fmt.Errorf("namespace required")
+	}
+	if sourceType == "" {
+		return 0, fmt.Errorf("source_type required")
+	}
+	if sourceID == "" {
+		return 0, fmt.Errorf("source_id required")
+	}
+	keys := make([]string, 0, len(keepKeys))
+	for key := range keepKeys {
+		keys = append(keys, key)
+	}
+	return s.repo.DeleteSourceChunksOutsideKeys(ctx, owner.Account(), namespace, sourceType, sourceID, keys)
+}
+
 func (s *Service) Search(ctx context.Context, owner ownership.Owner, req SearchRequest) ([]SearchResult, error) {
 	if owner.Account() == "" {
 		return nil, fmt.Errorf("account id required")

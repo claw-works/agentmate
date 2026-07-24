@@ -70,8 +70,9 @@ assets; domain knowledge corpora belong to a standalone Knowledge Registry that
 skills discover at runtime through a Knowledge Discovery Contract instead of fixed bindings.
 The target model is specified in
 [Skill + Knowledge Architecture v0.3](docs/skill-knowledge-architecture-v0.1.md).
-The K1 milestone (knowledge sources, immutable revisions, document snapshots) is
-implemented; catalog/retrieval, the knowledge compiler, and runtime
+The K1 milestone (knowledge sources, immutable revisions, document snapshots) and the
+K2 milestone (K0 catalog cards, deterministic Markdown chunking, document link graph,
+account-scoped hybrid retrieval) are implemented; the knowledge compiler and runtime
 KnowledgeResolutionRun remain unimplemented.
 
 The official [AgentMate Memory skill](integrations/skills/agentmate-memory/SKILL.md)
@@ -242,8 +243,10 @@ curl -X POST http://localhost:26001/api/skills/sources/<source_id>/snapshots \
 
 Knowledge Registry K1: knowledge sources with immutable revisions and document
 snapshots. K1 covers source registration, Git/local ingest, canonical package
-identity, and account-scoped document reads. It does **not** include indexing,
-search, chunking, K0 cards, or the knowledge compiler (planned as later
+identity, and account-scoped document reads. K2 adds the K0 catalog,
+deterministic Markdown chunking, a document link graph, and account-scoped
+hybrid retrieval. It does **not** include the knowledge compiler,
+KnowledgeProfileVersion, or KnowledgeResolutionRun (planned as later
 milestones in `docs/skill-knowledge-architecture-v0.1.md`).
 
 - `POST /api/knowledge/sources` — Register or upsert a knowledge source by `name` (`git` or `local`) (scope: `knowledge:rw`)
@@ -253,6 +256,10 @@ milestones in `docs/skill-knowledge-architecture-v0.1.md`).
 - `POST /api/knowledge/sources/:id/snapshots` — Push a local knowledge package snapshot (scope: `knowledge:rw`)
 - `GET /api/knowledge/revisions/:id/documents?limit=&offset=` — Paginated document metadata without content bodies (scope: `knowledge:r`)
 - `GET /api/knowledge/revisions/:id/documents/:doc_id` — One document including its text content snapshot, served `Cache-Control: private, no-store` (scope: `knowledge:r`)
+- `GET /api/knowledge/catalog?query=&limit=&offset=` — K0 collection cards for sources with an active revision: manifest metadata (name/description/profile/language/citation_policy), document count, package hash, and chunk index status; stable pagination with ILIKE-style name/description filtering (scope: `knowledge:r`)
+- `POST /api/knowledge/index` — Chunk-index active revisions (body `source_id` optional; empty indexes every active source) into the account-scoped `knowledge` retrieval namespace and rebuild the document link graph (scope: `knowledge:rw`)
+- `POST /api/knowledge/search` — Hybrid lexical + semantic search over indexed chunks (body `query`/`top_k`/`source_ids`/`include_content`); hits carry document/source/revision provenance, heading path, score, snippet, and 1-hop link neighbors (metadata only, capped at 16); the snippet is the first 240 runes of the chunk body (a chunk shorter than that is fully visible in its snippet), and the full chunk body is returned only with `include_content=true`; served `Cache-Control: private, no-store` (scope: `knowledge:r`)
+- `GET /api/knowledge/documents/:doc_id/links?limit=&offset=` — Both directions of one document's package-internal links: outgoing links keep the target path (with a NULL document ID when dangling), incoming links carry the linking document's path (scope: `knowledge:r`)
 
 Every knowledge package must carry a root `KNOWLEDGE.yaml` manifest
 (`name` required; optional `description`, `profile`, `language`,
@@ -337,7 +344,7 @@ integration opt into only the modules it needs.
 | `POST /mcp/expenses` | `expense_create`, `expense_get`, `expense_list`, `expense_summary`, `expense_update`, `expense_delete` |
 | `POST /mcp/memory` | `memory_record`, `memory_store`, `memory_search`, `memory_get` |
 | `POST /mcp/skills` | `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_source_sync`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active`, `skill_catalog_list`, `skill_compile`, `skill_version_instructions`, `skill_version_resources`, `skill_resource_get`, `skill_quality_run`, `skill_quality_get` |
-| `POST /mcp/knowledge` | `knowledge_sources_list`, `knowledge_source_sync`, `knowledge_documents_list`, `knowledge_document_get` |
+| `POST /mcp/knowledge` | `knowledge_sources_list`, `knowledge_source_sync`, `knowledge_documents_list`, `knowledge_document_get`, `knowledge_catalog_list`, `knowledge_search`, `knowledge_index_active`, `knowledge_document_links` |
 
 Authenticate with a valid API key via `X-Api-Key` header, `Authorization: Bearer ak_xxx`,
 or `?api_key=ak_xxx` query param. MCP tool calls enforce the same API key scopes as REST

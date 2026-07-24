@@ -100,6 +100,74 @@ func (h *Handler) SyncGitSource(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// ─── K2: catalog / index / search / links ───
+
+func (h *Handler) ListCatalog(c *gin.Context) {
+	limit, offset, err := strictPagination(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, listErr := h.svc.ListCatalog(c.Request.Context(), owner.Account(), KnowledgeCatalogListParams{
+		Query:  c.Query("query"),
+		Limit:  limit,
+		Offset: offset,
+	})
+	if listErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": listErr.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) Search(c *gin.Context) {
+	var req SearchKnowledgeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.Search(c.Request.Context(), owner, req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Snippets and optional chunk bodies are tenant content.
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) IndexActiveRevisions(c *gin.Context) {
+	var req IndexKnowledgeRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.IndexActiveRevisions(c.Request.Context(), owner, req.SourceID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) ListDocumentLinks(c *gin.Context) {
+	limit, offset, err := strictPagination(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, listErr := h.svc.ListDocumentLinks(c.Request.Context(), owner.Account(), c.Param("doc_id"), limit, offset)
+	if listErr != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
+
 // ─── Documents ───
 
 func (h *Handler) ListRevisionDocuments(c *gin.Context) {

@@ -17,6 +17,10 @@ var toolScopes = map[string]string{
 	"knowledge_source_sync":    "knowledge:rw",
 	"knowledge_documents_list": "knowledge:r",
 	"knowledge_document_get":   "knowledge:r",
+	"knowledge_catalog_list":   "knowledge:r",
+	"knowledge_search":         "knowledge:r",
+	"knowledge_index_active":   "knowledge:rw",
+	"knowledge_document_links": "knowledge:r",
 }
 
 func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
@@ -110,6 +114,98 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 			return mcpauth.ErrResult("not found"), nil
 		}
 		return mcpauth.JSONResult(document)
+	})
+
+	// knowledge_catalog_list
+	s.AddTool(mcp.NewTool("knowledge_catalog_list",
+		mcp.WithDescription("List K0 knowledge collection cards: sources with an active revision, with manifest metadata (name, description, profile, language, citation_policy), document count, package hash, and index status. Supports name/description filtering."),
+		mcp.WithString("query", mcp.Description("Optional case-insensitive name/description filter")),
+		mcp.WithNumber("limit", mcp.Description("Page size (default 20, max 100)")),
+		mcp.WithNumber("offset", mcp.Description("Non-negative page offset")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		limit, offset, paginationErr := strictMCPPagination(args)
+		if paginationErr != nil {
+			return mcpauth.ErrResult(paginationErr.Error()), nil
+		}
+		response, err := svc.ListCatalog(ctx, owner.Account(), KnowledgeCatalogListParams{
+			Query:  mcpauth.StrArg(args, "query"),
+			Limit:  limit,
+			Offset: offset,
+		})
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	// knowledge_search
+	s.AddTool(mcp.NewTool("knowledge_search",
+		mcp.WithDescription("Hybrid lexical + semantic search over indexed knowledge chunks. Each hit carries document/source/revision provenance, heading path, score, snippet, and 1-hop link neighbors (metadata only). Set include_content to load full chunk bodies."),
+		mcp.WithString("query", mcp.Required(), mcp.Description("Search query")),
+		mcp.WithNumber("top_k", mcp.Description("Max results (default 5, max 20)")),
+		mcp.WithArray("source_ids", mcp.Description("Optional knowledge source IDs to restrict the search (max 16)")),
+		mcp.WithBoolean("include_content", mcp.Description("Include full chunk bodies in hits (default false)")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		response, err := svc.Search(ctx, owner, SearchKnowledgeRequest{
+			Query:          mcpauth.StrArg(args, "query"),
+			TopK:           mcpauth.IntArg(args, "top_k"),
+			SourceIDs:      mcpauth.StrSliceArg(args, "source_ids"),
+			IncludeContent: mcpauth.BoolArg(args, "include_content"),
+		})
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	// knowledge_index_active
+	s.AddTool(mcp.NewTool("knowledge_index_active",
+		mcp.WithDescription("Chunk-index the active revision of one source (or every active source when source_id is omitted) into account-scoped retrieval, and rebuild the document link graph. Embedding failures keep the lexical fallback available."),
+		mcp.WithString("source_id", mcp.Description("Optional knowledge source ID; empty indexes all active sources")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		response, err := svc.IndexActiveRevisions(ctx, owner, mcpauth.StrArg(args, "source_id"))
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	// knowledge_document_links
+	s.AddTool(mcp.NewTool("knowledge_document_links",
+		mcp.WithDescription("List both directions of one document's package-internal links (metadata only: direction, path, resolved document ID). Outgoing links come before incoming links."),
+		mcp.WithString("document_id", mcp.Required(), mcp.Description("Knowledge document ID")),
+		mcp.WithNumber("limit", mcp.Description("Page size (default 20, max 100)")),
+		mcp.WithNumber("offset", mcp.Description("Non-negative page offset")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		limit, offset, paginationErr := strictMCPPagination(args)
+		if paginationErr != nil {
+			return mcpauth.ErrResult(paginationErr.Error()), nil
+		}
+		response, err := svc.ListDocumentLinks(ctx, owner.Account(), mcpauth.StrArg(args, "document_id"), limit, offset)
+		if err != nil {
+			return mcpauth.ErrResult("not found"), nil
+		}
+		return mcpauth.JSONResult(response)
 	})
 
 	return server.NewStreamableHTTPServer(s, server.WithHTTPContextFunc(mcpauth.HTTPContextFunc(authSvc)))

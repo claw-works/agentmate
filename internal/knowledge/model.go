@@ -145,3 +145,120 @@ type DocumentListResponse struct {
 	Limit      int                        `json:"limit"`
 	Offset     int                        `json:"offset"`
 }
+
+// ─── K2: link graph ───
+
+// DocumentLinkInput is one parsed Markdown package-internal link, expressed
+// as source/target paths before path→document ID resolution.
+type DocumentLinkInput struct {
+	SourcePath string
+	TargetPath string
+}
+
+// KnowledgeDocumentLinkItem is one direction-tagged link neighbor. For "out"
+// links Path is the target path (DocumentID nil when the target does not
+// exist in the revision); for "in" links Path is the linking source
+// document's path.
+type KnowledgeDocumentLinkItem struct {
+	Direction  string  `json:"direction"`
+	DocumentID *string `json:"document_id,omitempty"`
+	Path       string  `json:"path"`
+}
+
+type DocumentLinksResponse struct {
+	DocumentID string                      `json:"document_id"`
+	RevisionID string                      `json:"revision_id"`
+	Items      []KnowledgeDocumentLinkItem `json:"items"`
+	Total      int                         `json:"total"`
+	Limit      int                         `json:"limit"`
+	Offset     int                         `json:"offset"`
+}
+
+// ─── K2: K0 catalog ───
+
+type KnowledgeCatalogItem struct {
+	SourceID         string `json:"source_id"`
+	Name             string `json:"name"`
+	Description      string `json:"description,omitempty"`
+	Profile          string `json:"profile,omitempty"`
+	Language         string `json:"language,omitempty"`
+	CitationPolicy   string `json:"citation_policy,omitempty"`
+	Type             string `json:"type"`
+	ActiveRevisionID string `json:"active_revision_id"`
+	PackageHash      string `json:"package_hash"`
+	DocumentCount    int    `json:"document_count"`
+	IndexedChunks    int    `json:"indexed_chunks"`
+	FailedChunks     int    `json:"failed_chunks"`
+	PendingChunks    int    `json:"pending_chunks"`
+	IndexStatus      string `json:"index_status"`
+}
+
+type KnowledgeCatalogListParams struct {
+	Query  string
+	Limit  int
+	Offset int
+}
+
+type KnowledgeCatalogListResponse struct {
+	Items  []KnowledgeCatalogItem `json:"items"`
+	Total  int                    `json:"total"`
+	Limit  int                    `json:"limit"`
+	Offset int                    `json:"offset"`
+}
+
+// ─── K2: indexing ───
+
+type IndexKnowledgeRequest struct {
+	SourceID string `json:"source_id"`
+}
+
+type IndexedKnowledgeSource struct {
+	SourceID        string `json:"source_id"`
+	Name            string `json:"name"`
+	RevisionID      string `json:"revision_id"`
+	Documents       int    `json:"documents"`
+	ChunksIndexed   int    `json:"chunks_indexed"`
+	ChunksFailed    int    `json:"chunks_failed"`
+	LinksRebuilt    int    `json:"links_rebuilt"`
+	StaleDeleted    int64  `json:"stale_deleted"`
+	TruncatedChunks int    `json:"truncated_documents"`
+}
+
+type KnowledgeIndexError struct {
+	SourceID string `json:"source_id"`
+	Error    string `json:"error"`
+}
+
+type IndexKnowledgeResponse struct {
+	Indexed []IndexedKnowledgeSource `json:"indexed"`
+	Errors  []KnowledgeIndexError    `json:"errors"`
+}
+
+// ─── K2: retrieval ───
+
+type SearchKnowledgeRequest struct {
+	Query          string   `json:"query"`
+	TopK           int      `json:"top_k"`
+	SourceIDs      []string `json:"source_ids"`
+	IncludeContent bool     `json:"include_content"`
+}
+
+type KnowledgeSearchHit struct {
+	DocumentID  string                      `json:"document_id"`
+	SourceID    string                      `json:"source_id"`
+	RevisionID  string                      `json:"revision_id"`
+	Path        string                      `json:"path"`
+	HeadingPath string                      `json:"heading_path,omitempty"`
+	ChunkKey    string                      `json:"chunk_key"`
+	Knowledge   string                      `json:"knowledge_base,omitempty"`
+	Score       float64                     `json:"score"`
+	Rank        int                         `json:"rank"`
+	Snippet     string                      `json:"snippet"`
+	Content     string                      `json:"content,omitempty"`
+	Neighbors   []KnowledgeDocumentLinkItem `json:"neighbors"`
+}
+
+type SearchKnowledgeResponse struct {
+	Items []KnowledgeSearchHit `json:"items"`
+	Total int                  `json:"total"`
+}

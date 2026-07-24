@@ -559,7 +559,9 @@ Context Pack
 
 里程碑 K1 已实现（migration `000020`、`internal/knowledge`、`internal/gitfetch`）：knowledge source 注册（git/local）、根 `KNOWLEDGE.yaml` manifest、immutable source revision 与 canonical package hash、document snapshots、active 指针、REST/MCP 与 `knowledge:r/rw` scopes。K1 的 package identity 语义：manifest 与 manifest 选中的文件参与 canonical hash；未被 include/exclude 选中的文件不进入 ingest，也不参与 identity。
 
-尚未实现：KnowledgeBuildRevision、KnowledgeProfile、K0/K1/K2 catalog 与检索、knowledge compiler、`knowledge_discover` 与 KnowledgeResolutionRun（K2–K5）。
+里程碑 K2 已实现（migration `000021`、`internal/knowledge` catalog/chunker、`retrieval.NamespaceKnowledge`）：K0 collection cards（manifest 元数据、文档计数、索引状态）、fence-aware Markdown heading/paragraph chunking（8000 runes/chunk、256 chunks/文档、稳定 chunk key）、包内 Markdown 文档链接图（`knowledge_document_links` 派生表，ingest 事务内构建、reindex 幂等重建）、account-scoped hybrid 检索（lexical + semantic，`source_ids` 所有权校验、include_content 门控、1-hop 邻居 metadata 上限 16）、reindex 与失败容忍（embed/Qdrant 失败保留 lexical fallback，旧 revision/尾部 chunk 清理，stale vector 不可 hydration）、Knowledge UI 与独立 MCP。chunk 正文保存在 retrieval 投影中是 K2 evidence 检索的设计内行为，且可从 `knowledge_documents` 完整重建。
+
+尚未实现：KnowledgeBuildRevision、KnowledgeProfile、knowledge compiler / persistent wiki、`knowledge_discover` 与 KnowledgeResolutionRun（K3–K5）。
 
 在后续迁移前：
 
