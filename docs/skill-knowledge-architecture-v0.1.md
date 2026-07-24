@@ -1,8 +1,8 @@
-# AgentMate Skill + Knowledge Architecture v0.2
+# AgentMate Skill + Knowledge Architecture v0.3
 
-**日期**：2026-07-23（v0.1 初稿；v0.2 增补 Memory Plane 与四层信息模型）  
+**日期**：2026-07-23（v0.1 初稿）；2026-07-23（v0.2 增补 Memory Plane）；2026-07-24（v0.3 增补 Graph 模型与 GraphRAG 评估）  
 **状态**：PROPOSED（后续实现依据；当前代码尚未实现 Knowledge Registry）  
-**范围**：Skill Registry、未来 Knowledge Registry、Knowledge Compiler、运行时 Knowledge Resolution、Memory Plane 集成。
+**范围**：Skill Registry、未来 Knowledge Registry、Knowledge Compiler、运行时 Knowledge Resolution、Memory Plane 集成、Graph 模型。
 
 ## 0. 决策摘要
 
@@ -369,6 +369,7 @@ MCP /mcp/knowledge
 - format-aware Markdown heading/paragraph chunks；
 - PostgreSQL lexical + Qdrant semantic hybrid；
 - selected K2 evidence/citation fetch；
+- 1-hop 邻居扩展（K2 阶段基于 Markdown 原始文档间链接；K3 后扩展到编译页面，见 §14.5）；
 - active revision、reindex、freshness 和 no-store；
 - Knowledge UI 与独立 MCP。
 
@@ -376,9 +377,11 @@ MCP /mcp/knowledge
 
 - KnowledgeProfileVersion；
 - candidate KnowledgeBuildRevision；
-- page/link/citation graph；
+- typed page/link/citation graph（`references/contradicts/supersedes/elaborates/mentions_entity`，见 §14.5）；
+- entity pages 作为规范锚点与 entity ID exact-match 入口；
+- 编译期 synthesis/overview pages；
 - compiler/model/prompt provenance；
-- lint、contradiction、orphan/data-gap checks；
+- lint、contradiction、orphan/data-gap、stale cascade checks（recursive CTE）；
 - human/policy promotion；
 - query synthesis 只产生 proposal。
 
@@ -492,7 +495,67 @@ Context Pack
 - **M2**（K2 之后）：Context Pack API，一次调用返回带来源标签的四层最小上下文。
 - **M3**（K3 之后）：Memory → KB promotion 管道；notes 作为个人 KB source。
 
-## 14. 当前实现兼容说明
+## 14. Graph 模型与 GraphRAG 评估（v0.3 增补）
+
+### 14.1 结论
+
+- **Graph 作为数据模型**：采纳。本体系本质上已是一张图，边应在 PostgreSQL 中显式化为一等公民。
+- **Graph DB 作为基础设施**：现阶段不引入。它会制造第二个有状态事实源或又一个需同步的派生物，且当前规模下 recursive CTE 足够。
+- **GraphRAG 作为查询管道**：不采纳其管道形态（查询期 LLM 建图 + 社区摘要）；其核心思想已由 compiled wiki 以更可审计的方式覆盖，四个具体技术作为特性吸收进 K2/K3。
+
+### 14.2 GraphRAG 与 compiled wiki 的对照
+
+| GraphRAG 组件 | 本体系对应 | 差异 |
+|---|---|---|
+| LLM 抽取 entities/relations 建图 | LLM 编译 entity/concept pages 与互链 | 节点是人类可读、带引用的页面，不是未经审查的三元组 |
+| Community detection + 分层摘要 | 编译期 synthesis/overview pages | 编译一次并持久化、版本化，不在查询期 map-reduce |
+| 查询期图遍历 | Agent 沿 wiki links 逐跳加载（K0→K1→K2） | 遍历者是 Agent，本身带任务上下文和披露预算 |
+| 图谱作为事实 | pages 强制 citation 指回 raw source | 图谱声明可回溯验证，进入 active build 前经 lint/审批 |
+
+查询期自动建图且不经审批直接服务查询，违反本设计的 citation/promotion 治理，因此明确不采纳。
+
+### 14.3 本设计中的六张图（1/2/6 属规划中的 Knowledge Registry）
+
+```text
+1. KB link graph        page ↔ page（references/contradicts/elaborates 等）
+2. Citation graph       page → source revision
+3. Provenance chain     version → revision → source → commit
+4. Skill dependency     skill → skill（frontmatter dependencies，未来 DAG）
+5. Memory graph         entry → evidence → event；supersede 链
+6. Resolution graph     outcome → skill version + KB builds + pages used
+```
+
+### 14.4 查询分类
+
+| 场景 | 图深度 | 判断 |
+|---|---|---|
+| KB lint：orphan/hub 检测、矛盾传播、source 更新的 stale cascade | 递归、不定深度 | 真图查询，最高价值；单租户千页量级下 PostgreSQL recursive CTE 足够 |
+| 多跳问答（A 经 B 到 C） | 2-3 跳 | Agent 沿 link 的 agentic traversal 优于一次性图查询：每跳可判断是否继续，契合渐进披露 |
+| 检索扩展：命中后给 1-hop 邻居 metadata | 1 跳 | 普通 JOIN，便宜且高价值 |
+| Provenance 审计 | 固定 3-4 跳 | 固定深度 JOIN |
+| Skill DAG 组合（未来） | 小图、环检测 | SQL/内存即可 |
+| Memory supersede 链、失败归因 | 浅链/固定 JOIN | SQL 即可 |
+
+只有 KB lint 是真正的图形查询，其余为固定深度 JOIN 或 Agent 自主遍历。
+
+### 14.5 吸收为特性的四个 GraphRAG 技术
+
+全部落在 PostgreSQL，不引入新基础设施（括号中 K2/K3 为 §12 实施里程碑编号，非披露层级）：
+
+1. **Typed edges 一等公民化**（里程碑 K3）：`knowledge_links` 保存边类型——`references / contradicts / supersedes / elaborates / mentions_entity`；矛盾传播与 stale cascade lint 依赖边类型。
+2. **Entity pages 作为规范锚点**（里程碑 K3）：entity page 即图的规范节点，frontmatter 带 entity ID，为 Context Compiler 提供 exact-match 入口（先实体精确匹配，再语义扩展）。
+3. **1-hop 邻居扩展**（里程碑 K2）：检索命中卡片附带出/入链摘要（仅 metadata，不含正文；里程碑 K2 为原始文档级链接，里程碑 K3 起为编译页面级），Agent 决定是否跟进；一个 JOIN 的成本换 agentic traversal 的入口。
+4. **编译期 synthesis pages**（里程碑 K3）：compiler 按链接聚类生成 overview/synthesis 页并强制引用，覆盖“全局性问题”，替代查询期社区摘要。
+
+### 14.6 Graph DB 的重新评估触发条件
+
+满足任一条件时重新评估，且届时只作为从 PostgreSQL 边表重建的**可重建投影**引入，永远不是事实源（与 Qdrant 地位一致）：
+
+- 跨 KB / 跨租户 entity graph 成为产品功能（如组织知识图谱视图）；
+- 真实负载下 recursive CTE lint 的 p99 超出可接受阈值（如单租户页面数达到十万级）；
+- 图分析本身（centrality、社区演化）成为付费能力。
+
+## 15. 当前实现兼容说明
 
 当前代码只实现 Skill Registry 的 L0/L1/L2 selected resource API，没有实现本设计中的 KnowledgeBase、KnowledgeBuildRevision、KnowledgeProfile 或 KnowledgeResolutionRun。
 

@@ -169,7 +169,7 @@ skill-package/
   examples/             # 少量高质量示例
 ```
 
-> 边界更新（2026-07-23）：Skill package 中的资源定位为 **execution assets**。独立领域知识语料（产品文档、政策、事实库、持久化 wiki）属于未来独立 Knowledge Registry，Skill 通过 Knowledge Discovery Contract 在运行时发现并引用，而不是打包进 Skill；见 [Skill + Knowledge Architecture v0.2](skill-knowledge-architecture-v0.1.md)。`references/` 仅保留与执行流程强绑定的紧凑规范摘要。
+> 边界更新（2026-07-23）：Skill package 中的资源定位为 **execution assets**。独立领域知识语料（产品文档、政策、事实库、持久化 wiki）属于未来独立 Knowledge Registry，Skill 通过 Knowledge Discovery Contract 在运行时发现并引用，而不是打包进 Skill；见 [Skill + Knowledge Architecture v0.3](skill-knowledge-architecture-v0.1.md)。`references/` 仅保留与执行流程强绑定的紧凑规范摘要。
 
 根 `SKILL.md` 只负责说明：
 
@@ -414,7 +414,7 @@ AgentMate Memory 提供：
 
 Knowledge Plane 回答“当前真实状态是什么”和“以前发生过什么”。
 
-Knowledge Plane 未来将扩展为两个子域：**Memory**（执行经验与证据，当前已实现）与 **Knowledge Registry**（领域事实语料与持久化 wiki builds，规划中）。二者共享 retrieval 基础设施，但 identity、生命周期和 promotion 规则不同；Skill 通过 Knowledge Discovery Contract 在运行时发现 KB，而不是把知识打包进 Skill package。详见 [Skill + Knowledge Architecture v0.2](skill-knowledge-architecture-v0.1.md)。
+Knowledge Plane 未来将扩展为两个子域：**Memory**（执行经验与证据，当前已实现）与 **Knowledge Registry**（领域事实语料与持久化 wiki builds，规划中）。二者共享 retrieval 基础设施，但 identity、生命周期和 promotion 规则不同；Skill 通过 Knowledge Discovery Contract 在运行时发现 KB，而不是把知识打包进 Skill package。详见 [Skill + Knowledge Architecture v0.3](skill-knowledge-architecture-v0.1.md)。
 
 ### 5.2 Capability Plane
 
