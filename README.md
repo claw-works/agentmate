@@ -66,11 +66,13 @@ LLMs, providers, Qdrant, publish/activate/index versions, produce a composite sc
 semantic evaluation/reinforcement learning. DAG composition remains a later increment.
 
 Skills and knowledge are separate domains. Skill packages carry behavior and execution
-assets; domain knowledge corpora belong to a planned standalone Knowledge Registry that
+assets; domain knowledge corpora belong to a standalone Knowledge Registry that
 skills discover at runtime through a Knowledge Discovery Contract instead of fixed bindings.
-The target model (K0/K1/K2 disclosure, knowledge builds, runtime KnowledgeResolutionRun) is
-specified in [Skill + Knowledge Architecture v0.3](docs/skill-knowledge-architecture-v0.1.md)
-and is not implemented yet.
+The target model is specified in
+[Skill + Knowledge Architecture v0.3](docs/skill-knowledge-architecture-v0.1.md).
+The K1 milestone (knowledge sources, immutable revisions, document snapshots) is
+implemented; catalog/retrieval, the knowledge compiler, and runtime
+KnowledgeResolutionRun remain unimplemented.
 
 The official [AgentMate Memory skill](integrations/skills/agentmate-memory/SKILL.md)
 teaches compatible agents to recall scoped context, journal meaningful events,
@@ -122,6 +124,8 @@ Available scopes:
 | `memory:rw` | Record events and store durable memories (implies `memory:r`) |
 | `skills:r` | Read skill logs and versions |
 | `skills:rw` | Read & write skill logs and versions (implies `skills:r`) |
+| `knowledge:r` | Read knowledge sources, revisions, and documents |
+| `knowledge:rw` | Register/sync knowledge sources and push snapshots (implies `knowledge:r`) |
 | `manage_keys` | Create/delete API keys |
 
 Empty scopes array `[]` means **full access**.
@@ -234,6 +238,52 @@ curl -X POST http://localhost:26001/api/skills/sources/<source_id>/snapshots \
   }'
 ```
 
+### Knowledge (authenticated)
+
+Knowledge Registry K1: knowledge sources with immutable revisions and document
+snapshots. K1 covers source registration, Git/local ingest, canonical package
+identity, and account-scoped document reads. It does **not** include indexing,
+search, chunking, K0 cards, or the knowledge compiler (planned as later
+milestones in `docs/skill-knowledge-architecture-v0.1.md`).
+
+- `POST /api/knowledge/sources` — Register or upsert a knowledge source by `name` (`git` or `local`) (scope: `knowledge:rw`)
+- `GET /api/knowledge/sources` — List knowledge sources (scope: `knowledge:r`)
+- `GET /api/knowledge/sources/:id/revisions` — List immutable source revisions (scope: `knowledge:r`)
+- `POST /api/knowledge/sources/:id/sync` — Pull and ingest a public GitHub/GitLab knowledge package (scope: `knowledge:rw`)
+- `POST /api/knowledge/sources/:id/snapshots` — Push a local knowledge package snapshot (scope: `knowledge:rw`)
+- `GET /api/knowledge/revisions/:id/documents?limit=&offset=` — Paginated document metadata without content bodies (scope: `knowledge:r`)
+- `GET /api/knowledge/revisions/:id/documents/:doc_id` — One document including its text content snapshot, served `Cache-Control: private, no-store` (scope: `knowledge:r`)
+
+Every knowledge package must carry a root `KNOWLEDGE.yaml` manifest
+(`name` required; optional `description`, `profile`, `language`,
+`include`/`exclude` glob lists, and `citation_policy: required|optional`).
+The manifest's include/exclude rules select which files become documents;
+`KNOWLEDGE.yaml` itself always participates in the package identity hash but
+is never returned as a document. Text files keep a stored content snapshot;
+binary files contribute only hash and size to identity. Ingest is
+transactional and idempotent: replaying the same package hash returns the
+existing revision and re-targets the source's `active_revision_id`; a failed
+sync marks the source `error` without leaving a partial revision.
+
+```bash
+# Register a Git knowledge source.
+curl -X POST http://localhost:26001/api/knowledge/sources \
+  -H "Authorization: Bearer <jwt_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "product-support",
+    "type": "git",
+    "repository_url": "https://github.com/acme/knowledge",
+    "package_path": "product-support"
+  }'
+
+# Sync a ref to an immutable commit and ingest the package.
+curl -X POST http://localhost:26001/api/knowledge/sources/<source_id>/sync \
+  -H "Authorization: Bearer <jwt_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"ref": "main"}'
+```
+
 ## Authentication
 
 ### JWT
@@ -287,6 +337,7 @@ integration opt into only the modules it needs.
 | `POST /mcp/expenses` | `expense_create`, `expense_get`, `expense_list`, `expense_summary`, `expense_update`, `expense_delete` |
 | `POST /mcp/memory` | `memory_record`, `memory_store`, `memory_search`, `memory_get` |
 | `POST /mcp/skills` | `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_source_sync`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active`, `skill_catalog_list`, `skill_compile`, `skill_version_instructions`, `skill_version_resources`, `skill_resource_get`, `skill_quality_run`, `skill_quality_get` |
+| `POST /mcp/knowledge` | `knowledge_sources_list`, `knowledge_source_sync`, `knowledge_documents_list`, `knowledge_document_get` |
 
 Authenticate with a valid API key via `X-Api-Key` header, `Authorization: Bearer ak_xxx`,
 or `?api_key=ak_xxx` query param. MCP tool calls enforce the same API key scopes as REST

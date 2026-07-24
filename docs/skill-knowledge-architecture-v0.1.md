@@ -1,7 +1,7 @@
 # AgentMate Skill + Knowledge Architecture v0.3
 
 **日期**：2026-07-23（v0.1 初稿）；2026-07-23（v0.2 增补 Memory Plane）；2026-07-24（v0.3 增补 Graph 模型与 GraphRAG 评估）  
-**状态**：PROPOSED（后续实现依据；当前代码尚未实现 Knowledge Registry）  
+**状态**：IN PROGRESS（K1 已实现；K2–K5 与 Memory M1–M3 为后续实现依据）  
 **范围**：Skill Registry、未来 Knowledge Registry、Knowledge Compiler、运行时 Knowledge Resolution、Memory Plane 集成、Graph 模型。
 
 ## 0. 决策摘要
@@ -304,7 +304,7 @@ KnowledgeResolutionRun
 
 第一版复用 Skill Git provider 的安全能力：public GitHub/GitLab HTTPS parsing、immutable commit resolution、bounded archive extraction、path/traversal/link/entry/byte limits。SkillSource 与 KnowledgeSource 是独立业务记录，即使指向同一 repo/commit。
 
-Knowledge source package hash 对 manifest 和 raw source 文件的 canonical path/hash/size 计算。Knowledge build identity 单独包含：
+Knowledge source package hash 对 manifest 及 manifest 选中的 raw source 文件的 canonical path/hash/size 计算；未被选中的文件不参与 identity。Knowledge build identity 单独包含：
 
 - input source revision IDs/hashes；
 - profile version；
@@ -557,11 +557,13 @@ Context Pack
 
 ## 15. 当前实现兼容说明
 
-当前代码只实现 Skill Registry 的 L0/L1/L2 selected resource API，没有实现本设计中的 KnowledgeBase、KnowledgeBuildRevision、KnowledgeProfile 或 KnowledgeResolutionRun。
+里程碑 K1 已实现（migration `000020`、`internal/knowledge`、`internal/gitfetch`）：knowledge source 注册（git/local）、根 `KNOWLEDGE.yaml` manifest、immutable source revision 与 canonical package hash、document snapshots、active 指针、REST/MCP 与 `knowledge:r/rw` scopes。K1 的 package identity 语义：manifest 与 manifest 选中的文件参与 canonical hash；未被 include/exclude 选中的文件不进入 ingest，也不参与 identity。
 
-在迁移前：
+尚未实现：KnowledgeBuildRevision、KnowledgeProfile、K0/K1/K2 catalog 与检索、knowledge compiler、`knowledge_discover` 与 KnowledgeResolutionRun（K2–K5）。
 
-- 现有 package 中 scripts/templates/schemas/tests/examples 继续作为 Skill resources。
+在后续迁移前：
+
+- 现有 Skill package 中 scripts/templates/schemas/tests/examples 继续作为 Skill resources。
 - 现有 reference 文档仍可按现有 API 加载，但新设计不再把它们视为独立 KB；后续需要显式分类和迁移。
 - 不修改 Phase 1 完整 Skill package identity，也不把尚未实现的 dynamic discovery 写成已支持能力。
 

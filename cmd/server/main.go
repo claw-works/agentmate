@@ -16,6 +16,7 @@ import (
 	"github.com/wellxie/agentmate/internal/bookmarks"
 	"github.com/wellxie/agentmate/internal/db"
 	"github.com/wellxie/agentmate/internal/expenses"
+	"github.com/wellxie/agentmate/internal/knowledge"
 	"github.com/wellxie/agentmate/internal/memory"
 	"github.com/wellxie/agentmate/internal/middleware"
 	"github.com/wellxie/agentmate/internal/notes"
@@ -76,6 +77,10 @@ func main() {
 	skillsRepo := skills.NewRepo(pool)
 	skillsSvc := skills.NewService(skillsRepo, retrievalSvc)
 	skillsHandler := skills.NewHandler(skillsSvc)
+
+	knowledgeRepo := knowledge.NewRepo(pool)
+	knowledgeSvc := knowledge.NewService(knowledgeRepo)
+	knowledgeHandler := knowledge.NewHandler(knowledgeSvc)
 
 	// Router
 	r := gin.Default()
@@ -191,6 +196,16 @@ func main() {
 	protected.POST("/skills/compile", auth.RequireScope("skills:rw"), skillsHandler.Compile)
 	protected.POST("/skills/index", auth.RequireScope("skills:rw"), skillsHandler.IndexActiveVersions)
 
+	// Knowledge - read
+	protected.GET("/knowledge/sources", auth.RequireScope("knowledge:r"), knowledgeHandler.ListSources)
+	protected.GET("/knowledge/sources/:id/revisions", auth.RequireScope("knowledge:r"), knowledgeHandler.ListSourceRevisions)
+	protected.GET("/knowledge/revisions/:id/documents", auth.RequireScope("knowledge:r"), knowledgeHandler.ListRevisionDocuments)
+	protected.GET("/knowledge/revisions/:id/documents/:doc_id", auth.RequireScope("knowledge:r"), knowledgeHandler.GetDocument)
+	// Knowledge - write
+	protected.POST("/knowledge/sources", auth.RequireScope("knowledge:rw"), knowledgeHandler.CreateSource)
+	protected.POST("/knowledge/sources/:id/snapshots", auth.RequireScope("knowledge:rw"), knowledgeHandler.SubmitSnapshot)
+	protected.POST("/knowledge/sources/:id/sync", auth.RequireScope("knowledge:rw"), knowledgeHandler.SyncGitSource)
+
 	// Admin
 	adminHandler := admin.NewHandler(pool)
 	r.StaticFile("/admin", "./web/admin.html")
@@ -210,6 +225,7 @@ func main() {
 	r.Any("/mcp/expenses", gin.WrapH(expenses.NewMCPServer(expensesSvc, authSvc)))
 	r.Any("/mcp/memory", gin.WrapH(memory.NewMCPServer(memorySvc, authSvc)))
 	r.Any("/mcp/skills", gin.WrapH(skills.NewMCPServer(skillsSvc, authSvc)))
+	r.Any("/mcp/knowledge", gin.WrapH(knowledge.NewMCPServer(knowledgeSvc, authSvc)))
 
 	registerFrontend(r)
 
