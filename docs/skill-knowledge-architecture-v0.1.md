@@ -1,6 +1,6 @@
-# AgentMate Skill + Knowledge Architecture v0.3
+# AgentMate Skill + Knowledge Architecture v0.4
 
-**日期**：2026-07-23（v0.1 初稿）；2026-07-23（v0.2 增补 Memory Plane）；2026-07-24（v0.3 增补 Graph 模型与 GraphRAG 评估）  
+**日期**：2026-07-23（v0.1 初稿）；2026-07-23（v0.2 增补 Memory Plane）；2026-07-24（v0.3 增补 Graph 模型与 GraphRAG 评估）；2026-07-27（v0.4 增补写入边界与演进不变量）  
 **状态**：IN PROGRESS（K1 已实现；K2–K5 与 Memory M1–M3 为后续实现依据）  
 **范围**：Skill Registry、未来 Knowledge Registry、Knowledge Compiler、运行时 Knowledge Resolution、Memory Plane 集成、Graph 模型。
 
@@ -11,7 +11,7 @@ AgentMate 将 Skill 与 Knowledge 建模为两个独立业务域：
 - **Skill** 回答“何时以及如何行动”，保存 routing、instructions、constraints、tools、execution assets 与 evals。
 - **KnowledgeBase（KB）** 回答“有哪些可引用的事实与综合知识”，保存 immutable raw sources、持久化 wiki builds、pages、links 与 citations。
 - Skill 不固定绑定具体 KB。Skill package 声明结构化 **Knowledge Discovery Contract**，指导 Agent 在运行时发现当前 account/workspace 可访问的 KB。
-- 初始模型不创建预配置 `BindingRevision`。每次执行把实际选中的 KB build、page、chunk 和 citation 固化为 **KnowledgeResolutionRun**，用于权限审计、复现和评测。
+- 初始模型不创建预配置 `BindingRevision`。每次执行把实际选中的 KB build、page、chunk 和 citation 固化为 **KnowledgeResolutionRun**，用于权限审计、复现、评测，以及作为演进闭环的归因锚点（见 §0.2）。
 - Git/repository directory 是第一版 Skill/KB source provider 和 package boundary，不是 SaaS 控制面 identity。PostgreSQL 保存 registry 事实；Qdrant、全文索引和导航卡片是可重建派生物。
 
 最小可复现执行单元是：
@@ -27,6 +27,34 @@ SkillVersion
 ```text
 one Skill <-> one dedicated KB
 ```
+
+### 0.1 写入边界
+
+客户端 agent **可以**写 raw candidate、memory event 与 validation signal；**不可以**写
+wiki page 与 KB 事实。agent 提议，平台收编。
+
+理由：agent 运行在客户端，版本、prompt、模型都不可控。让它写事实源等于把数据质量外包
+给一个无法约束的进程。wiki 因此由平台侧编译，见 `knowledge-wiki-compiler-k3-v0.1.md` §2.1。
+
+### 0.2 演进不变量：proposal，不是 mutation
+
+自动化产生的信号与判断只驱动 **proposal**，不直接修改事实源。这条不变量在本架构中出现
+四次，形态不同但原则相同：
+
+| 场景 | 约束 |
+|---|---|
+| Memory → KB 晋升 | 必须过使用信号门槛 + 审批，禁止自动写入 |
+| Query 结果回填 wiki | 只产生 proposal（K3 §5.4） |
+| Validation 信号驱动改进 | 只产生 proposal，不改写既有 page（K3 §7.5） |
+| Skill/KB 质量门槛 | 可以自动进化**发现问题的能力**，不可自动放松**通过的门槛** |
+
+最后一条最容易被忽略：如果审批器能自行调整标准，就会出现标准漂移——系统慢慢接受更差
+的东西，而每一步都"符合当前标准"。因此 check 阈值与 review 标准都必须显式版本化，
+可人工演进，不可由系统自行放松。
+
+质量分三层——check（确定性、阻塞）、review（异构模型、只标记）、validation（人类隐性
+行为、持续），详见 K3 设计文档 §7。人工审批**不在**其中：SaaS 场景下知识库属于用户而
+质量标准属于平台，让普通用户审编译质量是身份错配。
 
 ## 1. 为什么必须分域
 
@@ -397,6 +425,11 @@ MCP /mcp/knowledge
 - strict SkillVersion + BuildRevision attribution；
 - discovery/retrieval/end-to-end eval。
 
+K4 与 M1 的定位已修正：ResolutionRun 与 `skill_version_id` + `session_id` 关联不只是审计
+与遥测能力，它们是**演进闭环的必要条件**——validation 信号缺少这两个归因锚点就无法定位
+到具体 build/page/citation，只能得到"这个账号不太满意"这类没有行动价值的结论。因此
+K3.9（信号 → 归因 → proposal）实际排在 K4 与 M1 之后，见 K3 设计文档 §7.4 与 §12。
+
 ### K5：可选企业扩展
 
 - private Git/provider credentials；
@@ -494,7 +527,7 @@ Context Pack
 
 与 K1–K5 主线并行，不互相阻塞：
 
-- **M1**（可先做）：`skill_logs` 与 memory events 通过 `skill_version_id` + `session_id` 关联查询；Quality suggestion 可链接证据正文。
+- **M1**（可先做，且是演进闭环的前置）：`skill_logs` 与 memory events 通过 `skill_version_id` + `session_id` 关联查询；Quality suggestion 可链接证据正文。这层关联同时是 validation 信号的归因锚点之一。
 - **M2**（K2 之后）：Context Pack API，一次调用返回带来源标签的四层最小上下文。
 - **M3**（K3 之后）：Memory → KB promotion 管道；notes 作为个人 KB source。
 

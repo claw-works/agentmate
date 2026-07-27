@@ -21,7 +21,7 @@ K3 引入编译出来的持久 wiki：raw source 进来时就读一遍、抽取�
 | wiki | 平台侧 LLM 编译 | AgentMate 内部 | **K3，本文档** |
 | schema | 人与平台共同演进 | `KNOWLEDGE.yaml` 的 `profile` | K3 补齐 profile 语义 |
 
-## 2. 已定的两个决策
+## 2. 已定的三个决策
 
 ### 2.1 平台侧编译，不是 agent 侧回写
 
@@ -33,11 +33,24 @@ K3 引入编译出来的持久 wiki：raw source 进来时就读一遍、抽取�
 代价与后续：Git 不再是 wiki 层的事实源（raw 层仍然是）。因此**必须**把出处建模到位，
 否则 wiki 就成了一堆来源不明的文本。基于 Git 的 wiki 导出/PR 审批留在 K5。
 
+由此确定的写入边界：**客户端 agent 可以写 raw candidate 与 memory event，不能写
+wiki page 与 KB 事实。** agent 提议，平台收编。
+
 ### 2.2 目录按领域 / 主题两级
 
 已在 `000022` 与 `internal/pkgpath` 落地，K3 直接复用：`platform/retrieval` 的 domain 是
 `platform`，source name 是 `platform-retrieval`。每个二级目录是一个独立 KB package，
 也就是一个独立 wiki 与一份独立 `index`。
+
+### 2.3 build 自动激活，不设人工审批门
+
+**决策**：build 通过 check 后自动激活。不存在"等人点通过"的环节。
+
+否决人工审批的理由是身份错配：知识库是用户的，但 wiki 的质量标准是平台的。用户不知道
+citation 该锚到什么粒度、entity page 该在什么时候拆出来。让 SaaS 的普通用户审这个，
+结果只有两种——无脑点通过（门是假的），或者卡住不动（wiki 永不更新）。
+
+取而代之的是三层质量模型，见 §7。
 
 ## 3. 关键约束：wiki 是不可重现的生成物
 
@@ -74,7 +87,11 @@ KnowledgeBuildRevision                         ← K3 新增（一次编译的 i
   ├─ 1:N KnowledgePage
   │      ├─ 1:N KnowledgePageCitation  → raw document (+ heading/chunk)
   │      └─ 1:N KnowledgePageLink      → 同 build 内的 page（typed）
-  └─ 1:N KnowledgeBuildEvent           → 渲染 log 的结构化来源
+  ├─ 1:N KnowledgeBuildEvent           → 渲染 log 的结构化来源
+  └─ 1:N KnowledgeReviewFinding        → 忠实性审阅结果（不阻塞激活）
+
+KnowledgeValidationSignal                      ← K3 新增（跨域：人类隐性行为信号）
+  └─ 归因锚点 → KnowledgeResolutionRun (K4) / session + skill_version (M1)
 ```
 
 ### 4.1 KnowledgeProfileVersion
@@ -87,7 +104,9 @@ KnowledgeBuildRevision                         ← K3 新增（一次编译的 i
 - 允许哪些 link 类型；
 - citation 强制程度（对应已有的 `citation_policy`）；
 - 单 build 的 page 数上限、单 page 长度上限；
-- 编译工作流提示（哪些内容优先抽成 entity page 等）。
+- 编译工作流提示（哪些内容优先抽成 entity page 等）；
+- check 阈值（page 数相对 parent build 的允许波动范围等，见 §7.1）；
+- review 标准版本（见 §7.2）。
 
 profile 版本化的原因和 prompt 版本化一样：它会影响输出，因此必须成为出处的一部分。
 
@@ -100,16 +119,21 @@ profile 版本化的原因和 prompt 版本化一样：它会影响输出，因�
 | `raw_package_hash` | 冗余存一份，raw 侧被清理后仍可追溯 |
 | `profile_version_id` | 页面约定版本 |
 | `compiler_version` | 编译流程实现版本 |
-| `model`, `prompt_version` | LLM 出处 |
+| `model`, `prompt_version` | 编译侧 LLM 出处 |
+| `reviewer_model`, `reviewer_prompt_version` | review 侧 LLM 出处；必须与编译侧异构（§7.2） |
+| `check_status` | `passed` / `failed`；唯一的门禁结果 |
+| `review_status` | `clean` / `flagged` / `skipped`；不影响激活 |
 | `parent_build_id` | 增量编译的基线，全量编译为 NULL |
 | `mode` | `full` / `incremental` |
 | `status` | `queued` / `running` / `succeeded` / `failed` / `cancelled` |
 | `pages_written`, `pages_reused` | 增量编译的实际收益 |
-| `input_tokens`, `output_tokens`, `cost_micros` | 成本核算 |
+| `input_tokens`, `output_tokens`, `cost_micros` | 编译成本 |
+| `review_tokens`, `review_cost_micros` | review 成本，与编译分开记账（§8） |
 | `error` | 失败原因 |
 | `started_at`, `finished_at` | 时长 |
 
 `active_build_id` 只能指向 `succeeded` 的 build。失败的 build 保留用于诊断，不影响读路径。
+`review_status = flagged` **不阻止**激活——review 不可重现，不能进入阻塞路径（§7.2）。
 
 ### 4.3 KnowledgePage
 
@@ -138,6 +162,32 @@ chunk key）。这是整个设计的可信性基础：wiki 是 LLM 生成的，�
 
 append-only：ingest、page 创建/更新/复用、检测到矛盾、跳过、失败。它是结构化的，
 `log` page 只是它的渲染视图——这样既能被 agent 读，也能被 SQL 统计。
+
+### 4.7 KnowledgeReviewFinding
+
+review 的输出（§7.2）。每条锚到一个 page 与一条 citation，记录断言、被引原文、
+判定（`supported` / `unsupported` / `overstated` / `conflated`）与理由。
+
+`reviewer_model` 与 `reviewer_prompt_version` 存在 build 上而非每条 finding 上，因为
+一次 review 用同一套配置。findings 保留而不覆盖：review 标准演进后要能对比同一 page
+在不同标准下的判定。
+
+### 4.8 KnowledgeValidationSignal
+
+validation 的落表（§7.3）。这是**跨域**的表——信号来自 skill 执行与检索使用，不属于
+knowledge 域独有，因此按 `(account_id, subject_type, subject_id)` 建模，`subject_type`
+可以是 page、citation、build 或 source。
+
+| 字段 | 说明 |
+|---|---|
+| `signal_type` | `adopted` / `refollowed` / `requeried` / `rewritten` / `abandoned` 等 |
+| `polarity` | 正向 / 负向；由类型决定，冗余存便于聚合 |
+| `resolution_run_id` | 归因锚点，指向 KnowledgeResolutionRun（K4） |
+| `session_id`, `skill_version_id` | 归因锚点（M1） |
+| `observed_at` | 信号发生时间，不是写入时间 |
+
+没有 `resolution_run_id` 与 session/skill 关联的信号**无法归因**，只能用于粗粒度趋势
+统计。这就是 §7.4 说 K4 与 M1 是闭环必要条件的具体含义。
 
 ## 5. 操作
 
@@ -223,16 +273,157 @@ MVP 形态：job 表 + 服务内 worker，`SELECT ... FOR UPDATE SKIP LOCKED` �
 - **供应商故障**：连续失败超阈值即中止整个 build 并记录，避免在故障期间空转烧钱
   （已有的 chunk 索引就是这个策略，实测有效）。
 
-## 7. 成本控制
+## 7. 质量：check / review / validation
 
-LLM 编译是本设计唯一的显著变动成本，必须在设计里就有闸门：
+三个层次，三种性质，不能混为一谈。混淆的直接后果是把不可重现的判断放到阻塞路径上，
+那种系统无法运维。
 
-1. **增量复用**：只重编译受影响的 page（§5.1 步骤 3）。
+| 层 | 谁做 | 性质 | 时机 | 是否阻塞 |
+|---|---|---|---|---|
+| **check** | 平台，确定性代码 | 客观、可重现、可解释 | build 时 | **是** |
+| **review** | 平台的 agent（异构模型） | 主观、不可重现 | build 时 | 否，只标记 |
+| **validation** | 人类，**隐式** | 真实但有噪声 | 使用中，持续 | 否 |
+
+### 7.1 check：唯一的门禁
+
+全部是计数与 SQL 能判定的不变量，不含任何模型判断：
+
+- citation 指向的 raw document 真实存在；
+- `citation_policy: required` 下不存在无 citation 的事实性断言；
+- page 数相对 parent build 未异常暴涨或暴跌（阈值来自 profile）；
+- lint 未新增矛盾或孤立页；
+- 成本未超 profile 上限；
+- `index` 覆盖全部 page；
+- 全部 link 在 build 内闭合。
+
+不通过即 build `failed`，不写入半成品。**这一层拦掉的问题比 review 多**，因为绝大多数
+真正该拦的错误都是结构性的，不是语义性的。
+
+### 7.2 review：忠实性，只标记不阻塞
+
+review 只回答一个问题：**page 的断言是否忠实于它引用的原文**。有没有把"通常"写成
+"总是"，有没有引入 citation 里不存在的因果关系，有没有把两个来源的结论错误地合并。
+
+这件事可行的依据是判别比生成容易——给定断言与原文判断"原文是否支持它"，比写出这个
+page 简单得多。
+
+三条硬性要求：
+
+1. **必须用异构模型**：与编译所用模型来自不同供应商/家族，并记入出处（`reviewer_model`、
+   `reviewer_prompt_version`）。同模型自审会共谋——生成时犯的错，审阅时用同样的先验
+   看不出来。
+2. **只审变更的 page**：复用增量编译已算出的影响面，控制成本。
+3. **不阻塞**：review 结论不可重现，若让它有权阻塞，同一个 build 重试两次会得到不同
+   结果。它的作用是标记与度量，不是把关。
+
+需要澄清一点：异构模型**降低**共谋概率，但主流模型训练语料高度重叠，先验相似，它们会
+在同一些地方一起犯错。模型多样性不产生"公正"。真正的独立性来自两个非模型锚点——
+check（完全不依赖模型判断）与 validation（产生于系统之外）。review 是第三道保险，
+不是正确性的来源。
+
+### 7.3 validation：人类的隐性确认
+
+人不做审批动作，人的**行为**定义成功标准。使用过程本身就是判决：
+
+```text
+正向：直接采纳答案、点开 citation 后不再追问、同一 KB 被反复用于同类问题
+负向：追问同一问题、换措辞重查、点开 citation 后立刻换查询、
+      拿到答案后自己动手改写、某个 KB 注册后再也没被检索过
+```
+
+零成本、全量覆盖、反映真实满意度而非评分表上的满意度。
+
+但有三个固有缺陷，必须设计进去而不是假装不存在：
+
+- **有偏**：只有活跃用户产生信号。沉默不等于满意，也可能是已经放弃——而放弃的用户
+  恰好最该被听到。
+- **滞后**：一个变差的 build 可能几周后才在信号上显形，这段时间它一直在服务。
+- **稀疏**：小账号与冷门 KB 几乎没有信号，但同样需要质量保障。
+
+因此 validation 是**长期质量的度量**，不能当作**单次 build 的门禁**。门禁只能是 check。
+
+### 7.4 归因：闭环真正的难点
+
+信号能收集不等于能行动。用户追问了同一个问题，可能是：
+
+```text
+wiki 那一页综合错了 / 检索没召回到对的页 /
+skill 的做法本身不对 / raw source 里根本没有这个事实
+```
+
+四种可能，四种完全不同的修法。归因不了，就只能得到"这个账号不太满意"这类没有行动
+价值的结论。
+
+归因依赖已在路线图上的两项能力，**它们的定位需要修正**：
+
+| 能力 | 原定位 | 实际定位 |
+|---|---|---|
+| KnowledgeResolutionRun（K4） | 权限审计与复现 | **进化闭环的必要条件** |
+| `skill_version_id` + `session_id` 关联（M1） | 质量遥测 | **进化闭环的必要条件** |
+
+有了它们，一次不满意可以回溯到"`platform-retrieval` 的 build 7 的 `cjk-lexical` 页第 3 条
+citation 被采用，随后用户追问"。没有它们，validation 信号无法归因，闭环断在这里。
+
+这条依赖会改变优先级：K4 与 M1 不再是"完善功能"。
+
+### 7.5 架构级不变量：proposal，不是 mutation
+
+信号驱动 proposal，不驱动 mutation。
+
+**可以全自动：**
+
+- 从信号检测异常（某 KB 追问率上升、某 page 的 citation 从未被点开）；
+- 生成 proposal：重编译某页、补充某类来源、把反复被提及的概念抽成 entity page、
+  标记某条 memory 已具备晋升条件。
+
+**不能自动：**
+
+- 直接改写既有 page——会切断出处链，而出处是 wiki 唯一的可信性来源；
+- 调整 review 的通过门槛——标准会漂移，系统慢慢接受更差的东西，而每一步都"符合当前
+  标准"；
+- 把 memory 自动晋升为 KB 事实。
+
+区分可以再收紧一层：**可以自动进化的是发现问题的能力**（新增 check 项、新增 review
+维度、把踩过的坑变成规则），**不可自动进化的是通过的门槛**。review 标准与 check 阈值
+都要显式版本化，可人工演进，不可由系统自行放松。
+
+这条不变量在本架构中已出现三次——query 回填只产 proposal、memory 晋升需过门槛与审批、
+信号不驱动 mutation。它是架构级约定，见 `skill-knowledge-architecture-v0.1.md`。
+
+### 7.6 完整闭环
+
+```text
+客户端 agent      产生/寻找 raw candidate、写 memory event（可提议，不可写事实源）
+      ↓
+平台 collect      raw source 入库，immutable
+      ↓
+平台 compile      wiki build（异构模型）
+      ↓
+check             机械不变量 → 不通过即 failed（阻塞）
+review            异构模型审忠实性 → 只标记（不阻塞）
+      ↓
+自动激活          可 diff、可回滚
+      ↓
+validation        人类隐性行为信号（持续、有噪声、滞后）
+      ↓
+归因              ResolutionRun + skill/session 关联 → 定位到具体 page/citation
+      ↓
+proposal          重编译 / 补来源 / 抽 entity / memory 晋升候选
+      ↓
+（回到 collect 或 compile；人可否决；标准不自动放松）
+```
+
+## 8. 成本控制
+
+LLM 编译与 review 是本设计唯一的显著变动成本，必须在设计里就有闸门：
+
+1. **增量复用**：只重编译受影响的 page（§5.1 步骤 3）；review 同样只覆盖这批 page。
 2. **单 build 上限**：page 数、token 数，来自 profile。超限即中止并报告。
 3. **账号预算**：周期性 token / 金额上限，超出后拒绝新 build 而不是静默降质。
-4. **成本可见**：每个 build 记录 token 与费用，可按 source / 时间聚合。
+4. **成本可见**：编译与 review 的 token 与费用分开记账，可按 source / 时间聚合——
+   两者会用不同供应商，混在一起无法判断哪部分在涨。
 
-## 8. API 草案
+## 9. API 草案
 
 ```
 POST /api/knowledge/sources/:id/builds        触发编译（body: mode, force）→ 返回 job/build
@@ -241,27 +432,43 @@ GET  /api/knowledge/builds/:id               build 详情
 GET  /api/knowledge/builds/:id/pages         页面列表（不含正文）
 GET  /api/knowledge/builds/:id/pages/*path   单页正文 + citation + link
 GET  /api/knowledge/builds/:id/diff?from=    与另一个 build 的页面级 diff
-POST /api/knowledge/builds/:id/activate      切换 active 指针
+POST /api/knowledge/builds/:id/activate      切换 active 指针（回滚也走这里）
+GET  /api/knowledge/builds/:id/findings      review findings（不影响激活）
 POST /api/knowledge/sources/:id/lint         发起 lint（异步）
 GET  /api/knowledge/lint/:id                 lint 结果
 POST /api/knowledge/wiki/search              检索 wiki page（namespace knowledge_wiki）
 ```
 
+```
+POST /api/knowledge/signals                  上报 validation 信号（带 resolution_run_id）
+GET  /api/knowledge/proposals                待处置的 proposal
+POST /api/knowledge/proposals/:id/decide     接受或否决
+```
+
 MCP 侧对应新增 `knowledge_wiki_search`、`knowledge_page_get`、`knowledge_build_status`、
-`knowledge_lint_run`。scope 沿用 `knowledge:r` / `knowledge:rw`；触发编译属于 `rw`。
+`knowledge_lint_run`、`knowledge_proposals_list`。scope 沿用 `knowledge:r` / `knowledge:rw`；
+触发编译与处置 proposal 属于 `rw`。
 
-## 9. 待决策（需要产品输入）
+signal 上报刻意做成显式 API 而不是服务端推断：信号来自客户端 agent 的交互过程，
+服务端只能看到检索请求，看不到"用户采纳了还是自己改写了"。但**信号只驱动 proposal**
+（§7.5），所以客户端能上报信号不违反 §2.1 的写入边界。
 
-1. **build 激活是否需要人工审批**？自动激活省事，但一次质量下滑会直接影响所有查询。
-   倾向：profile 可配，默认自动，敏感领域要求审批。
-2. **用哪个模型编译**？质量与成本的直接权衡，且模型是出处的一部分，换模型不会自动
-   重编译历史 build。
-3. **编译触发时机**：同步后自动，还是显式触发？自动更符合"保持更新"，但会把成本
+## 10. 待决策（需要产品输入）
+
+1. **编译与 review 各用哪个模型**？质量与成本的直接权衡。两者必须异构（§7.2），且都是
+   出处的一部分——换模型不会自动重编译历史 build，历史判定也不会重算。
+2. **编译触发时机**：同步后自动，还是显式触发？自动更符合"保持更新"，但会把成本
    与 raw 提交频率绑死。
-4. **保留多少历史 build**？全部保留会持续增长；按数量或时间窗淘汰要考虑它是客户数据。
-5. **query 回填 proposal 的审批人**是谁。
+3. **保留多少历史 build**？全部保留会持续增长；按数量或时间窗淘汰要考虑它是客户数据。
+   注意 build 是回滚的依据（§7.3 的滞后性意味着问题可能几周后才发现），淘汰窗口不能
+   短于 validation 信号的显形周期。
+4. **proposal 的处置人**是谁。proposal 不自动生效（§7.5），那么由谁批、在哪批、
+   多久不处理就过期。这条同时覆盖 query 回填与 memory 晋升候选。
 
-## 10. 验收标准
+已决（不再是待决策项）：**build 激活策略**——通过 check 后自动激活，不设人工审批门，
+理由见 §2.3，替代方案见 §7。
+
+## 11. 验收标准
 
 用已推送的 `claw-works/agentmate-demo-wiki`（commit `f7bc777`）验证，其中已经埋了
 两个刻意的检验点：
@@ -282,19 +489,41 @@ MCP 侧对应新增 `knowledge_wiki_search`、`knowledge_page_get`、`knowledge_
 - 编译中途杀掉 worker，job 租约超时后可被重新领取且不产生半成品 build；
 - wiki page 的中文检索走双通路（融合分突破单通路上限 0.5）。
 
-## 11. 实施顺序
+质量三层各自的验收：
+
+- **check 是真门禁**：人为构造一个 citation 指向不存在 document 的 build，必须 `failed`
+  且不产生任何可见 page；page 数从 30 骤降到 3 的 build 必须被阈值拦下。
+- **review 不阻塞**：`review_status = flagged` 的 build 仍能激活，且 findings 可查。
+- **review 是异构的**：`reviewer_model` 与 `model` 不同供应商，两者都记在 build 上。
+- **回滚可用**：激活旧 build 后读路径立即回到旧内容，新 build 保留可查。
+- **归因可用**：一条负向信号能回溯到具体 build / page / citation；缺 `resolution_run_id`
+  的信号被明确标记为不可归因，而不是静默计入统计。
+- **proposal 不 mutate**：proposal 生成后，在被处置前 wiki 内容与 active 指针零变化。
+
+## 12. 实施顺序
 
 ```
 K3.1  profile 版本化 + build/page/citation/link 数据模型 + 全量编译（同步，小语料）
-K3.2  异步 job（租约 + 心跳 + 幂等 + 成本记账）
-K3.3  增量编译（raw diff → 影响面 → 复用）
-K3.4  index / log 生成
-K3.5  wiki page 进检索（新 namespace）+ 两级 query
-K3.6  lint
-K3.7  query 回填 proposal
+K3.2  check（机械不变量，唯一门禁）+ 自动激活 + build diff/回滚
+K3.3  异步 job（租约 + 心跳 + 幂等 + 成本记账）
+K3.4  增量编译（raw diff → 影响面 → 复用）
+K3.5  index / log 生成
+K3.6  wiki page 进检索（新 namespace）+ 两级 query
+K3.7  lint
+K3.8  review（异构模型忠实性审阅，只标记）
+K3.9  validation 信号上报 + 归因 + proposal 生成与处置
 ```
 
-K3.1–K3.2 之后就有可用的东西；K3.5 之后 agent 才真正受益。lint 排在检索之后，
+K3.2 提到很前面是刻意的：**自动激活必须与 check 同时落地**。先有自动激活而没有机械门禁，
+等于无条件接受一切编译输出；而 diff/回滚是这个决定的安全网，不能推后。
+
+K3.1–K3.3 之后就有可用的东西；K3.6 之后 agent 才真正受益。lint 排在检索之后，
 因为它的价值依赖 wiki 已经在被使用。
 
-K4（Skill-driven discovery）依赖 K3.5 就位——discovery 要选的是 wiki build，不是 raw chunk。
+review（K3.8）排在 lint 之后：它成本高、不阻塞、且只有在有真实使用后才知道该重点审什么。
+
+K3.9 依赖 K4 的 KnowledgeResolutionRun 与 M1 的 session/skill 关联——没有归因锚点的信号
+无法行动（§7.4）。因此 **K3.9 实际上排在 K4 与 M1 之后**，本文档列出它是为了说明闭环
+的终点，不代表它能在 K3 阶段独立完成。
+
+K4（Skill-driven discovery）依赖 K3.6 就位——discovery 要选的是 wiki build，不是 raw chunk。
