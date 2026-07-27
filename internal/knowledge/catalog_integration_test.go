@@ -374,3 +374,107 @@ func assertKnowledgeJSONSafe(t *testing.T, value any) {
 		}
 	}
 }
+
+// Domain is derived from the package directory layout and must reach the
+// catalog (grouping) and search (filtering) paths. Two collections share the
+// leaf name "retrieval" under different domains, which is exactly the case
+// that used to collide on the unique (account_id, name) constraint.
+func TestKnowledgeDomainGroupingAndSearchFilter(t *testing.T) {
+	ctx := context.Background()
+	service, owner, cleanup := newKnowledgeTestService(t, ctx, false)
+	defer cleanup()
+
+	create := func(packagePath string) *KnowledgeSource {
+		t.Helper()
+		source, err := service.CreateSource(ctx, owner, CreateKnowledgeSourceRequest{
+			Type:          "local",
+			RepositoryURL: "file:///wiki",
+			PackagePath:   packagePath,
+		})
+		if err != nil {
+			t.Fatalf("create source %s: %v", packagePath, err)
+		}
+		return source
+	}
+
+	platform := create("platform/retrieval")
+	product := create("product/retrieval")
+	flat := create("standalone")
+
+	if platform.Domain != "platform" || product.Domain != "product" {
+		t.Fatalf("domains = %q / %q", platform.Domain, product.Domain)
+	}
+	if flat.Domain != "" {
+		t.Fatalf("flat package should have no domain, got %q", flat.Domain)
+	}
+	if platform.Name == product.Name {
+		t.Fatalf("same leaf name under different domains collided: %q", platform.Name)
+	}
+	if platform.Name != "platform-retrieval" || product.Name != "product-retrieval" {
+		t.Fatalf("names = %q / %q", platform.Name, product.Name)
+	}
+
+	for _, source := range []*KnowledgeSource{platform, product, flat} {
+		if _, err := service.SubmitSnapshot(ctx, owner, source.ID, linkedSnapshot()); err != nil {
+			t.Fatalf("snapshot %s: %v", source.Domain, err)
+		}
+	}
+	if _, err := service.IndexActiveRevisions(ctx, owner, ""); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+
+	// ── Catalog reports the domain roster; the flat package is unclassified ──
+	catalog, err := service.ListCatalog(ctx, owner.Account(), KnowledgeCatalogListParams{Limit: 20})
+	if err != nil {
+		t.Fatalf("catalog: %v", err)
+	}
+	if catalog.Total != 3 {
+		t.Fatalf("catalog total = %d, want 3", catalog.Total)
+	}
+	counts := map[string]int{}
+	for _, item := range catalog.Domains {
+		counts[item.Domain] = item.CollectionCount
+	}
+	if counts["platform"] != 1 || counts["product"] != 1 {
+		t.Fatalf("domain counts = %#v", catalog.Domains)
+	}
+	if _, ok := counts[""]; ok {
+		t.Fatalf("unclassified source must not appear as a domain: %#v", catalog.Domains)
+	}
+
+	// ── Catalog filters to one domain ──
+	filtered, err := service.ListCatalog(ctx, owner.Account(), KnowledgeCatalogListParams{Domain: "platform", Limit: 20})
+	if err != nil {
+		t.Fatalf("catalog filtered: %v", err)
+	}
+	if filtered.Total != 1 || len(filtered.Items) != 1 || filtered.Items[0].Domain != "platform" {
+		t.Fatalf("filtered catalog = %#v", filtered)
+	}
+
+	// ── Search restricted to a domain only returns that domain's sources ──
+	hits, err := service.Search(ctx, owner, SearchKnowledgeRequest{Query: "Zebra installation", Domain: "platform", TopK: 10})
+	if err != nil {
+		t.Fatalf("domain search: %v", err)
+	}
+	if hits.Total == 0 {
+		t.Fatalf("domain search returned no hits")
+	}
+	for _, hit := range hits.Items {
+		if hit.SourceID != platform.ID {
+			t.Fatalf("hit from outside domain: %#v", hit)
+		}
+	}
+
+	// ── Domain + source_ids intersect (narrow), never widen ──
+	if _, err := service.Search(ctx, owner, SearchKnowledgeRequest{
+		Query:     "Zebra installation",
+		Domain:    "platform",
+		SourceIDs: []string{product.ID},
+	}); err == nil {
+		t.Fatal("expected error when source_ids fall outside the domain")
+	}
+
+	if _, err := service.Search(ctx, owner, SearchKnowledgeRequest{Query: "Zebra", Domain: "nope"}); err == nil {
+		t.Fatal("expected error for unknown domain")
+	}
+}

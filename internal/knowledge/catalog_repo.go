@@ -12,6 +12,7 @@ import (
 type catalogRecord struct {
 	SourceID         string
 	Name             string
+	Domain           string
 	Type             string
 	ActiveRevisionID string
 	PackageHash      string
@@ -25,7 +26,8 @@ type catalogRecord struct {
 const catalogFilterClause = `
   AND ($2 = '' OR lower(source.name) LIKE '%' || $2 || '%'
        OR lower(COALESCE(revision.manifest->>'description', '')) LIKE '%' || $2 || '%'
-       OR lower(COALESCE(revision.manifest->>'name', '')) LIKE '%' || $2 || '%')`
+       OR lower(COALESCE(revision.manifest->>'name', '')) LIKE '%' || $2 || '%')
+  AND ($3 = '' OR source.domain = $3)`
 
 // ListCatalog returns K0 collection cards for sources that have an active
 // ingested revision, in a stable name order. Chunk counts come from the
@@ -33,7 +35,7 @@ const catalogFilterClause = `
 func (r *Repo) ListCatalog(ctx context.Context, accountID string, params KnowledgeCatalogListParams) ([]catalogRecord, error) {
 	query := strings.ToLower(strings.TrimSpace(params.Query))
 	rows, err := r.pool.Query(ctx,
-		`SELECT source.id, source.name, source.type, revision.id, revision.package_hash, revision.manifest,
+		`SELECT source.id, source.name, source.domain, source.type, revision.id, revision.package_hash, revision.manifest,
 		        (SELECT count(*) FROM knowledge_documents AS document
 		          WHERE document.account_id = source.account_id AND document.revision_id = revision.id) AS document_count,
 		        COALESCE(chunk_stats.indexed, 0), COALESCE(chunk_stats.failed, 0), COALESCE(chunk_stats.pending, 0)
@@ -52,9 +54,9 @@ func (r *Repo) ListCatalog(ctx context.Context, accountID string, params Knowled
 		 ) AS chunk_stats ON true
 		 WHERE source.account_id = $1
 		   AND source.active_revision_id IS NOT NULL`+catalogFilterClause+`
-		 ORDER BY lower(source.name), source.name, source.id
-		 LIMIT $3 OFFSET $4`,
-		accountID, query, params.Limit, params.Offset,
+		 ORDER BY source.domain, lower(source.name), source.name, source.id
+		 LIMIT $4 OFFSET $5`,
+		accountID, query, params.Domain, params.Limit, params.Offset,
 	)
 	if err != nil {
 		return nil, err
@@ -66,6 +68,7 @@ func (r *Repo) ListCatalog(ctx context.Context, accountID string, params Knowled
 		if err := rows.Scan(
 			&record.SourceID,
 			&record.Name,
+			&record.Domain,
 			&record.Type,
 			&record.ActiveRevisionID,
 			&record.PackageHash,
@@ -82,7 +85,7 @@ func (r *Repo) ListCatalog(ctx context.Context, accountID string, params Knowled
 	return records, rows.Err()
 }
 
-func (r *Repo) CountCatalog(ctx context.Context, accountID, query string) (int, error) {
+func (r *Repo) CountCatalog(ctx context.Context, accountID, query, domain string) (int, error) {
 	query = strings.ToLower(strings.TrimSpace(query))
 	var total int
 	err := r.pool.QueryRow(ctx,
@@ -92,9 +95,38 @@ func (r *Repo) CountCatalog(ctx context.Context, accountID, query string) (int, 
 		   ON revision.id = source.active_revision_id AND revision.account_id = source.account_id
 		 WHERE source.account_id = $1
 		   AND source.active_revision_id IS NOT NULL`+catalogFilterClause,
-		accountID, query,
+		accountID, query, domain,
 	).Scan(&total)
 	return total, err
+}
+
+// ListCatalogDomains returns the domains present in an account's catalog with
+// their collection counts. Unclassified sources (flat package paths) are
+// omitted rather than grouped under an empty domain.
+func (r *Repo) ListCatalogDomains(ctx context.Context, accountID string) ([]KnowledgeDomainCount, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT source.domain, count(*)
+		 FROM knowledge_sources AS source
+		 WHERE source.account_id = $1
+		   AND source.active_revision_id IS NOT NULL
+		   AND source.domain <> ''
+		 GROUP BY source.domain
+		 ORDER BY source.domain`,
+		accountID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	domains := make([]KnowledgeDomainCount, 0)
+	for rows.Next() {
+		var item KnowledgeDomainCount
+		if err := rows.Scan(&item.Domain, &item.CollectionCount); err != nil {
+			return nil, err
+		}
+		domains = append(domains, item)
+	}
+	return domains, rows.Err()
 }
 
 // ListIndexableSources returns sources that carry an active revision,
@@ -123,4 +155,34 @@ func (r *Repo) ListIndexableSources(ctx context.Context, accountID, sourceID str
 		items = append(items, source)
 	}
 	return items, rows.Err()
+}
+
+// ListSourceIDsByDomain returns the account's source IDs owned by one domain
+// that carry an active revision. Used to resolve a domain-scoped search into
+// the existing source_ids filter, which already enforces ownership.
+func (r *Repo) ListSourceIDsByDomain(ctx context.Context, accountID, domain string) ([]string, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT id
+		 FROM knowledge_sources
+		 WHERE account_id = $1
+		   AND domain = $2
+		   AND domain <> ''
+		   AND active_revision_id IS NOT NULL
+		   AND status <> 'disabled'
+		 ORDER BY lower(name), name, id`,
+		accountID, strings.TrimSpace(domain),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }

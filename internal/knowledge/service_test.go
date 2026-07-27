@@ -326,6 +326,27 @@ func TestNormalizeSourceRequest(t *testing.T) {
 			wantError: "name must be 160 characters or fewer",
 		},
 		{
+			// knowledge_sources is unique per (account_id, name), so a
+			// basename-derived name let two domains silently overwrite each
+			// other's source.
+			name:    "domain qualified path keeps domain in name",
+			request: CreateKnowledgeSourceRequest{Type: "git", RepositoryURL: "https://github.com/acme/wiki.git", PackagePath: "platform/retrieval"},
+			check: func(t *testing.T, normalized CreateKnowledgeSourceRequest) {
+				if normalized.Name != "platform-retrieval" {
+					t.Fatalf("Name = %q, want platform-retrieval", normalized.Name)
+				}
+			},
+		},
+		{
+			name:    "same leaf under another domain gets a distinct name",
+			request: CreateKnowledgeSourceRequest{Type: "git", RepositoryURL: "https://github.com/acme/wiki.git", PackagePath: "product/retrieval"},
+			check: func(t *testing.T, normalized CreateKnowledgeSourceRequest) {
+				if normalized.Name != "product-retrieval" {
+					t.Fatalf("Name = %q, want product-retrieval", normalized.Name)
+				}
+			},
+		},
+		{
 			name:      "bad status",
 			request:   CreateKnowledgeSourceRequest{Type: "local", RepositoryURL: "file:///x", Status: "paused"},
 			wantError: "status must be active, disabled, or error",

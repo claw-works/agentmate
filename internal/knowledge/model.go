@@ -14,6 +14,7 @@ type KnowledgeSource struct {
 	Type             string          `json:"type"`
 	RepositoryURL    string          `json:"repository_url"`
 	PackagePath      string          `json:"package_path"`
+	Domain           string          `json:"domain,omitempty"`
 	DefaultRef       string          `json:"default_ref"`
 	SyncMode         string          `json:"sync_mode"`
 	Status           string          `json:"status"`
@@ -67,14 +68,17 @@ type KnowledgeDocumentSummary struct {
 }
 
 type CreateKnowledgeSourceRequest struct {
-	Name          string          `json:"name"`
-	Type          string          `json:"type" binding:"required"`
-	RepositoryURL string          `json:"repository_url" binding:"required"`
-	PackagePath   string          `json:"package_path"`
-	DefaultRef    string          `json:"default_ref"`
-	SyncMode      string          `json:"sync_mode"`
-	Status        string          `json:"status"`
-	Metadata      json.RawMessage `json:"metadata"`
+	Name          string `json:"name"`
+	Type          string `json:"type" binding:"required"`
+	RepositoryURL string `json:"repository_url" binding:"required"`
+	PackagePath   string `json:"package_path"`
+	// Domain is derived from PackagePath, never accepted from the client, so a
+	// request cannot declare a domain that contradicts its package location.
+	Domain     string          `json:"-"`
+	DefaultRef string          `json:"default_ref"`
+	SyncMode   string          `json:"sync_mode"`
+	Status     string          `json:"status"`
+	Metadata   json.RawMessage `json:"metadata"`
 }
 
 type KnowledgeSourceListParams struct {
@@ -179,6 +183,7 @@ type DocumentLinksResponse struct {
 type KnowledgeCatalogItem struct {
 	SourceID         string `json:"source_id"`
 	Name             string `json:"name"`
+	Domain           string `json:"domain,omitempty"`
 	Description      string `json:"description,omitempty"`
 	Profile          string `json:"profile,omitempty"`
 	Language         string `json:"language,omitempty"`
@@ -195,6 +200,7 @@ type KnowledgeCatalogItem struct {
 
 type KnowledgeCatalogListParams struct {
 	Query  string
+	Domain string
 	Limit  int
 	Offset int
 }
@@ -204,6 +210,15 @@ type KnowledgeCatalogListResponse struct {
 	Total  int                    `json:"total"`
 	Limit  int                    `json:"limit"`
 	Offset int                    `json:"offset"`
+	// Domains lists every domain present in the account's catalog with its
+	// collection count, so an agent can narrow to a domain before reading
+	// individual collection cards.
+	Domains []KnowledgeDomainCount `json:"domains,omitempty"`
+}
+
+type KnowledgeDomainCount struct {
+	Domain          string `json:"domain"`
+	CollectionCount int    `json:"collection_count"`
 }
 
 // ─── K2: indexing ───
@@ -237,8 +252,12 @@ type IndexKnowledgeResponse struct {
 // ─── K2: retrieval ───
 
 type SearchKnowledgeRequest struct {
-	Query          string   `json:"query"`
-	TopK           int      `json:"top_k"`
+	Query string `json:"query"`
+	TopK  int    `json:"top_k"`
+	// Domain narrows the search to collections owned by one domain. It is
+	// resolved to the domain's source IDs, so it composes with SourceIDs by
+	// intersection rather than widening the search.
+	Domain         string   `json:"domain"`
 	SourceIDs      []string `json:"source_ids"`
 	IncludeContent bool     `json:"include_content"`
 }

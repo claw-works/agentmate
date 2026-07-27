@@ -53,6 +53,7 @@ type SkillSource struct {
 	Type          string          `json:"type"`
 	RepositoryURL string          `json:"repository_url"`
 	PackagePath   string          `json:"package_path"`
+	Domain        string          `json:"domain,omitempty"`
 	DefaultRef    string          `json:"default_ref"`
 	SyncMode      string          `json:"sync_mode"`
 	Visibility    string          `json:"visibility"`
@@ -122,15 +123,18 @@ type CreateVersionRequest struct {
 }
 
 type CreateSkillSourceRequest struct {
-	Name          string          `json:"name"`
-	Type          string          `json:"type" binding:"required"`
-	RepositoryURL string          `json:"repository_url" binding:"required"`
-	PackagePath   string          `json:"package_path"`
-	DefaultRef    string          `json:"default_ref"`
-	SyncMode      string          `json:"sync_mode"`
-	Visibility    string          `json:"visibility"`
-	Status        string          `json:"status"`
-	Metadata      json.RawMessage `json:"metadata"`
+	Name          string `json:"name"`
+	Type          string `json:"type" binding:"required"`
+	RepositoryURL string `json:"repository_url" binding:"required"`
+	PackagePath   string `json:"package_path"`
+	// Domain is derived from PackagePath, never accepted from the client, so a
+	// request cannot declare a domain that contradicts its package location.
+	Domain     string          `json:"-"`
+	DefaultRef string          `json:"default_ref"`
+	SyncMode   string          `json:"sync_mode"`
+	Visibility string          `json:"visibility"`
+	Status     string          `json:"status"`
+	Metadata   json.RawMessage `json:"metadata"`
 }
 
 type SnapshotFile struct {

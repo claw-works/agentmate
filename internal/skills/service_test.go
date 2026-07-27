@@ -163,3 +163,32 @@ func TestNormalizeSourceRequestRejectsUnsupportedGitProvider(t *testing.T) {
 		t.Fatal("expected unsupported Git provider error")
 	}
 }
+
+// Domain-organised repositories place packages under a domain directory, so the
+// inferred name must keep the domain prefix. Otherwise two domains owning a
+// package with the same leaf name become indistinguishable to operators.
+func TestNormalizeSourceRequestNameKeepsDomainPrefix(t *testing.T) {
+	first, err := normalizeSourceRequest(CreateSkillSourceRequest{
+		Type:          "git",
+		RepositoryURL: "https://github.com/acme/skills.git",
+		PackagePath:   "knowledge-ops/grounded-answer",
+	})
+	if err != nil {
+		t.Fatalf("normalizeSourceRequest error: %v", err)
+	}
+	if first.Name != "knowledge-ops-grounded-answer" {
+		t.Fatalf("Name = %q, want knowledge-ops-grounded-answer", first.Name)
+	}
+
+	second, err := normalizeSourceRequest(CreateSkillSourceRequest{
+		Type:          "git",
+		RepositoryURL: "https://github.com/acme/skills.git",
+		PackagePath:   "release/grounded-answer",
+	})
+	if err != nil {
+		t.Fatalf("normalizeSourceRequest error: %v", err)
+	}
+	if second.Name == first.Name {
+		t.Fatalf("packages under different domains collided on name %q", first.Name)
+	}
+}

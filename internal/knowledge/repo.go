@@ -19,7 +19,7 @@ func NewRepo(pool *pgxpool.Pool) *Repo {
 	return &Repo{pool: pool}
 }
 
-const sourceColumns = `id, account_id, user_id, key_id, name, type, repository_url, package_path, default_ref, sync_mode, status, active_revision_id, metadata, created_at, updated_at`
+const sourceColumns = `id, account_id, user_id, key_id, name, type, repository_url, package_path, domain, default_ref, sync_mode, status, active_revision_id, metadata, created_at, updated_at`
 const revisionColumns = `id, account_id, source_id, revision_key, commit_sha, local_snapshot_id, tree_hash, package_hash, manifest, status, error, created_at`
 const documentSummaryColumns = `id, source_id, revision_id, path, sha256, size_bytes, mime_type, indexable, created_at`
 
@@ -33,8 +33,8 @@ func (r *Repo) UpsertSource(ctx context.Context, owner ownership.Owner, req Crea
 	var source KnowledgeSource
 	err = r.pool.QueryRow(ctx,
 		`INSERT INTO knowledge_sources
-		 (account_id, user_id, key_id, name, type, repository_url, package_path, default_ref, sync_mode, status, metadata)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		 (account_id, user_id, key_id, name, type, repository_url, package_path, domain, default_ref, sync_mode, status, metadata)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		 ON CONFLICT (account_id, name)
 		 DO UPDATE SET
 		   user_id = EXCLUDED.user_id,
@@ -42,13 +42,14 @@ func (r *Repo) UpsertSource(ctx context.Context, owner ownership.Owner, req Crea
 		   type = EXCLUDED.type,
 		   repository_url = EXCLUDED.repository_url,
 		   package_path = EXCLUDED.package_path,
+		   domain = EXCLUDED.domain,
 		   default_ref = EXCLUDED.default_ref,
 		   sync_mode = EXCLUDED.sync_mode,
 		   status = EXCLUDED.status,
 		   metadata = EXCLUDED.metadata,
 		   updated_at = NOW()
 		 RETURNING `+sourceColumns,
-		owner.Account(), nullableString(owner.UserID), owner.KeyID, req.Name, req.Type, req.RepositoryURL, req.PackagePath, req.DefaultRef, req.SyncMode, req.Status, metadata,
+		owner.Account(), nullableString(owner.UserID), owner.KeyID, req.Name, req.Type, req.RepositoryURL, req.PackagePath, req.Domain, req.DefaultRef, req.SyncMode, req.Status, metadata,
 	).Scan(scanSource(&source)...)
 	if err != nil {
 		return nil, err
@@ -638,6 +639,7 @@ func scanSource(source *KnowledgeSource) []any {
 		&source.Type,
 		&source.RepositoryURL,
 		&source.PackagePath,
+		&source.Domain,
 		&source.DefaultRef,
 		&source.SyncMode,
 		&source.Status,

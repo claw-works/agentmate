@@ -14,6 +14,7 @@ import (
 
 	"github.com/wellxie/agentmate/internal/gitfetch"
 	"github.com/wellxie/agentmate/internal/ownership"
+	"github.com/wellxie/agentmate/internal/pkgpath"
 	"github.com/wellxie/agentmate/internal/retrieval"
 )
 
@@ -260,6 +261,9 @@ func normalizeSourceRequest(req CreateKnowledgeSourceRequest) (CreateKnowledgeSo
 	if req.Name == "" {
 		req.Name = inferSourceName(req)
 	}
+	// Derived unconditionally: the package location is the only authority on
+	// which domain owns the source.
+	req.Domain = pkgpath.Domain(req.PackagePath)
 	if utf8.RuneCountInString(req.Name) > maxSourceNameRunes {
 		return req, fmt.Errorf("name must be %d characters or fewer", maxSourceNameRunes)
 	}
@@ -481,7 +485,7 @@ func normalizeSnapshotPath(value string) (string, error) {
 
 func inferSourceName(req CreateKnowledgeSourceRequest) string {
 	if req.PackagePath != "" {
-		return path.Base(req.PackagePath)
+		return pkgpath.SourceName(req.PackagePath)
 	}
 	repository := strings.TrimSuffix(strings.TrimRight(req.RepositoryURL, "/"), ".git")
 	if repository != "" {

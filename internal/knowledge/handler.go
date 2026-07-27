@@ -111,6 +111,7 @@ func (h *Handler) ListCatalog(c *gin.Context) {
 	owner := auth.OwnerFromContext(c)
 	response, listErr := h.svc.ListCatalog(c.Request.Context(), owner.Account(), KnowledgeCatalogListParams{
 		Query:  c.Query("query"),
+		Domain: c.Query("domain"),
 		Limit:  limit,
 		Offset: offset,
 	})

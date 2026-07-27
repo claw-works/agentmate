@@ -118,8 +118,9 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 
 	// knowledge_catalog_list
 	s.AddTool(mcp.NewTool("knowledge_catalog_list",
-		mcp.WithDescription("List K0 knowledge collection cards: sources with an active revision, with manifest metadata (name, description, profile, language, citation_policy), document count, package hash, and index status. Supports name/description filtering."),
+		mcp.WithDescription("List K0 knowledge collection cards: sources with an active revision, with manifest metadata (name, description, profile, language, citation_policy), owning domain, document count, package hash, and index status. The response also lists every domain with its collection count, so a domain can be chosen before reading individual cards."),
 		mcp.WithString("query", mcp.Description("Optional case-insensitive name/description filter")),
+		mcp.WithString("domain", mcp.Description("Optional exact domain filter; domains come from the package directory layout")),
 		mcp.WithNumber("limit", mcp.Description("Page size (default 20, max 100)")),
 		mcp.WithNumber("offset", mcp.Description("Non-negative page offset")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -134,6 +135,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		}
 		response, err := svc.ListCatalog(ctx, owner.Account(), KnowledgeCatalogListParams{
 			Query:  mcpauth.StrArg(args, "query"),
+			Domain: mcpauth.StrArg(args, "domain"),
 			Limit:  limit,
 			Offset: offset,
 		})
@@ -148,6 +150,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		mcp.WithDescription("Hybrid lexical + semantic search over indexed knowledge chunks. Each hit carries document/source/revision provenance, heading path, score, snippet, and 1-hop link neighbors (metadata only). Set include_content to load full chunk bodies."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("Search query")),
 		mcp.WithNumber("top_k", mcp.Description("Max results (default 5, max 20)")),
+		mcp.WithString("domain", mcp.Description("Optional domain to restrict the search; combined with source_ids it narrows further, never widens")),
 		mcp.WithArray("source_ids", mcp.Description("Optional knowledge source IDs to restrict the search (max 16)")),
 		mcp.WithBoolean("include_content", mcp.Description("Include full chunk bodies in hits (default false)")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -159,6 +162,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		response, err := svc.Search(ctx, owner, SearchKnowledgeRequest{
 			Query:          mcpauth.StrArg(args, "query"),
 			TopK:           mcpauth.IntArg(args, "top_k"),
+			Domain:         mcpauth.StrArg(args, "domain"),
 			SourceIDs:      mcpauth.StrSliceArg(args, "source_ids"),
 			IncludeContent: mcpauth.BoolArg(args, "include_content"),
 		})

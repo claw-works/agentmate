@@ -38,12 +38,17 @@ func (s *Service) ListCatalog(ctx context.Context, accountID string, params Know
 	if utf8.RuneCountInString(params.Query) > maxCatalogQueryRunes {
 		return nil, fmt.Errorf("query must be at most %d Unicode code points", maxCatalogQueryRunes)
 	}
+	params.Domain = strings.TrimSpace(params.Domain)
 
 	records, err := s.repo.ListCatalog(ctx, accountID, params)
 	if err != nil {
 		return nil, err
 	}
-	total, err := s.repo.CountCatalog(ctx, accountID, params.Query)
+	total, err := s.repo.CountCatalog(ctx, accountID, params.Query, params.Domain)
+	if err != nil {
+		return nil, err
+	}
+	domains, err := s.repo.ListCatalogDomains(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -52,10 +57,11 @@ func (s *Service) ListCatalog(ctx context.Context, accountID string, params Know
 		items = append(items, catalogItemFromRecord(record))
 	}
 	return &KnowledgeCatalogListResponse{
-		Items:  items,
-		Total:  total,
-		Limit:  params.Limit,
-		Offset: params.Offset,
+		Items:   items,
+		Total:   total,
+		Limit:   params.Limit,
+		Offset:  params.Offset,
+		Domains: domains,
 	}, nil
 }
 
@@ -69,6 +75,7 @@ func catalogItemFromRecord(record catalogRecord) KnowledgeCatalogItem {
 	return KnowledgeCatalogItem{
 		SourceID:         record.SourceID,
 		Name:             name,
+		Domain:           record.Domain,
 		Description:      manifest.Description,
 		Profile:          manifest.Profile,
 		Language:         manifest.Language,
@@ -292,6 +299,38 @@ func (s *Service) Search(ctx context.Context, owner ownership.Owner, req SearchK
 	}
 	if len(req.SourceIDs) > maxSearchSourceIDs {
 		return nil, fmt.Errorf("source_ids must contain at most %d entries", maxSearchSourceIDs)
+	}
+	req.Domain = strings.TrimSpace(req.Domain)
+	if req.Domain != "" {
+		domainSourceIDs, err := s.repo.ListSourceIDsByDomain(ctx, owner.Account(), req.Domain)
+		if err != nil {
+			return nil, err
+		}
+		if len(domainSourceIDs) == 0 {
+			return nil, fmt.Errorf("domain not found: %s", req.Domain)
+		}
+		if len(req.SourceIDs) == 0 {
+			if len(domainSourceIDs) > maxSearchSourceIDs {
+				return nil, fmt.Errorf("domain %s spans %d collections; narrow with source_ids (max %d)", req.Domain, len(domainSourceIDs), maxSearchSourceIDs)
+			}
+			req.SourceIDs = domainSourceIDs
+		} else {
+			// Both given: intersect, so domain can only narrow the request.
+			allowed := make(map[string]struct{}, len(domainSourceIDs))
+			for _, id := range domainSourceIDs {
+				allowed[id] = struct{}{}
+			}
+			intersected := make([]string, 0, len(req.SourceIDs))
+			for _, id := range req.SourceIDs {
+				if _, ok := allowed[strings.TrimSpace(id)]; ok {
+					intersected = append(intersected, strings.TrimSpace(id))
+				}
+			}
+			if len(intersected) == 0 {
+				return nil, fmt.Errorf("no requested source_ids belong to domain %s", req.Domain)
+			}
+			req.SourceIDs = intersected
+		}
 	}
 	sourceFilter := make(map[string]struct{}, len(req.SourceIDs))
 	for _, id := range req.SourceIDs {

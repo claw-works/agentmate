@@ -34,21 +34,22 @@ func (r *Repo) UpsertSource(ctx context.Context, owner ownership.Owner, req Crea
 	var s SkillSource
 	err = r.pool.QueryRow(ctx,
 		`INSERT INTO skill_sources
-		 (account_id, user_id, key_id, name, type, repository_url, package_path, default_ref, sync_mode, visibility, status, metadata)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		 (account_id, user_id, key_id, name, type, repository_url, package_path, domain, default_ref, sync_mode, visibility, status, metadata)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		 ON CONFLICT (account_id, type, repository_url, package_path)
 		 DO UPDATE SET
 		   user_id = EXCLUDED.user_id,
 		   key_id = EXCLUDED.key_id,
 		   name = EXCLUDED.name,
+		   domain = EXCLUDED.domain,
 		   default_ref = EXCLUDED.default_ref,
 		   sync_mode = EXCLUDED.sync_mode,
 		   visibility = EXCLUDED.visibility,
 		   status = EXCLUDED.status,
 		   metadata = EXCLUDED.metadata,
 		   updated_at = NOW()
-		 RETURNING id, account_id, user_id, key_id, name, type, repository_url, package_path, default_ref, sync_mode, visibility, status, metadata, created_at, updated_at`,
-		owner.Account(), owner.UserID, owner.KeyID, req.Name, req.Type, req.RepositoryURL, req.PackagePath, req.DefaultRef, req.SyncMode, req.Visibility, req.Status, metadata,
+		 RETURNING `+sourceColumns,
+		owner.Account(), owner.UserID, owner.KeyID, req.Name, req.Type, req.RepositoryURL, req.PackagePath, req.Domain, req.DefaultRef, req.SyncMode, req.Visibility, req.Status, metadata,
 	).Scan(scanSource(&s)...)
 	return &s, err
 }
@@ -59,7 +60,7 @@ func (r *Repo) ListSources(ctx context.Context, accountID string, params SkillSo
 		limit = 20
 	}
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, account_id, user_id, key_id, name, type, repository_url, package_path, default_ref, sync_mode, visibility, status, metadata, created_at, updated_at
+		`SELECT `+sourceColumns+`
 		 FROM skill_sources
 		 WHERE account_id = $1
 		   AND ($2 = '' OR type = $2)
@@ -86,7 +87,7 @@ func (r *Repo) ListSources(ctx context.Context, accountID string, params SkillSo
 func (r *Repo) GetSource(ctx context.Context, accountID, id string) (*SkillSource, error) {
 	var s SkillSource
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, account_id, user_id, key_id, name, type, repository_url, package_path, default_ref, sync_mode, visibility, status, metadata, created_at, updated_at
+		`SELECT `+sourceColumns+`
 		 FROM skill_sources
 		 WHERE id = $1 AND account_id = $2`,
 		id, accountID,
@@ -109,7 +110,7 @@ func (r *Repo) UpdateSourceSyncState(ctx context.Context, accountID, sourceID, s
 		     metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('git_sync', $4::jsonb),
 		     updated_at = NOW()
 		 WHERE id = $1 AND account_id = $2
-		 RETURNING id, account_id, user_id, key_id, name, type, repository_url, package_path, default_ref, sync_mode, visibility, status, metadata, created_at, updated_at`,
+		 RETURNING `+sourceColumns,
 		sourceID, accountID, status, string(stateJSON),
 	).Scan(scanSource(&source)...)
 	if err != nil {
@@ -548,7 +549,7 @@ func updateSourceActiveTx(ctx context.Context, tx pgx.Tx, accountID, sourceID st
 			`UPDATE skill_sources
 			 SET status = 'active', updated_at = NOW()
 			 WHERE id = $1 AND account_id = $2
-			 RETURNING id, account_id, user_id, key_id, name, type, repository_url, package_path, default_ref, sync_mode, visibility, status, metadata, created_at, updated_at`,
+			 RETURNING `+sourceColumns,
 			sourceID, accountID,
 		).Scan(scanSource(&source)...)
 		if err != nil {
@@ -567,7 +568,7 @@ func updateSourceActiveTx(ctx context.Context, tx pgx.Tx, accountID, sourceID st
 		     metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('git_sync', $3::jsonb),
 		     updated_at = NOW()
 		 WHERE id = $1 AND account_id = $2
-		 RETURNING id, account_id, user_id, key_id, name, type, repository_url, package_path, default_ref, sync_mode, visibility, status, metadata, created_at, updated_at`,
+		 RETURNING `+sourceColumns,
 		sourceID, accountID, string(stateJSON),
 	).Scan(scanSource(&source)...)
 	if err != nil {
@@ -760,6 +761,8 @@ func sourceMetadata(raw json.RawMessage) ([]byte, error) {
 	return []byte(raw), nil
 }
 
+const sourceColumns = `id, account_id, user_id, key_id, name, type, repository_url, package_path, domain, default_ref, sync_mode, visibility, status, metadata, created_at, updated_at`
+
 func scanSource(s *SkillSource) []any {
 	return []any{
 		&s.ID,
@@ -770,6 +773,7 @@ func scanSource(s *SkillSource) []any {
 		&s.Type,
 		&s.RepositoryURL,
 		&s.PackagePath,
+		&s.Domain,
 		&s.DefaultRef,
 		&s.SyncMode,
 		&s.Visibility,

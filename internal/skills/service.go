@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/wellxie/agentmate/internal/ownership"
+	"github.com/wellxie/agentmate/internal/pkgpath"
 	"github.com/wellxie/agentmate/internal/retrieval"
 )
 
@@ -526,6 +527,9 @@ func normalizeSourceRequest(req CreateSkillSourceRequest) (CreateSkillSourceRequ
 	if req.Name == "" {
 		req.Name = inferSourceName(req)
 	}
+	// Derived unconditionally: the package location is the only authority on
+	// which domain owns the source.
+	req.Domain = pkgpath.Domain(req.PackagePath)
 	return req, nil
 }
 
@@ -774,7 +778,7 @@ func normalizeSnapshotPath(value string) (string, error) {
 
 func inferSourceName(req CreateSkillSourceRequest) string {
 	if req.PackagePath != "" {
-		return path.Base(req.PackagePath)
+		return pkgpath.SourceName(req.PackagePath)
 	}
 	repository := strings.TrimSuffix(strings.TrimRight(req.RepositoryURL, "/"), ".git")
 	if repository != "" {
