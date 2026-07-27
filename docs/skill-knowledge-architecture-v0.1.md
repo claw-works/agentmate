@@ -375,6 +375,9 @@ MCP /mcp/knowledge
 
 ### K3：Knowledge compiler / persistent wiki
 
+详细设计见 `knowledge-wiki-compiler-k3-v0.1.md`（含平台侧编译决策、不可重现生成物的
+建模约束、异步 job 与成本控制、验收标准与实施顺序）。要点清单：
+
 - KnowledgeProfileVersion；
 - candidate KnowledgeBuildRevision；
 - typed page/link/citation graph（`references/contradicts/supersedes/elaborates/mentions_entity`，见 §14.5）；

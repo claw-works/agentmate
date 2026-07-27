@@ -24,7 +24,36 @@
 - [x] Domain 建模（migration `000022`）：领域从 `package_path` 首段推导，修复了 basename 推名导致不同领域下同名 package 静默覆盖的缺陷。
 - [ ] 升级到 `000023` 后需执行一次 `POST /api/admin/retrieval/lexical/rebuild`；此前写入的行投影为空，对 lexical 不可见。该操作不重新 embedding。
 
+## 2026-07-27 领域目录改造后的真实验证
+
+demo 仓库已改为 **领域 / 主题两级**并重推：
+
+- `claw-works/agentmate-demo-skills`（commit `679c020`）：`knowledge-ops/grounded-answer`、`knowledge-ops/kb-lint`（新增，对应 wiki 的 lint 操作）、`release/release-notes`。
+- `claw-works/agentmate-demo-wiki`（commit `f7bc777`）：`platform/registry`、`platform/retrieval`、`product/support`，各含 `KNOWLEDGE.yaml` + `raw/`。**仓库里只有 raw sources**——既然选了平台侧编译，wiki 层就是平台产物，不进 git。`claw-works/agentmate-demo-knowledgebases` 已可删除，其遗留 source 已从本地库清掉。
+
+验证结果（本地 Docker + 真实 GitHub）：
+
+- [x] domain 推导与 name 拼接：`platform/registry` → `domain=platform` / `name=platform-registry`，`knowledge-ops/grounded-answer` → `domain=knowledge-ops`，扁平路径 domain 为空。
+- [x] catalog 分组：`domains=[{platform,2},{product,1}]`；`?domain=platform` 只返回 2 个 collection。
+- [x] 检索：3 个中文长句查询与 1 个标识符查询均 top-1 精准，融合分 0.99–1.00；`domain=platform` 与 `domain=product` 各自只返回本领域命中。
+- [x] exclude 隔离：`raw/drafts/**` 未进入 documents，草稿里的独特词串在 chunk 正文与 lexical 投影中均为 0 命中。
+- [x] 孤立页面：`platform/registry/raw/domain-layout.md` 出链入链均为 0，可用于验证 lint。
+- [x] skills 检索：`kb-lint` 与 `release-notes` 在各自查询上 top-1。
+- [x] 最终状态：3 个 KB source / 15 文档 / 25 链接 / 73 chunk 全部 indexed，投影 100% 覆盖；`/knowledge` 与 `/skills` 均 200。
+
+本轮暴露并修复的真实缺陷：**source 撞名静默覆盖**。注册按 name upsert，而 name 由 `package_path` 推导，于是扁平路径 `product-support` 与领域路径 `product/support` 推导出同一个 name，第二次注册把第一个 source 改指到了另一个仓库，使其 revision 历史横跨两个互不相关的来源。修复为在 `ON CONFLICT` 子句上加同一 package 判定，冲突时拒绝并报出占用者。
+
+另外观察到的非缺陷现象：
+
+- DashScope embedding 偶发超时（9 个 chunk 首轮失败），重跑索引即补齐。容错按设计生效——失败行保留 `status=failed` 且仍可被 lexical 命中。
+- 索引耗时较长（11 个文档约 110 秒，全部花在 embedding 往返）。用 curl 触发时客户端超时会取消服务端 context 并留下 pending 行，需要设足够的超时或改为后台任务。**这是 K3 需要异步 job 的直接证据。**
+- skills 仍有 3 行 `status=failed`，是 migration `000018` 遗留的 safe fallback 行，属预期。
+
+
 ## 待办：wiki 层（K3）
+
+**详细设计已完成：`knowledge-wiki-compiler-k3-v0.1.md`**（数据模型、四个操作、异步 job、
+成本闸门、API 草案、五项待产品决策、验收标准、K3.1–K3.7 实施顺序）。
 
 方向已定：**目录按领域组织（领域优先，每个领域一个 package，自带 `raw/` + `wiki/` + `log.md`），wiki 由平台侧编译**。平台侧编译的理由是 agent 运行在客户端、不可控，不能让它写事实源。
 
