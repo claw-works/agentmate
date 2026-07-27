@@ -3,6 +3,7 @@ package knowledge
 import (
 	"context"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -280,5 +281,79 @@ func TestKnowledgeIngestFailureRecordsSourceError(t *testing.T) {
 	}
 	if recovered.Source.Status != "active" {
 		t.Fatalf("recovered status = %q, want active", recovered.Source.Status)
+	}
+}
+
+// Registration upserts by name and names are derived from package_path, so two
+// different packages can resolve to the same name. Before the conflict guard the
+// second registration silently repointed the first source at another repository,
+// leaving one source whose revision history spanned two unrelated origins.
+func TestCreateSourceRejectsNameCollisionFromDifferentPackage(t *testing.T) {
+	ctx := context.Background()
+	pool := integrationPool(t, ctx)
+	owner, cleanup := createKnowledgeIntegrationOwner(t, ctx, pool, "name-collision")
+	defer cleanup()
+	service := NewService(NewRepo(pool))
+
+	flat, err := service.CreateSource(ctx, owner, CreateKnowledgeSourceRequest{
+		Type:          "git",
+		RepositoryURL: "https://github.com/acme/old-kb",
+		PackagePath:   "product-support",
+	})
+	if err != nil {
+		t.Fatalf("create flat source: %v", err)
+	}
+	if flat.Name != "product-support" || flat.Domain != "" {
+		t.Fatalf("flat source = name %q domain %q", flat.Name, flat.Domain)
+	}
+
+	// "product/support" derives the same name but is a different package.
+	_, err = service.CreateSource(ctx, owner, CreateKnowledgeSourceRequest{
+		Type:          "git",
+		RepositoryURL: "https://github.com/acme/new-wiki",
+		PackagePath:   "product/support",
+	})
+	if err == nil {
+		t.Fatal("expected the colliding registration to be rejected")
+	}
+	if !strings.Contains(err.Error(), "already used by a different package") {
+		t.Fatalf("error = %v", err)
+	}
+
+	// The original source must be untouched.
+	reloaded, err := service.GetSource(ctx, owner.Account(), flat.ID)
+	if err != nil {
+		t.Fatalf("reload source: %v", err)
+	}
+	if reloaded.RepositoryURL != "https://github.com/acme/old-kb" || reloaded.PackagePath != "product-support" {
+		t.Fatalf("original source was modified: %#v", reloaded)
+	}
+
+	// Re-registering the same package must still upsert.
+	again, err := service.CreateSource(ctx, owner, CreateKnowledgeSourceRequest{
+		Type:          "git",
+		RepositoryURL: "https://github.com/acme/old-kb",
+		PackagePath:   "product-support",
+		DefaultRef:    "release",
+	})
+	if err != nil {
+		t.Fatalf("re-register same package: %v", err)
+	}
+	if again.ID != flat.ID || again.DefaultRef != "release" {
+		t.Fatalf("expected in-place upsert, got %#v", again)
+	}
+
+	// An explicit distinct name lets both packages coexist.
+	explicit, err := service.CreateSource(ctx, owner, CreateKnowledgeSourceRequest{
+		Name:          "product-support-wiki",
+		Type:          "git",
+		RepositoryURL: "https://github.com/acme/new-wiki",
+		PackagePath:   "product/support",
+	})
+	if err != nil {
+		t.Fatalf("create with explicit name: %v", err)
+	}
+	if explicit.Domain != "product" {
+		t.Fatalf("explicit source domain = %q, want product", explicit.Domain)
 	}
 }

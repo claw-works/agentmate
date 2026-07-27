@@ -48,8 +48,46 @@ func (r *Repo) UpsertSource(ctx context.Context, owner ownership.Owner, req Crea
 		   status = EXCLUDED.status,
 		   metadata = EXCLUDED.metadata,
 		   updated_at = NOW()
+		 -- Only update when this really is the same package. Registration
+		 -- upserts by name, and names are derived from package_path, so two
+		 -- different packages can resolve to the same name (for example the
+		 -- flat path "product-support" and the domain-qualified path
+		 -- "product/support"). Without this guard the second registration
+		 -- silently repointed the first one's source at a different repository,
+		 -- leaving its revision history spanning two unrelated origins. The
+		 -- guard lives in the conflict clause rather than a prior SELECT so the
+		 -- check cannot race with a concurrent registration.
+		 WHERE knowledge_sources.type = EXCLUDED.type
+		   AND knowledge_sources.repository_url = EXCLUDED.repository_url
+		   AND knowledge_sources.package_path = EXCLUDED.package_path
 		 RETURNING `+sourceColumns,
 		owner.Account(), nullableString(owner.UserID), owner.KeyID, req.Name, req.Type, req.RepositoryURL, req.PackagePath, req.Domain, req.DefaultRef, req.SyncMode, req.Status, metadata,
+	).Scan(scanSource(&source)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The name exists but points elsewhere: report what occupies it so the
+		// caller can either fix the path or register under an explicit name.
+		existing, lookupErr := r.GetSourceByName(ctx, owner.Account(), req.Name)
+		if lookupErr != nil {
+			return nil, fmt.Errorf("source name %q is already used by a different package", req.Name)
+		}
+		return nil, fmt.Errorf(
+			"source name %q is already used by a different package (%s %s path %q); register with an explicit distinct name",
+			req.Name, existing.Type, existing.RepositoryURL, existing.PackagePath)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &source, nil
+}
+
+// GetSourceByName resolves one account-scoped source by its unique name.
+func (r *Repo) GetSourceByName(ctx context.Context, accountID, name string) (*KnowledgeSource, error) {
+	var source KnowledgeSource
+	err := r.pool.QueryRow(ctx,
+		`SELECT `+sourceColumns+`
+		 FROM knowledge_sources
+		 WHERE account_id = $1 AND name = $2`,
+		accountID, name,
 	).Scan(scanSource(&source)...)
 	if err != nil {
 		return nil, err

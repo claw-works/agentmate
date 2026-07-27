@@ -269,6 +269,11 @@ because knowledge sources are unique per `(account_id, name)`, so a
 basename-derived name would let same-named packages under different domains
 overwrite each other. Domain is never accepted from the client.
 
+Registration upserts by name, so a second registration whose `package_path`
+derives the same name but points at a different package is rejected rather than
+silently repointing the existing source. Register such a package under an
+explicit distinct `name`.
+
 - `POST /api/knowledge/sources` — Register or upsert a knowledge source by `name` (`git` or `local`) (scope: `knowledge:rw`)
 - `GET /api/knowledge/sources` — List knowledge sources (scope: `knowledge:r`)
 - `GET /api/knowledge/sources/:id/revisions` — List immutable source revisions (scope: `knowledge:r`)

@@ -565,6 +565,8 @@ Context Pack
 
 Domain 建模（migration `000022`、`internal/pkgpath`）：Skill 与 Knowledge package 按领域组织在仓库目录下（`platform/retrieval`、`product/faq`）。领域从 `package_path` 首段推导并落成 `skill_sources.domain` / `knowledge_sources.domain` 列，规则只在 `internal/pkgpath` 实现一份，两个 registry 共用——否则领域分组在两侧含义不同。约定：单段路径**没有** domain（扁平 package 未按领域组织，把自身名当领域会凭空造出一个分组），未分类记为 `''` 而非 NULL，避免三值逻辑。source name 由完整路径段拼接（`platform/retrieval` → `platform-retrieval`），因为 `knowledge_sources` 唯一键是 `(account_id, name)`，此前用 basename 推导会让不同领域下同名子目录静默互相覆盖。domain 不接受客户端输入，一律由 package 位置推导。`knowledge_catalog_list` 返回 domain 与全账号 domain 清单（含 collection 计数），`knowledge_search` 支持 domain 过滤并与 `source_ids` 取交集（只能收窄，不能放宽）。
 
+Source 注册的撞名保护：注册按 name upsert，而 name 由 `package_path` 推导，因此两个**不同的** package 仍可能推导出同一个 name——例如扁平路径 `product-support` 与领域路径 `product/support`。此前第二次注册会静默把第一个 source 改指到另一个仓库，使该 source 的 revision 历史横跨两个互不相关的来源，审计时无法区分。现在 upsert 的 `ON CONFLICT` 子句带 `WHERE type/repository_url/package_path` 相同的条件：同一个 package 才原地更新，否则拒绝并报出占用该名字的来源，要求显式指定不同的 name。守卫放在 conflict 子句而不是先 SELECT 再判断，是为了不与并发注册竞态。
+
 CJK lexical 检索（migration `000023`、`internal/retrieval/lexical.go`）：PostgreSQL 的 `simple` 配置不对 CJK 分词，整段中文会成为单个 token，因此在此之前**中文查询的 lexical 命中恒为 0**，hybrid 退化为纯 semantic（RRF 融合分上限恒为单通路的 0.5），文档中"embedding 或向量库失败时降级 lexical fallback"对中文语料并不成立。
 
 现采用 bigram 投影修复：`retrieval_documents.lexical_text` 存 title 与 content 的重叠字符 bigram 投影（CJK 连续段切 bigram，ASCII 段保留整词并小写），GIN 索引建在 `to_tsvector('simple', lexical_text)` 上；查询侧由同一个 Go 函数生成 tsquery——CJK bigram 之间 OR，ASCII 整词之间 AND。索引侧与查询侧必须共用这套规则，这是方案的正确性前提，因此规则只在 Go 中实现一份，不在 SQL 里重写。
