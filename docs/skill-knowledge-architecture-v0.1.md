@@ -563,6 +563,8 @@ Context Pack
 
 尚未实现：KnowledgeBuildRevision、KnowledgeProfile、knowledge compiler / persistent wiki、`knowledge_discover` 与 KnowledgeResolutionRun（K3–K5）。
 
+已知限制（2026-07-27 真实语料验证发现）：lexical 通路使用 PostgreSQL `to_tsvector('simple', …)`，该配置不对 CJK 分词，整段中文会成为单个 token，因此**中文查询的 lexical 命中恒为 0**，hybrid 实际退化为纯 semantic（RRF 融合分数上限恒为单通路的 0.5）。这同时意味着"embedding 或向量库失败时降级 lexical fallback"对中文语料不成立。英文/标识符查询不受影响。修复需要 CJK bigram 方案（独立的 lexical 投影列 + GIN 索引 + 查询侧 bigram tsquery + 重建现有行），属于独立增量。
+
 在后续迁移前：
 
 - 现有 Skill package 中 scripts/templates/schemas/tests/examples 继续作为 Skill resources。

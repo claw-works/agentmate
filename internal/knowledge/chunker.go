@@ -37,7 +37,10 @@ type ChunkResult struct {
 // ChunkDocument splits one text document into bounded retrieval chunks.
 // Markdown documents are split by heading hierarchy with a heading path like
 // "Guide > Install > Linux"; oversized sections fall back to paragraph
-// packing and finally to fixed rune windows. Non-Markdown text uses
+// packing and finally to fixed rune windows. A section whose body carries no
+// prose — a parent heading immediately followed by a subheading — is not a
+// chunk of its own: its heading line is prepended to the next section so
+// retrieval never returns a chunk without evidence. Non-Markdown text uses
 // paragraph packing only. Deterministic: same input, same output.
 func ChunkDocument(docPath, mimeType, content string) ChunkResult {
 	var sections []section
@@ -50,10 +53,20 @@ func ChunkDocument(docPath, mimeType, content string) ChunkResult {
 	chunks := make([]DocumentChunk, 0, len(sections))
 	truncated := false
 	sequence := 0
+	// pendingHeadings collects heading-only section bodies so the next chunk
+	// keeps the full heading context without emitting a prose-less chunk.
+	pendingHeadings := ""
 	for _, currentSection := range sections {
-		for _, piece := range splitOversized(currentSection.body) {
+		if !hasProse(currentSection.body) {
+			pendingHeadings += strings.TrimRight(currentSection.body, "\n") + "\n"
+			continue
+		}
+		for pieceIndex, piece := range splitOversized(currentSection.body) {
 			if strings.TrimSpace(piece) == "" {
 				continue
+			}
+			if pieceIndex == 0 && pendingHeadings != "" {
+				piece = pendingHeadings + piece
 			}
 			if sequence >= maxChunksPerDocument {
 				truncated = true
@@ -66,8 +79,25 @@ func ChunkDocument(docPath, mimeType, content string) ChunkResult {
 			})
 			sequence++
 		}
+		pendingHeadings = ""
 	}
 	return ChunkResult{Chunks: chunks, Truncated: truncated}
+}
+
+// hasProse reports whether a section body carries any non-heading, non-blank
+// line. A body consisting only of heading lines has no evidence value.
+func hasProse(body string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if _, _, isHeading := parseATXHeading(trimmed); isHeading {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 type section struct {

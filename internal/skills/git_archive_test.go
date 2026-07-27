@@ -25,7 +25,14 @@ func TestGitProviderClientFetchPackage(t *testing.T) {
 		{name: "repo-root/skills/demo/resources/data.txt", content: "resource"},
 		{name: "repo-root/skills/other/SKILL.md", content: "other"},
 	})
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		// GitHub's tarball endpoint answers HTTP 415 for a strict binary Accept
+		// header, so assert the permissive header the real provider requires.
+		if accept := request.Header.Get("Accept"); accept != "*/*" {
+			writer.WriteHeader(http.StatusUnsupportedMediaType)
+			_, _ = writer.Write([]byte(`{"message":"Unsupported 'Accept' header"}`))
+			return
+		}
 		writer.WriteHeader(http.StatusOK)
 		_, _ = writer.Write(archive)
 	}))
@@ -201,4 +208,52 @@ func buildTestPAXGitArchive(t *testing.T, paxValue string) []byte {
 		t.Fatalf("close gzip: %v", err)
 	}
 	return buffer.Bytes()
+}
+
+// TestExtractGitPackageSkipsPaxGlobalHeader guards against a real GitHub
+// tarball layout: the archive opens with a "pax_global_header" entry carrying
+// no package path. If it is not skipped before the archive root is derived,
+// its name becomes the root and every real entry is rejected as a second root.
+func TestExtractGitPackageSkipsPaxGlobalHeader(t *testing.T) {
+	var buffer bytes.Buffer
+	gzipWriter := gzip.NewWriter(&buffer)
+	tarWriter := tar.NewWriter(gzipWriter)
+
+	if err := tarWriter.WriteHeader(&tar.Header{
+		Name:       "pax_global_header",
+		Typeflag:   tar.TypeXGlobalHeader,
+		PAXRecords: map[string]string{"comment": "0000000000000000000000000000000000000000"},
+	}); err != nil {
+		t.Fatalf("write pax header: %v", err)
+	}
+	for name, content := range map[string]string{
+		"claw-works-demo-abc1234/demo/SKILL.md":            "---\nname: demo\ndescription: Demo\n---\n",
+		"claw-works-demo-abc1234/demo/templates/output.md": "template",
+	} {
+		if err := tarWriter.WriteHeader(&tar.Header{
+			Name:     name,
+			Mode:     0o644,
+			Size:     int64(len(content)),
+			Typeflag: tar.TypeReg,
+		}); err != nil {
+			t.Fatalf("write header: %v", err)
+		}
+		if _, err := tarWriter.Write([]byte(content)); err != nil {
+			t.Fatalf("write content: %v", err)
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatalf("close gzip: %v", err)
+	}
+
+	files, err := extractGitPackage(bytes.NewReader(buffer.Bytes()), "demo", defaultGitArchiveLimits())
+	if err != nil {
+		t.Fatalf("extractGitPackage() error: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("files = %#v, want 2", files)
+	}
 }

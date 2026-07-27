@@ -266,3 +266,65 @@ func TestExtractMarkdownLinksDeterministic(t *testing.T) {
 		t.Fatal("link extraction is not deterministic")
 	}
 }
+
+// TestChunkDocumentSkipsHeadingOnlySections guards a real-corpus defect: a
+// parent heading immediately followed by a subheading produced a chunk whose
+// whole body was the heading line, so retrieval could return a hit with no
+// evidence. The heading context must instead be prepended to the next chunk.
+func TestChunkDocumentSkipsHeadingOnlySections(t *testing.T) {
+	content := "# 故障排查\n\n" +
+		"常见问题见 faq.md。\n\n" +
+		"## 检索问题\n\n" +
+		"### 症状：搜不到\n\n" +
+		"确认已执行索引。\n\n" +
+		"## 空章节\n"
+
+	result := ChunkDocument("raw/troubleshooting.md", "text/markdown", content)
+
+	for _, chunk := range result.Chunks {
+		if !hasProse(chunk.Content) {
+			t.Fatalf("chunk %q has no prose: %q", chunk.Key, chunk.Content)
+		}
+	}
+	if len(result.Chunks) != 2 {
+		t.Fatalf("chunks = %d, want 2: %#v", len(result.Chunks), result.Chunks)
+	}
+
+	// The heading-only "## 检索问题" section must survive as context on the
+	// following chunk, which keeps the more specific heading path.
+	second := result.Chunks[1]
+	if !strings.Contains(second.Content, "## 检索问题") {
+		t.Fatalf("heading context was dropped: %q", second.Content)
+	}
+	if !strings.Contains(second.Content, "确认已执行索引。") {
+		t.Fatalf("prose missing from merged chunk: %q", second.Content)
+	}
+	if second.HeadingPath != "故障排查 > 检索问题 > 症状：搜不到" {
+		t.Fatalf("heading path = %q", second.HeadingPath)
+	}
+
+	// A trailing heading with no prose anywhere after it produces no chunk.
+	for _, chunk := range result.Chunks {
+		if strings.Contains(chunk.Content, "## 空章节") && !hasProse(chunk.Content) {
+			t.Fatalf("trailing empty heading became a chunk: %q", chunk.Content)
+		}
+	}
+}
+
+func TestHasProse(t *testing.T) {
+	for _, testCase := range []struct {
+		body string
+		want bool
+	}{
+		{body: "## Only heading\n\n", want: false},
+		{body: "# A\n## B\n### C\n", want: false},
+		{body: "", want: false},
+		{body: "## Heading\n\ntext\n", want: true},
+		{body: "plain text\n", want: true},
+		{body: "## H\n\n- list item\n", want: true},
+	} {
+		if got := hasProse(testCase.body); got != testCase.want {
+			t.Errorf("hasProse(%q) = %v, want %v", testCase.body, got, testCase.want)
+		}
+	}
+}

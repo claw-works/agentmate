@@ -41,7 +41,10 @@ func (c *Client) FetchPackage(ctx context.Context, revision ResolvedRevision, pa
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Accept", "application/octet-stream")
+	// GitHub's tarball endpoint rejects "application/octet-stream" with HTTP 415
+	// before it can redirect to codeload, so request a permissive Accept and let
+	// the provider choose the archive media type.
+	request.Header.Set("Accept", "*/*")
 	request.Header.Set("User-Agent", "agentmate-registry")
 
 	response, err := c.httpClient.Do(request)
@@ -106,6 +109,14 @@ func ExtractPackage(archive io.Reader, packagePath string, limits ArchiveLimits)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("read Git archive: %w", err)
+		}
+		// Provider archives start with tar metadata entries such as
+		// "pax_global_header". They carry no package path, so they must be
+		// skipped before the archive root is derived — otherwise the metadata
+		// entry name becomes the root and every real entry looks like a second
+		// root directory.
+		if isTarMetadataEntry(header) {
+			continue
 		}
 		entryPath, root, err := normalizeArchiveEntryPath(header.Name)
 		if err != nil {
@@ -301,4 +312,16 @@ func isZeroTarBlock(block []byte) bool {
 		}
 	}
 	return true
+}
+
+// isTarMetadataEntry reports whether a tar header describes archive metadata
+// rather than package content. Git providers emit a leading
+// "pax_global_header" entry, and long paths may be preceded by PAX or GNU
+// extension records; none of them belong to the package tree.
+func isTarMetadataEntry(header *tar.Header) bool {
+	switch header.Typeflag {
+	case tar.TypeXGlobalHeader, tar.TypeXHeader, tar.TypeGNULongName, tar.TypeGNULongLink:
+		return true
+	}
+	return path.Base(header.Name) == "pax_global_header"
 }

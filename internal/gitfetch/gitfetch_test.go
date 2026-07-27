@@ -4,6 +4,10 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -101,6 +105,104 @@ func TestParseRepositoryURL(t *testing.T) {
 	} {
 		if _, err := ParseRepositoryURL(rejected); err == nil {
 			t.Errorf("ParseRepositoryURL(%q) must be rejected", rejected)
+		}
+	}
+}
+
+// TestFetchPackageSendsPermissiveAccept guards the archive download request
+// headers. GitHub's tarball endpoint answers HTTP 415 for a strict binary
+// Accept header before it can redirect to codeload, so a mock that ignores
+// request headers would let a real-world failure pass unnoticed.
+func TestFetchPackageSendsPermissiveAccept(t *testing.T) {
+	archive, err := io.ReadAll(buildArchive(t, map[string]string{
+		"repo-root/kb/KNOWLEDGE.yaml": "name: kb\n",
+		"repo-root/kb/raw/faq.md":     "# FAQ\n",
+	}))
+	if err != nil {
+		t.Fatalf("read archive: %v", err)
+	}
+
+	var gotAccept, gotUserAgent string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		gotAccept = request.Header.Get("Accept")
+		gotUserAgent = request.Header.Get("User-Agent")
+		if gotAccept == "application/octet-stream" {
+			writer.WriteHeader(http.StatusUnsupportedMediaType)
+			_, _ = writer.Write([]byte(`{"message":"Unsupported 'Accept' header"}`))
+			return
+		}
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write(archive)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	files, err := client.FetchPackage(context.Background(),
+		ResolvedRevision{Provider: "github", ArchiveURL: server.URL},
+		"kb", DefaultArchiveLimits())
+	if err != nil {
+		t.Fatalf("FetchPackage() error: %v", err)
+	}
+	if gotAccept != "*/*" {
+		t.Fatalf("Accept = %q, want */*", gotAccept)
+	}
+	if gotUserAgent == "" {
+		t.Fatal("User-Agent must be set for provider requests")
+	}
+	if len(files) != 2 {
+		t.Fatalf("files = %#v, want 2", files)
+	}
+}
+
+// TestExtractPackageSkipsPaxGlobalHeader guards against a real GitHub tarball
+// layout: the archive opens with a "pax_global_header" entry that carries no
+// package path. If it is not skipped before the archive root is derived, its
+// name becomes the root and every real entry is rejected as a second root.
+func TestExtractPackageSkipsPaxGlobalHeader(t *testing.T) {
+	var buffer bytes.Buffer
+	gzipWriter := gzip.NewWriter(&buffer)
+	tarWriter := tar.NewWriter(gzipWriter)
+
+	if err := tarWriter.WriteHeader(&tar.Header{
+		Name:       "pax_global_header",
+		Typeflag:   tar.TypeXGlobalHeader,
+		PAXRecords: map[string]string{"comment": "0000000000000000000000000000000000000000"},
+	}); err != nil {
+		t.Fatalf("write pax header: %v", err)
+	}
+	for name, content := range map[string]string{
+		"claw-works-demo-abc1234/kb/KNOWLEDGE.yaml": "name: kb\n",
+		"claw-works-demo-abc1234/kb/raw/faq.md":     "# FAQ\n",
+	} {
+		if err := tarWriter.WriteHeader(&tar.Header{
+			Name:     name,
+			Mode:     0o644,
+			Size:     int64(len(content)),
+			Typeflag: tar.TypeReg,
+		}); err != nil {
+			t.Fatalf("write header: %v", err)
+		}
+		if _, err := tarWriter.Write([]byte(content)); err != nil {
+			t.Fatalf("write content: %v", err)
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatalf("close gzip: %v", err)
+	}
+
+	files, err := ExtractPackage(bytes.NewReader(buffer.Bytes()), "kb", DefaultArchiveLimits())
+	if err != nil {
+		t.Fatalf("ExtractPackage() error: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("files = %#v, want 2", files)
+	}
+	for _, file := range files {
+		if file.Path != "KNOWLEDGE.yaml" && file.Path != "raw/faq.md" {
+			t.Fatalf("unexpected package path %q", file.Path)
 		}
 	}
 }
