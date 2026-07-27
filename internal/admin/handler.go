@@ -7,14 +7,48 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/wellxie/agentmate/internal/retrieval"
 )
 
 type Handler struct {
-	pool *pgxpool.Pool
+	pool          *pgxpool.Pool
+	retrievalRepo *retrieval.Repo
 }
 
-func NewHandler(pool *pgxpool.Pool) *Handler {
-	return &Handler{pool: pool}
+func NewHandler(pool *pgxpool.Pool, retrievalRepo *retrieval.Repo) *Handler {
+	return &Handler{pool: pool, retrievalRepo: retrievalRepo}
+}
+
+// RebuildLexical recomputes the CJK-capable lexical projection of retrieval
+// documents. It is an operational repair path for rows written before the
+// projection existed (or before its rule changed): the projection is derived
+// from stored title and content, so this neither re-embeds anything nor calls
+// Qdrant. Scope it with optional account_id and namespace query parameters.
+func (h *Handler) RebuildLexical(c *gin.Context) {
+	if h.retrievalRepo == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "retrieval repository is not configured"})
+		return
+	}
+	batchSize := 0
+	if raw, present := c.GetQuery("batch_size"); present {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "batch_size must be a positive integer"})
+			return
+		}
+		batchSize = parsed
+	}
+	updated, err := h.retrievalRepo.RebuildLexicalProjections(
+		c.Request.Context(), c.Query("account_id"), c.Query("namespace"), batchSize,
+	)
+	if err != nil {
+		// Report progress alongside the failure: the rebuild is incremental, so
+		// a partial result tells the operator how far it got.
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error(), "updated": updated})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"updated": updated})
 }
 
 func (h *Handler) Stats(c *gin.Context) {

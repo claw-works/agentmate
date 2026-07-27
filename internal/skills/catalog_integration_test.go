@@ -232,22 +232,26 @@ dependencies: []
 		t.Fatalf("delete artifact: %v", err)
 	}
 
+	const fallbackContent = "Skill: catalog-skill\nDescription: safe lexical fallback"
 	var stalePointID string
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO retrieval_documents (
 		   account_id, user_id, namespace, source_type, source_id, chunk_key, title, content, content_hash,
-		   metadata, qdrant_collection, vector_name, embedding_model, embedding_dimension, status, error
+		   metadata, qdrant_collection, vector_name, embedding_model, embedding_dimension, lexical_text, status, error
 		 ) VALUES (
 		   $1, $2, 'skills', 'skill_version', $3, 'active', $3, $4, $5,
 		   jsonb_build_object(
 		     'skill_name', $3::text, 'version', $6::text, 'version_id', $7::text,
 		     'description', 'safe lexical fallback', 'package_hash', $8::text
 		   ),
-		   'agentmate_retrieval', 'semantic', 'test-model', 3, 'failed', 'reindex required'
+		   'agentmate_retrieval', 'semantic', 'test-model', 3, $9, 'failed', 'reindex required'
 		 ) RETURNING qdrant_point_id::text`,
 		owner.Account(), owner.UserID, first.Version.SkillName,
-		"Skill: catalog-skill\nDescription: safe lexical fallback", strings.Repeat("f", 64),
+		fallbackContent, strings.Repeat("f", 64),
 		first.Version.Version, first.Version.ID, first.Version.PackageHash,
+		// Rows written outside the Go write path must carry the same projection,
+		// otherwise they are invisible to the lexical leg.
+		retrieval.LexicalProjection(first.Version.SkillName, fallbackContent),
 	).Scan(&stalePointID); err != nil {
 		t.Fatalf("insert safe failed retrieval document: %v", err)
 	}

@@ -28,8 +28,8 @@ func (r *Repo) UpsertDocument(ctx context.Context, owner ownership.Owner, in Ups
 	err = r.pool.QueryRow(ctx,
 		`INSERT INTO retrieval_documents
 		 (account_id, user_id, key_id, namespace, source_type, source_id, chunk_key, title, content, content_hash, metadata,
-		  qdrant_collection, vector_name, embedding_model, embedding_dimension, status, error, indexed_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'pending', '', NULL)
+		  qdrant_collection, vector_name, embedding_model, embedding_dimension, lexical_text, status, error, indexed_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'pending', '', NULL)
 		 ON CONFLICT (account_id, namespace, source_type, source_id, chunk_key)
 		 DO UPDATE SET
 		   user_id = EXCLUDED.user_id,
@@ -42,6 +42,7 @@ func (r *Repo) UpsertDocument(ctx context.Context, owner ownership.Owner, in Ups
 		   vector_name = EXCLUDED.vector_name,
 		   embedding_model = EXCLUDED.embedding_model,
 		   embedding_dimension = EXCLUDED.embedding_dimension,
+		   lexical_text = EXCLUDED.lexical_text,
 		   status = 'pending',
 		   error = '',
 		   indexed_at = NULL,
@@ -51,6 +52,7 @@ func (r *Repo) UpsertDocument(ctx context.Context, owner ownership.Owner, in Ups
 		   status, error, indexed_at, created_at, updated_at`,
 		owner.Account(), owner.UserID, owner.KeyID, in.Namespace, in.SourceType, in.SourceID, in.ChunkKey, in.Title, in.Content, in.ContentHash,
 		metadata, in.QdrantCollection, in.VectorName, in.EmbeddingModel, in.EmbeddingDimension,
+		LexicalProjection(in.Title, in.Content),
 	).Scan(scanDocument(&d)...)
 	if err != nil {
 		return nil, err
@@ -141,6 +143,14 @@ func (r *Repo) SearchDocumentsTextFiltered(
 	limit int,
 	filters TextSearchFilters,
 ) ([]TextSearchResult, error) {
+	// One shared projection rule drives both sides: the stored lexical_text and
+	// this tsquery. An empty tsquery means the query carried no searchable
+	// token, so the lexical leg contributes nothing rather than matching rows
+	// indiscriminately.
+	tsQuery := LexicalTSQuery(query)
+	if tsQuery == "" {
+		return []TextSearchResult{}, nil
+	}
 	if limit <= 0 || limit > 50 {
 		limit = DefaultTopK
 	}
@@ -153,20 +163,20 @@ func (r *Repo) SearchDocumentsTextFiltered(
 		   metadata, qdrant_collection, qdrant_point_id, vector_name, embedding_model, embedding_dimension,
 		   status, error, indexed_at, created_at, updated_at,
 		   ts_rank_cd(
-		     to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(content, '')),
-		     plainto_tsquery('simple', $3)
+		     to_tsvector('simple', lexical_text),
+		     $3::tsquery
 		   ) AS text_score
 		 FROM retrieval_documents
 		 WHERE account_id = $1
 		   AND namespace = $2
 		   AND status IN ('indexed', 'failed')
-		   AND to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(content, '')) @@ plainto_tsquery('simple', $3)
+		   AND to_tsvector('simple', lexical_text) @@ $3::tsquery
 		   AND ($4 = '' OR source_type = $4)
 		   AND ($5 = '' OR source_id = $5)
 		   AND metadata @> $6::jsonb
 		 ORDER BY text_score DESC, updated_at DESC
 		 LIMIT $7`,
-		accountID, namespace, query, filters.SourceType, filters.SourceID, metadata, limit,
+		accountID, namespace, tsQuery, filters.SourceType, filters.SourceID, metadata, limit,
 	)
 	if err != nil {
 		return nil, err
@@ -336,4 +346,66 @@ func nullableString(s string) any {
 		return nil
 	}
 	return s
+}
+
+// RebuildLexicalProjections recomputes lexical_text from stored title and
+// content. It exists because the projection rule lives in Go, so a SQL
+// migration cannot backfill it, and because the projection is independent of
+// embeddings: repairing it must not re-embed anything or touch Qdrant. An
+// empty accountID or namespace means "all". Rows are processed in id order in
+// bounded batches so a large table cannot hold one long transaction.
+func (r *Repo) RebuildLexicalProjections(ctx context.Context, accountID, namespace string, batchSize int) (int, error) {
+	if batchSize <= 0 || batchSize > 1000 {
+		batchSize = 200
+	}
+	type row struct {
+		id      string
+		title   string
+		content string
+	}
+	updated := 0
+	lastID := "00000000-0000-0000-0000-000000000000"
+	for {
+		rows, err := r.pool.Query(ctx,
+			`SELECT id, title, content
+			 FROM retrieval_documents
+			 WHERE ($1 = '' OR account_id::text = $1)
+			   AND ($2 = '' OR namespace = $2)
+			   AND id > $3::uuid
+			 ORDER BY id
+			 LIMIT $4`,
+			accountID, namespace, lastID, batchSize,
+		)
+		if err != nil {
+			return updated, err
+		}
+		batch := make([]row, 0, batchSize)
+		for rows.Next() {
+			var item row
+			if err := rows.Scan(&item.id, &item.title, &item.content); err != nil {
+				rows.Close()
+				return updated, err
+			}
+			batch = append(batch, item)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return updated, err
+		}
+		if len(batch) == 0 {
+			return updated, nil
+		}
+		for _, item := range batch {
+			if _, err := r.pool.Exec(ctx,
+				`UPDATE retrieval_documents
+				    SET lexical_text = $2
+				  WHERE id = $1`,
+				item.id, LexicalProjection(item.title, item.content),
+			); err != nil {
+				return updated, err
+			}
+			updated++
+			lastID = item.id
+		}
+	}
 }

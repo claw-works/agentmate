@@ -211,7 +211,7 @@ func main() {
 	protected.POST("/knowledge/index", auth.RequireScope("knowledge:rw"), knowledgeHandler.IndexActiveRevisions)
 
 	// Admin
-	adminHandler := admin.NewHandler(pool)
+	adminHandler := admin.NewHandler(pool, retrievalRepo)
 	r.StaticFile("/admin", "./web/admin.html")
 	adminAPI := r.Group("/api/admin", admin.Middleware(authSvc))
 	adminAPI.GET("/stats", adminHandler.Stats)
@@ -219,6 +219,7 @@ func main() {
 	adminAPI.GET("/apikeys", adminHandler.APIKeys)
 	adminAPI.GET("/reports", adminHandler.Reports)
 	adminAPI.GET("/usage", adminHandler.Usage)
+	adminAPI.POST("/retrieval/lexical/rebuild", adminHandler.RebuildLexical)
 
 	// MCP Servers — 每个业务模块独立挂载一个 Streamable HTTP MCP 端点，
 	// 而不是聚合成单个 /mcp（与 skills 保持一致的模式）。
