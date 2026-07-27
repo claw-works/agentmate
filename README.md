@@ -189,6 +189,17 @@ a safe PostgreSQL lexical fallback. Run `POST /api/skills/compile` and then
 `include_content=true` remains compatible by loading the selected L1 instructions from
 PostgreSQL after search; instructions are never stored in the retrieval index.
 
+Lexical retrieval matches a bigram projection (`retrieval_documents.lexical_text`, migration
+`000023`) instead of raw text, because PostgreSQL's `simple` configuration does not segment CJK
+script and would otherwise collapse a whole Chinese sentence into one unmatchable token. CJK runs
+become overlapping character bigrams while ASCII runs stay whole lowercased words, so identifiers
+keep exact matching. Index side and query side share one Go implementation
+(`retrieval.LexicalProjection` / `retrieval.LexicalTSQuery`); that shared rule is the correctness
+condition of the scheme. Rows written outside the Go write path (for example by an earlier
+migration's direct UPDATE) have an empty projection and are invisible to the lexical leg — repair
+them with `POST /api/admin/retrieval/lexical/rebuild`, which recomputes the projection from stored
+title and content without re-embedding anything or calling Qdrant.
+
 Phase 4 quality runs are synchronous, offline, and side-effect free except for their own audit row.
 Each run reads its version, optional same-skill baseline, compiled artifacts, files, cutoff, and latest
 version-bound logs from one read-only repeatable-read snapshot. `skill_log_add` accepts an optional immutable `skill_version_id`; when present it must belong to the
@@ -249,6 +260,15 @@ hybrid retrieval. It does **not** include the knowledge compiler,
 KnowledgeProfileVersion, or KnowledgeResolutionRun (planned as later
 milestones in `docs/skill-knowledge-architecture-v0.1.md`).
 
+Skill and knowledge packages can be organised by domain inside a repository
+(`platform/retrieval`, `product/faq`). The owning domain is derived from the
+first `package_path` segment and stored on the source; a single-segment path has
+no domain, since a flat package is not organised by domain. The source name is
+derived from every path segment (`platform/retrieval` → `platform-retrieval`)
+because knowledge sources are unique per `(account_id, name)`, so a
+basename-derived name would let same-named packages under different domains
+overwrite each other. Domain is never accepted from the client.
+
 - `POST /api/knowledge/sources` — Register or upsert a knowledge source by `name` (`git` or `local`) (scope: `knowledge:rw`)
 - `GET /api/knowledge/sources` — List knowledge sources (scope: `knowledge:r`)
 - `GET /api/knowledge/sources/:id/revisions` — List immutable source revisions (scope: `knowledge:r`)
@@ -256,9 +276,9 @@ milestones in `docs/skill-knowledge-architecture-v0.1.md`).
 - `POST /api/knowledge/sources/:id/snapshots` — Push a local knowledge package snapshot (scope: `knowledge:rw`)
 - `GET /api/knowledge/revisions/:id/documents?limit=&offset=` — Paginated document metadata without content bodies (scope: `knowledge:r`)
 - `GET /api/knowledge/revisions/:id/documents/:doc_id` — One document including its text content snapshot, served `Cache-Control: private, no-store` (scope: `knowledge:r`)
-- `GET /api/knowledge/catalog?query=&limit=&offset=` — K0 collection cards for sources with an active revision: manifest metadata (name/description/profile/language/citation_policy), document count, package hash, and chunk index status; stable pagination with ILIKE-style name/description filtering (scope: `knowledge:r`)
+- `GET /api/knowledge/catalog?query=&domain=&limit=&offset=` — K0 collection cards for sources with an active revision: manifest metadata (name/description/profile/language/citation_policy), owning domain, document count, package hash, and chunk index status; stable pagination with ILIKE-style name/description filtering plus exact `domain` filtering. The response also carries `domains`, the account's domain roster with collection counts, so a domain can be chosen before reading individual cards (scope: `knowledge:r`)
 - `POST /api/knowledge/index` — Chunk-index active revisions (body `source_id` optional; empty indexes every active source) into the account-scoped `knowledge` retrieval namespace and rebuild the document link graph (scope: `knowledge:rw`)
-- `POST /api/knowledge/search` — Hybrid lexical + semantic search over indexed chunks (body `query`/`top_k`/`source_ids`/`include_content`); hits carry document/source/revision provenance, heading path, score, snippet, and 1-hop link neighbors (metadata only, capped at 16); the snippet is the first 240 runes of the chunk body (a chunk shorter than that is fully visible in its snippet), and the full chunk body is returned only with `include_content=true`; served `Cache-Control: private, no-store` (scope: `knowledge:r`)
+- `POST /api/knowledge/search` — Hybrid lexical + semantic search over indexed chunks (body `query`/`top_k`/`domain`/`source_ids`/`include_content`; `domain` resolves to that domain's sources and intersects with `source_ids`, so it can only narrow the search); hits carry document/source/revision provenance, heading path, score, snippet, and 1-hop link neighbors (metadata only, capped at 16); the snippet is the first 240 runes of the chunk body (a chunk shorter than that is fully visible in its snippet), and the full chunk body is returned only with `include_content=true`; served `Cache-Control: private, no-store` (scope: `knowledge:r`)
 - `GET /api/knowledge/documents/:doc_id/links?limit=&offset=` — Both directions of one document's package-internal links: outgoing links keep the target path (with a NULL document ID when dangling), incoming links carry the linking document's path (scope: `knowledge:r`)
 
 Every knowledge package must carry a root `KNOWLEDGE.yaml` manifest

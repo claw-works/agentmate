@@ -563,7 +563,15 @@ Context Pack
 
 尚未实现：KnowledgeBuildRevision、KnowledgeProfile、knowledge compiler / persistent wiki、`knowledge_discover` 与 KnowledgeResolutionRun（K3–K5）。
 
-已知限制（2026-07-27 真实语料验证发现）：lexical 通路使用 PostgreSQL `to_tsvector('simple', …)`，该配置不对 CJK 分词，整段中文会成为单个 token，因此**中文查询的 lexical 命中恒为 0**，hybrid 实际退化为纯 semantic（RRF 融合分数上限恒为单通路的 0.5）。这同时意味着"embedding 或向量库失败时降级 lexical fallback"对中文语料不成立。英文/标识符查询不受影响。修复需要 CJK bigram 方案（独立的 lexical 投影列 + GIN 索引 + 查询侧 bigram tsquery + 重建现有行），属于独立增量。
+Domain 建模（migration `000022`、`internal/pkgpath`）：Skill 与 Knowledge package 按领域组织在仓库目录下（`platform/retrieval`、`product/faq`）。领域从 `package_path` 首段推导并落成 `skill_sources.domain` / `knowledge_sources.domain` 列，规则只在 `internal/pkgpath` 实现一份，两个 registry 共用——否则领域分组在两侧含义不同。约定：单段路径**没有** domain（扁平 package 未按领域组织，把自身名当领域会凭空造出一个分组），未分类记为 `''` 而非 NULL，避免三值逻辑。source name 由完整路径段拼接（`platform/retrieval` → `platform-retrieval`），因为 `knowledge_sources` 唯一键是 `(account_id, name)`，此前用 basename 推导会让不同领域下同名子目录静默互相覆盖。domain 不接受客户端输入，一律由 package 位置推导。`knowledge_catalog_list` 返回 domain 与全账号 domain 清单（含 collection 计数），`knowledge_search` 支持 domain 过滤并与 `source_ids` 取交集（只能收窄，不能放宽）。
+
+CJK lexical 检索（migration `000023`、`internal/retrieval/lexical.go`）：PostgreSQL 的 `simple` 配置不对 CJK 分词，整段中文会成为单个 token，因此在此之前**中文查询的 lexical 命中恒为 0**，hybrid 退化为纯 semantic（RRF 融合分上限恒为单通路的 0.5），文档中"embedding 或向量库失败时降级 lexical fallback"对中文语料并不成立。
+
+现采用 bigram 投影修复：`retrieval_documents.lexical_text` 存 title 与 content 的重叠字符 bigram 投影（CJK 连续段切 bigram，ASCII 段保留整词并小写），GIN 索引建在 `to_tsvector('simple', lexical_text)` 上；查询侧由同一个 Go 函数生成 tsquery——CJK bigram 之间 OR，ASCII 整词之间 AND。索引侧与查询侧必须共用这套规则，这是方案的正确性前提，因此规则只在 Go 中实现一份，不在 SQL 里重写。
+
+刻意不做词典分词（如 jieba/gse）。取舍：分词 precision 更高、存储更省，但（1）自造术语需靠词典覆盖，而 wiki 层演进会持续新增术语，词典变更会使既有索引与查询的切分口径不一致且静默失效，需全量重建；（2）分词绑定长词后无法用部分词命中（"披露"查不到"渐进披露"），而部分词导航是主要用法。bigram 规则永恒、召回无漏洞，precision 由 RRF + topK 兜住——lexical 在 hybrid 中只是候选生成器，不决定最终排序。代价是投影文本约为原文 3 倍字节。`lexical_text` 是派生列，可随时由 `LexicalProjection` 重算，因此该选择可逆：将来若语料转向通用中文词汇（词典覆盖率高）或存储压力显现，可用真实查询日志对比两种投影的召回率后替换，只需换函数并重建一列。
+
+绕过 Go 写入路径的行（例如历史 migration 直接 UPDATE 的 retrieval document）投影为空，对 lexical 不可见，须调用 `POST /api/admin/retrieval/lexical/rebuild` 重算；该操作从已存 title/content 派生，不重新 embedding、不触碰 Qdrant。
 
 在后续迁移前：
 
