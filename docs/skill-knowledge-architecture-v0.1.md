@@ -412,8 +412,8 @@ Skill 和 KnowledgeBase 之外，AgentMate 已实现的 Memory 模块与 todos/n
 | 层 | 回答的问题 | 生命周期 | 策展程度 | 权威性来源 | 现状 |
 |---|---|---|---|---|---|
 | Skill | 该怎么做 | versioned release + activation（promotion 规划中） | 高 | 版本评测与 promotion | 已实现（promotion 除外） |
-| KnowledgeBase | 领域内什么是真的 | source revision + compiled build | 高 | source citation 与编译审查 | 规划中 |
-| Memory | 经历过什么、学到什么 | event 永久追加；durable memory 可 supersede | 低-中 | evidence（真实发生的事件） | 已实现 |
+| KnowledgeBase | 领域内什么是真的 | source revision + compiled build | 高 | source citation 与编译审查 | 里程碑 K1/K2 已实现（compiled build 未实现） |
+| Memory | 经历过什么、学到什么 | event 永久追加；durable memory 可 supersede | 低-中 | evidence（真实发生的事件） | 已实现（supersede 仅数据模型、反馈未接线） |
 | App Facts（todos/notes/expenses/bookmarks） | 用户当前事务状态 | 用户 CRUD，随时可变 | 无 | 用户最新写入 | 已实现 |
 
 冲突裁决顺序：用户当前指令 > 当前事实（App Facts/代码/工具输出） > KnowledgeBase > Memory。

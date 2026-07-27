@@ -1,9 +1,9 @@
-# 从“用英语编程”到可持续 Agent Loop：AgentMate 的渐进式 Skill 与知识架构
+# 从“用英语编程”到可持续 Agent Loop：AgentMate 的 Skill、Knowledge 与 Memory 三维架构
 
-**版本**：v0.1
-**日期**：2026-07-18
+**版本**：v0.2
+**日期**：2026-07-18（v0.1）；2026-07-24（v0.2：Knowledge 独立建模，改写为三维渐进式披露）
 **状态**：DESIGN NOTE
-**关联材料**：`docs/Karpathy.txt`、`docs/skill-registry-design-v0.1.md`、`docs/memory-design-v0.3.md`
+**关联材料**：`docs/Karpathy.txt`、`docs/skill-registry-design-v0.1.md`、`docs/skill-knowledge-architecture-v0.1.md`、`docs/memory-design-v0.3.md`
 
 ---
 
@@ -24,27 +24,34 @@ Andrej Karpathy 对近期 Agent 编程的观察，可以概括为一个重要变
 - 它能否把一次任务中的经验沉淀为下一次可复用的知识；
 - 它能否避免在循环中制造越来越多未经验证的复杂性。
 
-AgentMate 对这些问题的回答是把 Agent 系统拆成三个相互独立但可以闭环的平面：
+AgentMate 对这些问题的回答是把 Agent 系统拆成四个相互独立但可以闭环的平面。其中三个是**渐进式披露的上下文维度**，第四个是控制器：
 
-1. **Knowledge Plane**：提供事实、上下文、历史和证据。
-2. **Capability Plane**：通过渐进式 Skill 描述“如何做”。
-3. **Control Plane**：通过 Agent Loop 决定“下一步做什么、是否成功、何时停止”。
+1. **Capability Plane（Skill）**：回答“该怎么做”，沿 S0–S3 渐进披露。
+2. **Knowledge Plane（KnowledgeBase）**：回答“领域内什么是真的、证据在哪里”，沿 K0–K3 渐进披露。
+3. **Memory Plane**：回答“我们经历过什么、学到什么”，沿 M0–M2 渐进披露。
+4. **Control Plane（Agent Loop）**：决定“下一步做什么、是否成功、何时停止”。
+
+三个上下文维度不是同一个知识库的不同视图，而是权威性来源不同的独立域：Skill 的权威来自版本评测与 promotion，Knowledge 的权威来自 source citation 与编译审查，Memory 的权威来自真实发生过的 evidence。冲突时的裁决顺序是：用户当前指令 > 当前事实（代码/工具输出/业务状态） > Knowledge > Memory。
 
 ```text
 User Goal + Success Criteria
              |
              v
        Agent Control Loop
- Observe -> Recall -> Select Skill -> Plan -> Act -> Verify
-    ^                                               |
-    |                                               v
- Memory / Evidence <- Reflect / Record <- Result / Feedback
+ Observe -> Recall -> Select -> Plan -> Act -> Verify
+             |                                 |
+   +---------+---------+                       |
+   |         |         |                       v
+ Skill   Knowledge   Memory  <- Reflect / Record <- Result / Feedback
+ S0-S3    K0-K3      M0-M2
+   |         |         |
+   +---------+---------+
              |
              v
-   Skill & Knowledge Evolution
+   Skill / Knowledge / Memory Evolution
 ```
 
-AgentMate 的目标不是创建一个装满提示词的仓库，而是建立一个可同步、可检索、可验证、可渐进加载和可演化的 Agent 能力系统。
+AgentMate 的目标不是创建一个装满提示词的仓库，也不是再造一个通用向量库，而是建立三个可同步、可检索、可验证、可渐进加载和可演化的独立上下文域，并由一个可停止、可审计的 Loop 统一调度。
 
 ---
 
@@ -137,7 +144,7 @@ Karpathy 最后的判断是：模型智能已经明显领先于 integrations、t
 
 ---
 
-## 2. 为什么 Skill 必须渐进式披露
+## 2. 为什么 Skill、Knowledge 和 Memory 都必须渐进式披露
 
 ### 2.1 Context 不是无限仓库
 
@@ -150,9 +157,11 @@ Karpathy 最后的判断是：模型智能已经明显领先于 integrations、t
 - 更新一个 Skill 就需要重新分发巨大提示；
 - 无法观测“哪个 Skill 被选择、使用和证明有效”。
 
-渐进式 Skill 的原则是：
+渐进式披露的原则是：
 
-> **先用最小信息完成路由，再按任务需要逐层加载；不要在 Agent 尚未选择能力前就支付完整上下文成本。**
+> **先用最小信息完成路由，再按任务需要逐层加载；不要在 Agent 尚未选择能力、知识域和相关经验前就支付完整上下文成本。**
+
+这条原则同时适用于三个维度：Skill 不应在选中前加载 instructions，KnowledgeBase 不应在命中前加载文档正文，Memory 不应在相关性确认前灌入全部历史。
 
 ### 2.2 Skill 不是一段 Prompt
 
@@ -169,7 +178,9 @@ skill-package/
   examples/             # 少量高质量示例
 ```
 
-> 边界更新（2026-07-23）：Skill package 中的资源定位为 **execution assets**。独立领域知识语料（产品文档、政策、事实库、持久化 wiki）属于未来独立 Knowledge Registry，Skill 通过 Knowledge Discovery Contract 在运行时发现并引用，而不是打包进 Skill；见 [Skill + Knowledge Architecture v0.3](skill-knowledge-architecture-v0.1.md)。`references/` 仅保留与执行流程强绑定的紧凑规范摘要。
+> 边界更新（2026-07-23）：Skill package 中的资源定位为 **execution assets**。独立领域知识语料（产品文档、政策、事实库、持久化 wiki）属于独立的 Knowledge Registry（K1/K2 已实现），Skill 通过 Knowledge Discovery Contract 在运行时发现并引用，而不是打包进 Skill；见 [Skill + Knowledge Architecture v0.3](skill-knowledge-architecture-v0.1.md)。`references/` 仅保留与执行流程强绑定的紧凑规范摘要。
+
+判断一份内容属于哪个维度，用一个问题即可：删除它之后，Agent 是“不知道怎么做”（Skill）、“不知道相关事实”（Knowledge），还是“不记得上次发生了什么”（Memory）。
 
 根 `SKILL.md` 只负责说明：
 
@@ -182,29 +193,36 @@ skill-package/
 
 真正复杂的知识、模板和执行资源在被需要时再加载。
 
-### 2.3 五级披露模型
+### 2.3 三条独立披露轴
+
+三个维度各有自己的层级编号，避免用同一套 L0/L1/L2 表达不同语义：
 
 ```text
-L0  Skill Card
-    name, purpose, triggers, constraints, cost, confidence
+Skill 轴（Capability）
+  S0  Skill Card          name, purpose, triggers, constraints, cost, confidence
+  S1  Core Instructions   SKILL.md 的核心流程和决策边界
+  S2  Execution Assets    templates、schemas、scripts、tests、行为示例
+  S3  Full Package        完整文件清单、immutable revision、Git provenance
 
-L1  Core Instructions
-    SKILL.md 的核心流程和决策边界
+Knowledge 轴（KnowledgeBase）
+  K0  Collection Card     KB 名称、描述、领域、语言、freshness、文档数量、索引状态
+  K1  Document/Section    文档标题、heading 结构、chunk 命中位置与 1-hop 链接邻居
+  K2  Selected Evidence   命中 chunk 正文与 citation
+  K3  Raw Source / Build  原始文档全文、source revision、build provenance
 
-L2  Task-specific References
-    与当前执行流程直接相关的规范摘要、示例和 schema；
-    独立领域知识语料走 Knowledge Registry 的 K0/K1/K2 轴
-
-L3  Executable Resources
-    scripts、templates、tests、tool definitions
-
-L4  Full Package / Source
-    完整文件清单、immutable revision、Git provenance
+Memory 轴
+  M0  Memory Card         scope、type、摘要、置信度、时间、supersede 状态
+  M1  Memory Content      完整经验正文与适用条件
+  M2  Evidence Chain      source events、attempt/correction/outcome 与原始证据
 ```
 
-#### L0：路由
+历史命名说明：Skill Registry 的 REST/MCP 接口沿用 `L0/L1/L2` 命名（catalog / instructions / resources），语义等价于此处的 S0/S1/S2，为兼容保留。
 
-Agent 先搜索轻量 Skill Card，而不是加载完整 Skill。Card 应回答：
+#### S0 / K0 / M0：路由层
+
+三条轴的第 0 层都只做“是否相关”的判断，不加载正文。
+
+Skill Card 应回答：
 
 - 这个 Skill 能解决什么问题？
 - 触发条件是什么？
@@ -213,47 +231,59 @@ Agent 先搜索轻量 Skill Card，而不是加载完整 Skill。Card 应回答�
 - 预计成本和风险是什么？
 - 当前 active version 和验证状态是什么？
 
-#### L1：执行方法
+Knowledge Collection Card 应回答：
 
-只有 Skill 被选中后，Agent 才加载核心说明。此时信息仍应保持紧凑，重点是流程、约束和验证，而不是百科全书。
+- 这个 KB 覆盖什么领域？
+- 语言和适用范围是什么？
+- 数据更新到什么时候？
+- 是否已完成索引、是否可检索？
+- 引用策略是什么？
 
-#### L2：执行相关规范摘要
+Memory Card 应回答：
 
-Agent 根据任务中的实体、错误、代码模块和阶段，选择性加载与执行流程强绑定的规范摘要。比如 Git 同步任务只需要 provider 同步规范摘要、archive 边界和 package identity 约束，不需要加载未来的 eval/compiler 全部设计。独立领域知识语料（完整 API 文档、产品手册、事实库）走 Knowledge Registry 的 K0/K1/K2 轴。
+- 这条经验属于哪个 scope？
+- 它是事实、经历还是方法？
+- 它是否已被更新或废弃？
+- 证据强度和置信度如何？
 
-#### L3：行动资源
+#### S1 / K1 / M1：定位层
 
-当 Loop 决定执行具体动作时，再加载模板、脚本、测试和工具 schema。
+Skill 被选中后加载核心说明；Knowledge 命中后先看文档/章节结构与链接邻居；Memory 相关后再读完整经验正文。此时信息仍应紧凑，目标是判断“需要深入哪一部分”，而不是一次读完。
 
-#### L4：完整来源
+#### S2 / K2 / M2：证据与执行层
 
-完整 package 主要用于：
+- S2 加载真正要用的执行资产：模板、脚本、schema、测试。
+- K2 加载命中的 chunk 正文与 citation，作为可引用证据。
+- M2 展开证据链，回到原始 event，用于判断这条经验是否真的适用当前情况。
 
-- 审计；
-- 执行器获取二进制或脚本；
-- compiler/linter；
-- 版本比较；
-- 回滚与复现。
+#### S3 / K3：完整来源层
 
-普通路由不应使用 L4。
+完整 Skill package 和 KB 原始文档主要用于审计、执行器取文件、compiler/linter、版本比较、回滚与复现。普通路由不应触及这一层。
+
+#### 三轴不是同一次调用
+
+Skill 路由发生在 Knowledge 检索之前：先确定要做什么，再决定需要哪些事实。Memory recall 与 Knowledge 检索并行但不混合——两者回答的问题不同，混合排序会让“上次踩过的坑”和“文档中的规定”竞争同一个 top-k 名额。
 
 ---
 
-## 3. LLM 知识库不是“把所有内容向量化”
+## 3. 知识库不是“把所有内容向量化”
 
-### 3.1 五种上下文来源
+### 3.1 六种上下文来源
 
-Agent 执行任务时会使用五类不同信息：
+Agent 执行任务时会使用六类不同信息：
 
-| 类型 | 回答的问题 | AgentMate 载体 |
-|---|---|---|
-| Parametric Knowledge | 模型通常知道什么 | 基础模型 |
-| Source Facts | 当前代码、文档和数据实际上是什么 | Git、PostgreSQL、业务 API（规划：Knowledge Registry） |
-| Skills | 这类任务应该如何执行 | Git-backed Skill Registry |
-| Durable Memory | 过去学到了哪些可复用经验 | Memory entries + evidence |
-| Working Memory | 当前任务进行到哪里 | events + checkpoints |
+| 类型 | 回答的问题 | AgentMate 载体 | 披露轴 |
+|---|---|---|---|
+| Parametric Knowledge | 模型通常知道什么 | 基础模型 | — |
+| Skills | 这类任务应该如何执行 | Git-backed Skill Registry | S0–S3 |
+| Domain Knowledge | 领域内什么是真的、证据在哪里 | Knowledge Registry（KB source/revision/document/chunk） | K0–K3 |
+| Source Facts | 当前代码、数据和业务状态实际上是什么 | Git、PostgreSQL、业务 API、todos/notes 等 App Facts | 实时查询 |
+| Durable Memory | 过去学到了哪些可复用经验 | Memory entries + evidence | M0–M2 |
+| Working Memory | 当前任务进行到哪里 | events（含 checkpoint 事件类型） | 会话内 |
 
-它们不能被混成同一个向量集合。事实、方法、长期经验和当前执行状态拥有不同生命周期、权威性和更新规则。
+它们不能被混成同一个检索命名空间。方法、领域事实、当前状态、长期经验和执行状态拥有不同生命周期、权威性和更新规则。
+
+具体隔离方式：Skill、Knowledge、Memory 共享同一套 retrieval 基础设施（PostgreSQL 事实 + 单个 Qdrant collection），但按 account + namespace 严格隔离，检索时不跨 namespace 混合排序。App Facts（todos/notes/expenses）随时可变，走实时查询而不进入 embedding 索引——否则索引永远落后于用户刚写的内容。
 
 ### 3.2 PostgreSQL 是事实源，向量索引是派生物
 
@@ -267,36 +297,43 @@ AgentMate 的原则是：
 
 这避免把“向量相似”错误地当作“事实正确”。
 
-### 3.3 知识库的核心是 Context Compilation
+### 3.3 三维 Context Compilation
 
-一个好的 LLM 知识库不是简单执行 top-k，而是为当前 Loop 编译最小充分上下文：
+一个好的上下文层不是简单执行 top-k，而是为当前 Loop 从三条轴分别编译最小充分上下文，再合并：
 
 ```text
 Task
-  -> exact filters: account / repository / skill / entity / status
-  -> lexical search: identifiers / errors / paths / symbols
-  -> semantic search: concepts / intent / analogous experience
-  -> temporal & lifecycle filters: active / superseded / recent
-  -> evidence ranking: authority / confidence / usefulness
-  -> deduplicate & budget
-  -> Context Pack
+  -> Skill 轴：intent/capability 路由 -> 选中 SkillVersion -> S1 instructions -> 按需 S2 assets
+  -> Knowledge 轴：按 Skill 声明的知识需求发现 KB -> K0 candidates -> K1 命中定位 -> K2 evidence + citation
+  -> Memory 轴：scope + 任务关键词 -> M0 cards -> M1 相关经验 -> 必要时 M2 证据链
+  -> Facts：exact filters（account / repository / entity / status）实时查询
+  -> 各轴内部：lexical + semantic 混合，temporal/lifecycle 过滤（active / superseded / recent）
+  -> 各轴分别 budget，避免一轴挤占另一轴
+  -> deduplicate & 合并为 Context Pack
 ```
 
-Context Pack 应包含：
+Context Pack 中每条内容都必须带来源标签，因为模型需要知道权威性差异：
 
-- 当前目标和成功标准；
-- 已选 Skill Card 与核心约束；
-- 少量直接相关事实；
-- 已知失败尝试和用户纠正；
-- 下一动作需要的工具 schema；
-- 每条关键信息的来源。
+```text
+Context Pack
+├── [TASK]      goal contract、success criteria、checkpoint
+├── [SKILL]     选中的 S1 instructions 与关键约束、必要 S2 assets
+├── [KNOWLEDGE] K2 evidence 与 citation（可回溯到 source revision）
+├── [MEMORY]    相关经验、已知失败尝试、用户纠正
+└── [FACTS]     当前代码/状态/todos 等实时事实
+```
+
+没有标签的合并上下文会让 Agent 无法裁决冲突：文档说 A、上次经验说 B、当前代码是 C 时，应按“当前事实 > Knowledge > Memory”处理，而不是取相似度最高的一条。
+
+当前实现状态：三条轴的检索能力分别可用（Skill catalog/search、Knowledge catalog/search、Memory search），统一的 Context Pack 编译 API 尚未实现。
 
 ### 3.4 Consult before write
 
-Agent 形成新记忆或发布新 Skill 前，应先检索是否已有等价内容：
+Agent 形成新记忆、发布新 Skill 或提名新 KB 页面前，应先检索是否已有等价内容：
 
 - 防止重复 memory；
 - 防止把同一 package 复制成多个 release；
+- 防止把同一事实同时写进 Memory 和 KB 两个域；
 - 发现新结论与旧事实冲突；
 - 决定是更新投影、建立 supersede 关系，还是保留独立版本。
 
@@ -329,10 +366,11 @@ stop_conditions: 成功、阻塞、预算耗尽或风险升级
    获取当前代码、状态、错误和用户输入
 
 2. Recall
-   检索 source facts、相关 Skill、memory 和失败历史
+   三轴分别检索：Skill Card（S0）、Knowledge collection/命中（K0/K1）、
+   Memory 相关经验与失败历史（M0/M1）；另加实时 source facts
 
 3. Select
-   选择最小能力集合；必要时组合 Skill
+   先选最小 Skill 集合，再按 Skill 的知识需求选定 KB 与证据；必要时组合 Skill
 
 4. Plan
    把目标拆成可验证的小步骤，标记假设和风险
@@ -399,44 +437,61 @@ Working Memory 保存执行状态，Durable Memory 只接收未来仍可能影�
 
 ---
 
-## 5. AgentMate 如何连接三者
+## 5. AgentMate 如何连接四个平面
 
-### 5.1 Knowledge Plane
+### 5.1 Capability Plane（Skill）
+
+Git-backed Skill Registry 提供：
+
+- GitHub/GitLab source 与 local snapshot；
+- immutable package revision 和 release；
+- active version 单一指针；
+- compiled Skill Card 与 execution asset manifest；
+- S0–S2 progressive disclosure（完整 package 仅通过 version files 列表与单资源取用暴露，无独立 S3 API）；
+- 离线 deterministic lint / platform contract eval / release comparison；
+- version-bound telemetry；
+- 后续 PR/MR 演化工作流（未实现）。
+
+Capability Plane 回答“这类问题应该怎样做”。
+
+### 5.2 Knowledge Plane（KnowledgeBase）
+
+Knowledge Registry 提供：
+
+- git/local knowledge source 与根 `KNOWLEDGE.yaml` manifest；
+- immutable source revision 与 canonical package hash；
+- document snapshots 与 active 指针；
+- K0 collection cards；
+- format-aware Markdown chunking 与包内文档链接图；
+- account-scoped hybrid 检索、K2 evidence 与 1-hop 邻居；
+- 后续 knowledge build / persistent wiki / promotion（未实现）。
+
+Knowledge Plane 回答“领域内什么是真的、证据在哪里”。它与 Memory 共享 retrieval 基础设施，但 identity、生命周期和 promotion 规则不同；Skill 通过 Knowledge Discovery Contract 在运行时发现 KB，而不是把知识打包进 Skill package。详见 [Skill + Knowledge Architecture v0.3](skill-knowledge-architecture-v0.1.md)。
+
+### 5.3 Memory Plane
 
 AgentMate Memory 提供：
 
 - append-only event journal；
 - semantic、episodic、procedural durable memory；
-- evidence 与 supersede 生命周期；
+- evidence 关联与 supersede 数据模型（supersede 操作未实现）；
 - PostgreSQL FTS + Qdrant semantic retrieval；
-- Working Memory checkpoint；
-- 使用、忽略、纠正和有害反馈。
+- checkpoint 事件类型（Working Memory session / resume 未实现）；
+- 反馈信号表已就绪但尚未接线（未实现）。
 
-Knowledge Plane 回答“当前真实状态是什么”和“以前发生过什么”。
+Memory Plane 回答“以前发生过什么、学到了什么”。它有四个运行时角色：执行前 recall 注入经验、执行中 journal 留证、为 Skill 演化提供证据包、作为 KB 的 promotion 原料。
 
-Knowledge Plane 未来将扩展为两个子域：**Memory**（执行经验与证据，当前已实现）与 **Knowledge Registry**（领域事实语料与持久化 wiki builds，规划中）。二者共享 retrieval 基础设施，但 identity、生命周期和 promotion 规则不同；Skill 通过 Knowledge Discovery Contract 在运行时发现 KB，而不是把知识打包进 Skill package。详见 [Skill + Knowledge Architecture v0.3](skill-knowledge-architecture-v0.1.md)。
+Memory 与 Knowledge 的关键区别是策展程度：Memory 门槛低、可快速积累、account 私有；Knowledge 门槛高、需要 citation 与审查、可共享。因此 Memory → KB 的 promotion 必须过使用信号门槛与审批，不能自动写入，否则会把幻觉复利化。
 
-### 5.2 Capability Plane
-
-Git-backed Skill Registry 提供：
-
-- GitHub/GitLab source；
-- immutable package revision 和 release；
-- active version；
-- Skill Card 与资源 manifest；
-- progressive disclosure；
-- package lint、tests 和 eval metadata；
-- 后续 PR/MR 演化工作流。
-
-Capability Plane 回答“这类问题应该怎样做”。
-
-### 5.3 Control Plane
+### 5.4 Control Plane（Agent Loop）
 
 Agent Loop 使用：
 
 - goal contract；
 - task list 和 checkpoint；
 - Skill search/select；
+- Knowledge catalog/search（discover 未实现）；
+- Memory recall/record；
 - tool execution；
 - success criteria verifier；
 - reviewer/subagent；
@@ -444,12 +499,13 @@ Agent Loop 使用：
 
 Control Plane 回答“此刻应该做什么以及是否已经完成”。
 
-### 5.4 统一而不混同
+### 5.5 统一而不混同
 
-三者共享 account、retrieval、telemetry 和反馈基础设施，但保留独立业务模型：
+四者共享 account、retrieval、telemetry 和反馈基础设施，但保留独立业务模型：
 
-- Skill 不是 Memory；Skill 是经过版本管理的执行方法。
-- Memory 不是 Skill；Memory 是有证据的事实或经验。
+- Skill 不是 Knowledge；Skill 是经过版本管理的执行方法。
+- Knowledge 不是 Skill；Knowledge 是有引用的领域事实，不执行动作。
+- Memory 不是 Knowledge；Memory 是有证据的经历，未经审查不具备共享权威性。
 - Loop 不是长期知识；Loop 是当前任务的控制状态。
 - Retrieval 不是事实源；Retrieval 是把相关内容送入当前决策的机制。
 
@@ -481,26 +537,39 @@ success criteria:
   reviewer reports no blocker
 ```
 
-### 6.2 Progressive Skill selection
+### 6.2 三轴渐进式选择
 
-1. L0 搜索到 `git-provider-sync`、`go-web-service`、`postgres-concurrency` 三个 Skill Card。
+Skill 轴：
+
+1. S0 搜索到 `git-provider-sync`、`go-web-service`、`postgres-concurrency` 三个 Skill Card。
 2. Coordinator 选择 `git-provider-sync` 作为主 Skill。
-3. L1 加载 provider 工作流和 archive 安全边界。
-4. L2 只加载 provider 同步规范摘要与现有 package identity 设计。
-5. L3 在实现 archive parser 时加载对应测试模板。
-6. 完成审计时才读取 L4 完整 package/diff。
+3. S1 加载 provider 工作流和 archive 安全边界。
+4. S2 在实现 archive parser 时加载对应测试模板。
+5. 完成审计时才读取 S3 完整 package/diff。
 
-### 6.3 Knowledge recall
+Knowledge 轴：
 
-Context Compiler 同时检索：
+1. 按 Skill 声明的知识需求，K0 发现 `go-stdlib-reference` 与 `provider-api-notes` 两个 KB。
+2. K1 定位到 `archive/tar` 与 GitHub archive endpoint 相关章节。
+3. K2 只加载命中 chunk 正文与 citation，不拉整份文档。
 
-- 当前 `internal/skills` 代码；
-- immutable revision/version 数据库约束；
-- 上次 review 发现的 snapshot alias 问题；
-- Go 标准库 tar/gzip API；
-- 用户要求“小批次实现并频繁汇报”的 correction。
+Memory 轴：
 
-这些内容来源不同，但都直接影响当前动作。
+1. M0 命中“snapshot alias 问题”“advisory lock key 编码”两条经验卡片。
+2. M1 读取完整经验正文与适用条件。
+3. 对与当前设计冲突的一条，M2 展开证据链确认它是否已被 supersede。
+
+### 6.3 三轴合并后的 Context Pack
+
+```text
+[TASK]      goal contract 与 success criteria
+[SKILL]     git-provider-sync S1 工作流 + archive 边界约束
+[KNOWLEDGE] tar/gzip 与 provider archive 端点的 K2 evidence + citation
+[MEMORY]    上次 review 的 snapshot alias 失败、用户“小批次并频繁汇报”的 correction
+[FACTS]     当前 internal/skills 代码、immutable revision/version 数据库约束
+```
+
+这些内容来源不同、权威性不同，但都直接影响当前动作；带标签合并后，Agent 在冲突时知道以当前代码为准，而不是以文档或旧经验为准。
 
 ### 6.4 Loop
 
@@ -530,15 +599,16 @@ Stop: 所有 success criteria 有工具证据
 
 ---
 
-## 7. Skill、Knowledge 和 Loop 如何共同学习
+## 7. Skill、Knowledge、Memory 和 Loop 如何共同学习
 
-### 7.1 先记录事实，再提炼经验
+### 7.1 先记录事实，再提炼经验，最后才编译知识
 
 每次执行产生事件：
 
 ```text
 goal
 selected_skill
+selected_knowledge
 retrieved_context
 attempt
 tool_result
@@ -547,70 +617,106 @@ correction
 outcome
 ```
 
-事件是审计事实。系统可以从多次事件中提炼 durable memory，例如：
+事件是审计事实。三种沉淀路径的门槛依次升高：
+
+```text
+event（发生即记录）
+  -> durable memory（可能影响未来决策，需 evidence）
+  -> KB candidate page（反复被用且有价值，需 citation + lint + 审批）
+```
+
+例如：
 
 > PostgreSQL advisory lock key 不能包含 NUL 字节；应使用长度前缀的文本编码。
 
-该 memory 必须引用失败和修复证据，而不是只保存模型总结。
+该 memory 必须引用失败和修复证据，而不是只保存模型总结。只有当它被反复 recall 且反馈有用时，才提名进入 KB 成为团队级知识。
 
-### 7.2 Skill telemetry
+### 7.2 三维 telemetry
 
-每次 Skill 使用记录：
+每次执行记录：
+
+Skill 侧：
 
 - 是否被检索和选择；
 - 是否真正参与行动；
-- 任务是否成功；
-- 是否发生用户纠正；
-- 加载了哪些资源层级；
-- token、延迟和工具成本；
-- 哪个 verifier 证明完成。
+- 加载了哪些资源层级（S1/S2/S3）；
+- 是否发生用户纠正。
+
+Knowledge 侧：
+
+- 发现了哪些 KB 候选、最终选中哪些；
+- 命中哪些文档/chunk，是否被实际引用；
+- 证据是否足够、是否过期。
+
+Memory 侧：
+
+- recall 了哪些经验、是否被采纳；
+- 是否与当前事实冲突；
+- 是否需要 supersede。
+
+公共：任务是否成功、token/延迟/工具成本、哪个 verifier 证明完成。
 
 这可以区分：
 
 - 路由失败：正确 Skill 没被选中；
 - 说明失败：选中了 Skill，但流程导致错误；
-- 知识失败：缺少必要事实；
+- 知识失败：缺少必要领域事实或引用错误；
+- 记忆失败：重复踩坑，或采纳了已过期经验；
 - 工具失败：方法正确但执行环境失败；
 - 目标失败：success criteria 本身不清晰。
 
-### 7.3 Skill 演化
+### 7.3 三维演化
 
-AgentMate 不直接在线修改 active Skill。演化流程应是：
+三个维度都不在线直接修改 active 内容，但演化路径不同：
 
 ```text
-telemetry + corrections + failed attempts
-              |
-              v
-      compiler/evolver proposal
-              |
-      lint + regression eval
-              |
-              v
-       Git branch + PR/MR
-              |
-         human review
-              |
-              v
-    merge -> sync -> immutable release
+Skill 演化
+  telemetry + corrections + failed attempts
+    -> compiler/evolver proposal -> lint + regression eval
+    -> Git branch + PR/MR -> human review
+    -> merge -> sync -> immutable release
+
+Knowledge 演化
+  new source revision 或 Memory promotion
+    -> candidate knowledge build -> citation/contradiction lint
+    -> human/policy approval -> active build
+
+Memory 演化
+  event -> evidence-backed entry
+    -> 使用反馈 -> 冲突检测
+    -> supersede 或提名进 KB
 ```
 
-Git 继续是内容事实源，AgentMate 负责发现问题、生成证据、提出修改并评估新版本。
+Git 继续是 Skill 与 KB 原始内容的事实源，AgentMate 负责发现问题、生成证据、提出修改并评估新版本。
 
 ### 7.4 防止 Slopacolypse
 
-如果 Agent 可以低成本生成大量 Skill、文档和代码，系统必须提高进入 active catalog 的门槛：
+如果 Agent 可以低成本生成大量 Skill、知识页面、记忆和代码，系统必须提高进入 active 内容的门槛。三个维度各有门槛：
 
-- package provenance；
-- ownership；
+Skill：
+
+- package provenance 与 ownership；
 - lint 和 schema validation；
 - 最小 eval suite；
 - 明确适用/禁用条件；
 - 与已有 Skill 的重复检测；
-- 真实使用反馈；
-- active promotion policy；
-- 可回滚 immutable release。
+- active promotion policy 与可回滚 immutable release。
 
-生成成本下降，不代表验证成本消失。高质量 registry 的价值将更多来自筛选、证据和生命周期管理。
+Knowledge：
+
+- 每条 claim 必须有 citation 指回 source revision；
+- contradiction 与 orphan lint；
+- freshness 与来源覆盖；
+- candidate build 需审批才能成为 active。
+
+Memory：
+
+- 必须有 source event 或 evidence；
+- 不把猜测写成事实，保守置信度；
+- 冲突时 supersede 而非堆叠；
+- 只有反复被用且有价值才提名进 KB。
+
+生成成本下降，不代表验证成本消失。高质量系统的价值将更多来自筛选、证据和生命周期管理。
 
 ---
 
@@ -648,7 +754,8 @@ Agent 能力增强并没有消除 IDE、diff、日志、测试报告和人工审
 AgentMate 应让用户看到：
 
 - 当前 goal 和计划；
-- Agent 使用了哪些 Skill 和知识；
+- Agent 选中了哪个 Skill、哪些 KB 证据、哪些历史经验；
+- 每条上下文的来源标签与引用；
 - 哪些是假设；
 - 执行了哪些工具；
 - 哪些验证已经通过；
@@ -675,69 +782,90 @@ Karpathy 指出，LLM 的影响不仅是原任务加速，也包括以前不值�
 - blocked task recovery rate；
 - 人工介入时间。
 
-### 9.3 Knowledge 指标
-
-- precision@k / useful recall；
-- retrieved-but-unused rate；
-- missing-context failure rate；
-- stale/superseded 命中率；
-- evidence coverage；
-- context token cost；
-- memory harmful feedback rate。
-
-### 9.4 Skill 指标
+### 9.3 Skill 指标
 
 - routing precision/recall；
 - Skill 被选择后的成功率；
 - silent bypass rate；
-- 资源层级加载分布；
+- 资源层级（S1/S2）加载分布；
 - 每次成功的 token/tool 成本；
 - version regression rate；
 - correction-to-PR conversion；
 - active promotion 与 rollback 次数。
 
+### 9.4 Knowledge 指标
+
+- K0 发现召回：任务相关 KB 是否进入候选；
+- KB selection usefulness：选中的 KB 是否真的贡献了被使用的证据；
+- K2 evidence 有用率与 retrieved-but-unused rate；
+- missing-context failure rate；
+- citation 覆盖率与引用正确性；
+- stale/superseded 命中率与 freshness；
+- 索引完整性（indexed / partial / failed 分布）；
+- context token cost。
+
+### 9.5 Memory 指标
+
+- recall precision@k 与 useful recall；
+- 相关经验被采纳率；
+- 有害或过期 memory 命中率；
+- evidence coverage（有源事件比例）；
+- supersede 及时性；
+- Memory → KB promotion 通过率与被拒原因分布。
+
+### 9.6 三维联合归因
+
+单一总分无法定位问题来源。失败必须能归因到具体维度：
+
+| 失败表现 | 归因维度 |
+|---|---|
+| 正确 Skill 未被选中 | Skill routing |
+| Skill 选对但流程导致错误 | Skill instructions |
+| 缺少领域事实或引用错误 | Knowledge（发现或证据） |
+| 重复踩已知的坑 | Memory recall |
+| 经验已过期却仍被采纳 | Memory 生命周期 |
+| 方法正确但环境失败 | Tool/环境 |
+| success criteria 本身不清 | Goal contract |
+
+因此每次执行的 outcome 应同时关联 `skill_version_id`、所用 KB build/document 与 memory entry IDs。
+
 ---
 
 ## 10. 实施路线
 
-### Phase 1：可验证基础
+路线按三个维度并行推进，编号与各自设计文档一致。
 
-- Git-backed immutable Skill Registry；
-- package identity；
-- local/Git source sync；
-- active version；
-- event journal 和 evidence-backed memory；
-- targeted/full/integration verifier；
-- checkpoint。
+注意：本节 K1–K5 与 M1–M3 是**实施里程碑编号**，与 §2.3 的**披露层级** K0–K3 / M0–M2 无关。
 
-### Phase 2：渐进式能力目录
+### Skill 维度（Phase 1–4 已实现）
 
-- Skill Card compiler；
-- trigger/capability/constraint schema；
-- resource manifest；
-- L0/L1/L2 context API；
-- Skill search/select telemetry；
-- MCP resource fetch。
+- Phase 1 package identity：canonical package hash、immutable revision/release、active 唯一性；
+- Phase 2 public Git sync：provider、ref→commit、bounded archive、错误恢复；
+- Phase 3 compiled catalog 与渐进披露：deterministic Skill Card compiler、S0/S1/S2 API、compiled card 索引；
+- Phase 4 离线 deterministic quality：package lint、platform contract eval、same-skill release comparison、version-bound telemetry；
+- 后续：PR/MR 演化、human-approved promotion、DAG 组合（未实现）。
 
-### Phase 3：Context Compiler 与 Working Loop
+### Knowledge 维度（里程碑 K1–K2 已实现）
 
-- exact + lexical + semantic + temporal fusion；
-- token-budgeted Context Pack；
-- Working Memory checkpoint/resume；
-- failed-attempt precheck；
-- verifier registry；
-- approval/stop policies。
+- K1 source 与 immutable identity：git/local knowledge source、`KNOWLEDGE.yaml`、source revision、document snapshots；
+- K2 catalog 与检索：K0 cards、Markdown chunking、文档链接图、hybrid 检索、K2 evidence、1-hop 邻居、reindex；
+- K3 compiler / persistent wiki：KnowledgeProfileVersion、candidate build、typed link graph、entity 锚点、synthesis pages、contradiction/orphan lint、promotion（未实现）；
+- K4 Skill-driven dynamic discovery：Knowledge Discovery Contract、`knowledge_discover`、KnowledgeResolutionRun（未实现）；
+- K5 企业扩展：private credentials、object storage、多格式 parser、external KB provider（未实现）。
 
-### Phase 4：Eval 与演化闭环
+### Memory 维度（基础已实现；里程碑 M1–M3 未实现）
 
-- Skill lint；
-- regression eval；
-- route/usage feedback；
-- compiler/evolver proposal；
-- GitHub PR / GitLab MR；
-- human-approved release promotion。
+- 已实现：append-only event journal、evidence-backed durable memory、hybrid recall（FTS + Qdrant）；supersede 仅数据模型、checkpoint 仅事件类型、使用反馈未接线；
+- M1：`skill_logs` 与 memory events 按 `skill_version_id` + `session_id` 关联，使质量报告可链接证据正文（未实现）；
+- M2：Context Pack API，一次调用返回带来源标签的多维最小上下文（未实现）；
+- M3：Memory → KB promotion 管道、notes 作为个人 KB source（未实现）。
 
-### Phase 5：受控多 Agent
+### Control 维度
+
+- 已实现：goal contract 实践、task list、checkpoint、verifier 使用、独立 reviewer 流程；
+- 未实现：verifier registry、approval/stop policy 引擎、三维联合归因 telemetry。
+
+### 受控多 Agent（未实现）
 
 - Coordinator/Worker/Reviewer contract；
 - 可证明独立的并行任务；
@@ -746,7 +874,7 @@ Karpathy 指出，LLM 的影响不仅是原任务加速，也包括以前不值�
 - duplicate-work suppression；
 - cost-aware scheduling。
 
-只有前三个阶段形成稳定数据和 verifier 后，多 Agent 才能从“更多并发生成”升级为“更可靠的并行执行”。
+只有三条上下文轴都形成稳定数据和 verifier 后，多 Agent 才能从“更多并发生成”升级为“更可靠的并行执行”。
 
 ---
 
@@ -760,16 +888,18 @@ Karpathy 所描述的变化，不只是“AI 可以写更多代码”，而是�
 未来：组织维护目标、知识、能力和验证体系，Agent 在其中持续工作
 ```
 
-模型智能只是其中一部分。一个可靠 Agent 系统还需要：
+模型智能只是其中一部分。一个可靠 Agent 系统还需要三条独立且可渐进披露的上下文轴，以及一个能停止的控制器：
 
-- 正确且可追溯的知识；
-- 可选择、可版本化的 Skill；
+- 可选择、可版本化、可评测的 Skill（怎么做）；
+- 有引用、可审查、可重建的 Knowledge（什么是真的）；
+- 有证据、可失效、可提名的 Memory（经历过什么）；
 - 有成功标准和停止条件的 Loop；
-- 真实工具反馈；
-- 可恢复 checkpoint；
+- 真实工具反馈与可恢复 checkpoint；
 - 独立验证和人工授权；
 - 从失败与纠正中演化的机制。
 
+三条轴混成一个"知识库"会同时丢掉三样东西：Skill 的版本治理、Knowledge 的引用可信度、Memory 的时效与证据链。
+
 AgentMate 的定位可以浓缩为一句话：
 
-> **把 Git 中可协作的能力、知识库中有证据的上下文，以及工具环境中可验证的 Agent Loop 连接起来，让 LLM 从“会回答”升级为“能够持续、可靠地完成工作”。**
+> **把 Git 中可协作的能力、可引用的领域知识、有证据的执行记忆，以及工具环境中可验证的 Agent Loop 连接起来，让 LLM 从"会回答"升级为"能够持续、可靠地完成工作"。**
