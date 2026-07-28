@@ -14,6 +14,7 @@ import (
 	"github.com/wellxie/agentmate/internal/admin"
 	"github.com/wellxie/agentmate/internal/auth"
 	"github.com/wellxie/agentmate/internal/bookmarks"
+	"github.com/wellxie/agentmate/internal/contextpack"
 	"github.com/wellxie/agentmate/internal/db"
 	"github.com/wellxie/agentmate/internal/expenses"
 	"github.com/wellxie/agentmate/internal/knowledge"
@@ -81,6 +82,18 @@ func main() {
 	knowledgeRepo := knowledge.NewRepo(pool)
 	knowledgeSvc := knowledge.NewService(knowledgeRepo, retrievalSvc)
 	knowledgeHandler := knowledge.NewHandler(knowledgeSvc)
+
+	// Context Pack aggregates the three planes plus live app facts. It owns no
+	// storage: every layer is read through the domain that owns it, so per-layer
+	// ownership and scope rules keep applying.
+	contextSvc := contextpack.NewService(contextpack.Providers{
+		Skills:    skillsSvc,
+		Knowledge: knowledgeSvc,
+		Memory:    memorySvc,
+		Todos:     todoSvc,
+		Notes:     notesSvc,
+	})
+	contextHandler := contextpack.NewHandler(contextSvc)
 
 	// Router
 	r := gin.Default()
@@ -166,6 +179,10 @@ func main() {
 	protected.POST("/memory/search", auth.RequireScope("memory:r"), memoryHandler.SearchEntries)
 	protected.GET("/memory/timeline", auth.RequireScope("memory:r"), memoryHandler.SessionTimeline)
 	protected.GET("/memory/entries/:id/attribution", auth.RequireScope("memory:r"), memoryHandler.EntryAttribution)
+
+	// Layer-level scopes are enforced inside the service; the route requires
+	// only memory:r so a partially scoped key still gets the layers it may read.
+	protected.POST("/context/pack", auth.RequireScope("memory:r"), contextHandler.Pack)
 	// Memory - write
 	protected.POST("/memory/events", auth.RequireScope("memory:rw"), memoryHandler.RecordEvent)
 	protected.POST("/memory/entries", auth.RequireScope("memory:rw"), memoryHandler.CreateEntry)
@@ -233,6 +250,7 @@ func main() {
 	r.Any("/mcp/memory", gin.WrapH(memory.NewMCPServer(memorySvc, authSvc)))
 	r.Any("/mcp/skills", gin.WrapH(skills.NewMCPServer(skillsSvc, authSvc)))
 	r.Any("/mcp/knowledge", gin.WrapH(knowledge.NewMCPServer(knowledgeSvc, authSvc)))
+	r.Any("/mcp/context", gin.WrapH(contextpack.NewMCPServer(contextSvc, authSvc)))
 
 	registerFrontend(r)
 

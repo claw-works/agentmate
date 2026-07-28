@@ -171,6 +171,44 @@ event content returns `409 Conflict`. Durable memories require either
 if embedding or Qdrant indexing fails, creation still succeeds with
 `indexing.status=failed`, and search continues through PostgreSQL FTS.
 
+### Context Pack (authenticated)
+
+- `POST /api/context/pack` — Assemble the minimal execution context for a task in one call. Body: `task` (required), `query`, `skill_name`, `session_id`, `knowledge_domain`, `knowledge_source_ids`, `memory_scope_type`, `memory_scope_key`, `max_chars`, `top_k`, `layers`, `render` (route scope: `memory:r`, plus per-layer scopes below)
+
+Five layers, assembled and rendered in this order: `[SKILL]` instructions,
+`[KNOWLEDGE]` evidence with citations, `[MEMORY]` relevant experience, `[FACTS]`
+live todos and notes, `[TASK]` the goal plus recent session activity. Every item
+carries a source label and a traceable `ref` so a model can tell authority apart
+and a claim can be traced back to its origin.
+
+The value is the budget, not the concatenation. `max_chars` (default 12000) is
+split across the requested layers by fixed shares; omitted layers hand their
+share to the rest. Within a pack a layer's budget is never lent to another, so
+the result does not depend on assembly order. Oversized content is truncated at a
+paragraph or sentence boundary and flagged per item, and each layer reports
+`char_budget`, `chars_used`, `dropped` and `truncated`. Budgets are in characters
+rather than tokens deliberately: token cost is model specific, so embedding a
+tokenizer would tie the server to one vendor — characters are exact and the
+caller can apply its own ratio.
+
+Authorisation is per layer, not per endpoint: one endpoint spanning five domains
+must not let a `skills:r` key read memory. `SKILL` needs `skills:r`, `KNOWLEDGE`
+needs `knowledge:r`, `MEMORY` needs `memory:r`, `FACTS` needs `todos:r` and/or
+`notes:r` (each half authorised independently), and `TASK` needs no scope for the
+goal statement but `memory:r` for the session slice. A layer the caller may not
+read comes back empty with an explanatory note, and the call still succeeds —
+partial context beats no context, but never silently. The same applies to a
+failing or unconfigured layer.
+
+Two current limitations are reported rather than hidden. Skill selection is a
+pinned `skill_name` or the top retrieval hit; dynamic discovery driven by a
+Skill's knowledge contract is K4. And `TASK` reconstructs recent intent from the
+memory journal because checkpoint restore does not exist yet — the layer note
+says so.
+
+`FACTS` is queried live and never embedded: task state changes constantly, so an
+indexed copy would serve stale facts with the confidence of retrieved evidence.
+
 ### Skills (authenticated)
 - `POST /api/skills/sources` — Register or update a skill source (`git` or `local`) (scope: `skills:rw`)
 - `GET /api/skills/sources` — List skill sources (scope: `skills:r`)
@@ -380,6 +418,7 @@ integration opt into only the modules it needs.
 | `POST /mcp/expenses` | `expense_create`, `expense_get`, `expense_list`, `expense_summary`, `expense_update`, `expense_delete` |
 | `POST /mcp/memory` | `memory_record`, `memory_store`, `memory_search`, `memory_get`, `memory_timeline`, `memory_attribution` |
 | `POST /mcp/skills` | `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_source_sync`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active`, `skill_catalog_list`, `skill_compile`, `skill_version_instructions`, `skill_version_resources`, `skill_resource_get`, `skill_quality_run`, `skill_quality_get` |
+| `POST /mcp/context` | `context_pack` |
 | `POST /mcp/knowledge` | `knowledge_sources_list`, `knowledge_source_sync`, `knowledge_documents_list`, `knowledge_document_get`, `knowledge_catalog_list`, `knowledge_search`, `knowledge_index_active`, `knowledge_document_links` |
 
 Authenticate with a valid API key via `X-Api-Key` header, `Authorization: Bearer ak_xxx`,

@@ -517,6 +517,18 @@ Context Pack
 └── [TASK]      goal contract + checkpoint
 ```
 
+Context Pack 已实现（`internal/contextpack`，`POST /api/context/pack` 与 MCP `context_pack`）。落地时确定的几件事：
+
+**预算是核心，不是拼接。** 把三个 search 的结果串起来是调用方自己就能做的事，且会直接撑爆上下文。价值在于：`max_chars` 按固定比例分配到各层，未选中的层把配额让给其余层；单次 pack 内层间配额**不互借**——互借会让结果依赖装配顺序，同一请求在无关的顺序调整后会返回不同的 pack，可预测性比多塞一点内容更值钱。超长内容在段落或句子边界截断并逐条标记 `truncated`（截断的指令可能改变行为，agent 自己看不出被剪过）。每层报告 `char_budget` / `chars_used` / `dropped` / `truncated`。
+
+**预算单位是字符而非 token。** token 成本依赖具体模型的 tokenizer，内置一个就把服务绑死在某个供应商的版本上。字符是精确、稳定、可解释的，调用方可自行套用字符/token 比率。这是个代价明确的代理指标，写在文档里而不是藏起来。
+
+**授权按层而非按端点。** 一个横跨五个域的端点不能让 `skills:r` 的 key 读到 memory。各层分别要求 `skills:r` / `knowledge:r` / `memory:r` / (`todos:r` 与 `notes:r` 各自独立判定)；TASK 层的 goal 是调用方自己的输入无需 scope，但 session 切片读 journal 需 `memory:r`。无权、失败或未配置的层返回空并附 note，调用仍然成功——部分上下文优于没有上下文，但绝不静默。
+
+**两处受限如实标注。** Skill 选择目前只有"显式 pin"与"检索 top-1"两种，由 Skill 知识契约驱动的动态发现是 K4；假装在这里做了会产出更差的选择却保持相同的 API 形态，让缺口不可见。TASK 层是从 journal 重建近期意图，不是 checkpoint 恢复（后者尚未实现），layer note 会说明这一点。
+
+**FACTS 实时查询、永不向量化**，与 §13.7 反模式 2 一致。
+
 ### 13.7 反模式
 
 1. **Memory 自动进 KB**：没有使用反馈门槛和审批的 promotion 会把幻觉复利化。
@@ -528,7 +540,7 @@ Context Pack
 与 K1–K5 主线并行，不互相阻塞：
 
 - **M1**（关联查询已实现，migration `000024`）：`skill_logs` 与 memory events 通过 `skill_version_id` + `session_id` 关联查询。这层关联是 validation 信号的归因锚点之一。剩余项：Quality suggestion 链接证据正文。
-- **M2**（K2 之后）：Context Pack API，一次调用返回带来源标签的四层最小上下文。
+- **M2**（已实现，`internal/contextpack`）：Context Pack API，一次调用返回带来源标签的五层最小上下文。
 - **M3**（K3 之后）：Memory → KB promotion 管道；notes 作为个人 KB source。
 
 ## 14. Graph 模型与 GraphRAG 评估（v0.3 增补）

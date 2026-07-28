@@ -77,6 +77,15 @@ func scopesFromContext(ctx context.Context) ([]string, bool) {
 	return scopes, ok
 }
 
+// ScopesFromContext exposes the caller's granted scopes to tools that must
+// authorise more than one resource. A tool spanning several domains cannot be
+// gated by the single scope in ScopeMiddleware, so it enforces the rest itself;
+// an empty slice means full access, matching auth.HasScope.
+func ScopesFromContext(ctx context.Context) []string {
+	scopes, _ := scopesFromContext(ctx)
+	return scopes
+}
+
 // ScopeMiddleware enforces a required scope per tool name, looked up from
 // requiredScopes. Tools without an entry are rejected.
 func ScopeMiddleware(requiredScopes map[string]string) server.ToolHandlerMiddleware {

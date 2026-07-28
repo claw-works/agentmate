@@ -112,3 +112,30 @@ wiki 层就位后应重新评估：Karpathy 的检索对象是 wiki pages，而�
 `retrieval_feedback`。它们不会阻塞账号删除（无相关唯一索引），但 `retrieval_queries.query`
 存的是用户查询原文，属客户数据。若这三张表的 `SET NULL` 是为了在账号注销后保留聚合统计，
 则需明确该保留是否可接受；否则应一并改为 `CASCADE`。
+
+
+## 2026-07-27 M2 Context Pack 已实现
+
+`internal/contextpack`，`POST /api/context/pack` 与 MCP `context_pack`。五层齐备，真实链路验证通过：
+
+- [x] 完整 pack：SKILL 1364 字 / KNOWLEDGE 5 条带精确 citation / MEMORY 5 条 / TASK goal，
+      总计 2712 字（预算 12000），`render=true` 输出的五个标签齐全且 citation 保留。
+- [x] 紧预算（800 字）：SKILL 截断并标记，KNOWLEDGE 丢弃 4 条，无任何层超预算，总量不超限。
+- [x] 层选择：`layers=[KNOWLEDGE,TASK]` 时配额合计 10500+1500=12000，未选层的份额被让出。
+- [x] `knowledge_domain` 收窄正确传递：`platform` 只回 platform-registry，`product` 只回 product-support。
+- [x] 指定 skill 生效；不存在的 skill 名返回 warning 而非静默换一个 skill。
+- [x] **按层授权**：只有 `memory:r`+`skills:r` 的受限 key 得到 SKILL/MEMORY/TASK，
+      KNOWLEDGE 与 FACTS 返回空并附 `insufficient scope` note，调用仍 200。
+- [x] MCP 端到端通过（initialize → tools/list → tools/call）。
+- [x] 输入校验：空 task、`max_chars` 越界、未知层、`top_k` 过大均 400。
+
+验证中修掉一个真实问题：空层的 `items` 序列化为 `null` 而非 `[]`，会迫使每个客户端处理两种
+"无内容"形态。已加回归测试锁住。
+
+观察到但不属于 M2 的问题：skill 检索选择质量有限。task 写"修复中文检索…需要知道 bigram 投影的
+设计取舍"时选中的是 `kb-lint` 而非更合适的 `grounded-answer`。原因是 skill 检索只命中 L0 card
+（正文不进索引，见架构文档的粒度不对称待议项），card 措辞决定了召回上限。K4 的 discovery
+contract 会正面解决选择问题。
+
+- [ ] Memory entry 多数没有 title，pack 的 MEMORY 层条目只显示 memory_type。是否要求
+      `memory_store` 生成或强制 title 需产品决策。
