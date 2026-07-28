@@ -86,3 +86,29 @@ demo 仓库已改为 **领域 / 主题两级**并重推：
 当前 skills 索引 L0 card（命中后按需展开 L1），knowledge 直接索引 chunk 正文、K0 catalog card 不参与检索。这个不对称是分别演进的结果而非设计，有两个真实后果：skills 的召回上限被 card 措辞锁死（查不到 `SKILL.md` 正文里的内容）；knowledge 缺少库级语义路由（KB 数量增长后 agent 无法先判断该查哪个库）。
 
 wiki 层就位后应重新评估：Karpathy 的检索对象是 wiki pages，而当前 hybrid 检索的对象是 raw sources——加速层装在了第一层上。建议等 K3 与 K4 discovery 明确"agent 按什么粒度找知识"后再定索引粒度，那才是真正的需求方。
+
+
+## 2026-07-27 M1 归因锚点已实现
+
+`memory_events.skill_version_id`（migration `000024`）+ 两个查询接口。真实链路验证通过：
+
+- [x] 同一会话跑两个 skill：`timeline?session_id=` 返回 8 项（2 skill_log + 6 event），
+      `unattributed_count=3` 如实反映手写 event 无归因。
+- [x] `timeline?skill_version_id=` 收窄到单个 skill 的 2 项（1 log + 1 event）——这是
+      `session_id` 单独做不到的事，也是本功能存在的理由。
+- [x] 反向归因四种情况全部正确：`skill_version` / `session_only` / `event_only` / `none`。
+- [x] 不存在或跨账号的 `skill_version_id` 返回 400；归因变更的重放返回 409 而非静默返回旧行。
+
+同时修复一个既有缺陷（migration `000025`）：`skill_versions` 与 `skill_logs` 的 `account_id`
+外键为 `ON DELETE SET NULL`，导致账号删除时客户内容残留，且第二个持有同名 active skill 的
+账号会因 `idx_skill_versions_global_active` 唯一索引冲突而**删除失败**。已改为 `CASCADE`。
+这个缺陷由 M1 的集成测试撞出来——测试跨多个临时账号复用相同 skill 名。
+
+- [ ] 库中若已有 `account_id IS NULL` 的孤儿 skill 行需人工处置（本地为 0 行）：
+      `SELECT count(*) FROM skill_versions WHERE account_id IS NULL`。这些行已无法归属，
+      未自动删除。
+
+待决策：其余三张表的 `account_id` 仍为 `SET NULL`——`api_logs`、`retrieval_queries`、
+`retrieval_feedback`。它们不会阻塞账号删除（无相关唯一索引），但 `retrieval_queries.query`
+存的是用户查询原文，属客户数据。若这三张表的 `SET NULL` 是为了在账号注销后保留聚合统计，
+则需明确该保留是否可接受；否则应一并改为 `CASCADE`。

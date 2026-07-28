@@ -153,6 +153,17 @@ Empty scopes array `[]` means **full access**.
 - `GET /api/memory/entries` — List memories by scope, type, or status (scope: `memory:r`)
 - `GET /api/memory/entries/:id` — Get a memory with its evidence (scope: `memory:r`)
 - `POST /api/memory/search` — Hybrid PostgreSQL FTS and Qdrant search (scope: `memory:r`)
+- `GET /api/memory/timeline?session_id=&skill_version_id=&limit=` — Time-ordered merge of skill executions and memory events. Requires `session_id` or `skill_version_id`; an unfiltered account-wide timeline is a data dump, not attribution. Reports `skill_log_count`, `memory_event_count`, `unattributed_count` and `truncated` so the coverage of an attribution conclusion is explicit (scope: `memory:r`)
+- `GET /api/memory/entries/:id/attribution` — Resolve which skill execution produced a durable memory. Walks entry → source event → skill version and reports how far the chain got via `resolution`: `skill_version`, `session_only`, `event_only`, or `none`. Includes the surrounding session timeline when a session is known (scope: `memory:r`)
+
+Memory events carry an optional `skill_version_id` attributing them to the skill
+execution that produced them. `session_id` alone is not enough: a session commonly
+runs several skills, so session-level correlation cannot tell which execution
+produced a given event. The value is verified against the caller's account, and it
+participates in the idempotency hash — a replay that adds or changes attribution
+returns `409 Conflict` rather than silently returning the original unattributed
+row. Leave it unset for events with no skill origin, such as a note the user wrote
+directly.
 
 Event retries must reuse the same `idempotency_key`. Reusing a key with different
 event content returns `409 Conflict`. Durable memories require either
@@ -367,7 +378,7 @@ integration opt into only the modules it needs.
 | `POST /mcp/reports` | `report_create`, `report_get`, `report_list`, `report_list_sources`, `report_update`, `report_delete` |
 | `POST /mcp/bookmarks` | `bookmark_create`, `bookmark_get`, `bookmark_list`, `bookmark_update`, `bookmark_delete` |
 | `POST /mcp/expenses` | `expense_create`, `expense_get`, `expense_list`, `expense_summary`, `expense_update`, `expense_delete` |
-| `POST /mcp/memory` | `memory_record`, `memory_store`, `memory_search`, `memory_get` |
+| `POST /mcp/memory` | `memory_record`, `memory_store`, `memory_search`, `memory_get`, `memory_timeline`, `memory_attribution` |
 | `POST /mcp/skills` | `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_source_sync`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active`, `skill_catalog_list`, `skill_compile`, `skill_version_instructions`, `skill_version_resources`, `skill_resource_get`, `skill_quality_run`, `skill_quality_get` |
 | `POST /mcp/knowledge` | `knowledge_sources_list`, `knowledge_source_sync`, `knowledge_documents_list`, `knowledge_document_get`, `knowledge_catalog_list`, `knowledge_search`, `knowledge_index_active`, `knowledge_document_links` |
 

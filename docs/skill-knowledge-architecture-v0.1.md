@@ -527,7 +527,7 @@ Context Pack
 
 与 K1–K5 主线并行，不互相阻塞：
 
-- **M1**（可先做，且是演进闭环的前置）：`skill_logs` 与 memory events 通过 `skill_version_id` + `session_id` 关联查询；Quality suggestion 可链接证据正文。这层关联同时是 validation 信号的归因锚点之一。
+- **M1**（关联查询已实现，migration `000024`）：`skill_logs` 与 memory events 通过 `skill_version_id` + `session_id` 关联查询。这层关联是 validation 信号的归因锚点之一。剩余项：Quality suggestion 链接证据正文。
 - **M2**（K2 之后）：Context Pack API，一次调用返回带来源标签的四层最小上下文。
 - **M3**（K3 之后）：Memory → KB promotion 管道；notes 作为个人 KB source。
 
@@ -598,6 +598,12 @@ Context Pack
 里程碑 K2 已实现（migration `000021`、`internal/knowledge` catalog/chunker、`retrieval.NamespaceKnowledge`）：K0 collection cards（manifest 元数据、文档计数、索引状态）、fence-aware Markdown heading/paragraph chunking（8000 runes/chunk、256 chunks/文档、稳定 chunk key）、包内 Markdown 文档链接图（`knowledge_document_links` 派生表，ingest 事务内构建、reindex 幂等重建）、account-scoped hybrid 检索（lexical + semantic，`source_ids` 所有权校验、include_content 门控、1-hop 邻居 metadata 上限 16）、reindex 与失败容忍（embed/Qdrant 失败保留 lexical fallback，旧 revision/尾部 chunk 清理，stale vector 不可 hydration）、Knowledge UI 与独立 MCP。chunk 正文保存在 retrieval 投影中是 K2 evidence 检索的设计内行为，且可从 `knowledge_documents` 完整重建。
 
 尚未实现：KnowledgeBuildRevision、KnowledgeProfile、knowledge compiler / persistent wiki、`knowledge_discover` 与 KnowledgeResolutionRun（K3–K5）。
+
+M1 归因锚点（migration `000024`、`internal/memory`）：`memory_events` 新增可空 `skill_version_id`。仅有 `session_id` 不足以归因——一个会话通常跑多个 skill，会话级关联无法判断某个 event 由哪次执行产生。字段可空是刻意的：并非所有 event 都源自 skill 执行（用户手写的笔记就没有），强制取值会迫使调用方编造归因，比诚实记录"来源未知"更糟。外键是 account-scoped 复合键，跨账号归因在数据库层即不可能；service 层的存在性检查只为把约束违反转成可读错误。`skill_version_id` 参与幂等 hash：否则新增归因的重放会静默返回原来那条无归因记录，调用方会以为归因成功了。
+
+对外提供 `GET /api/memory/timeline`（skill 执行与 memory event 的时序合并，必须带 `session_id` 或 `skill_version_id` 锚点，并显式报告 `unattributed_count` 与 `truncated`）与 `GET /api/memory/entries/:id/attribution`（反向解析 entry → source event → skill version，用 `resolution` 报告链路走到哪一步：`skill_version` / `session_only` / `event_only` / `none`）。union 在数据库内完成而非在 Go 里合并两个结果集，因为 LIMIT 必须作用于合并后的排序——先各自 LIMIT 再合并会静默丢掉交错的尾部。
+
+账号删除的残留修复（migration `000025`）：`skill_versions` 与 `skill_logs` 的 `account_id` 外键原为 `ON DELETE SET NULL`，导致两个真实后果——（1）账号可能删不掉，因为 `idx_skill_versions_global_active` 是 `UNIQUE(skill_name) WHERE account_id IS NULL AND is_active`，第二个持有同名 active skill 的账号被删时会与第一个的孤儿行冲突；（2）客户内容在账号删除后残留（`skill_versions` 存完整 `SKILL.md` 正文，`skill_logs` 存 `trigger_text` 与 `user_correction`）。已改为 `CASCADE`。所有 skill 查询均按 `account_id = $1` 过滤，无任何路径把 `account_id IS NULL` 当作全局可见，因此这从未构成跨账号泄漏，只是保留问题与删除阻塞。既有孤儿行刻意不自动清理：它们已无法归属到账号，静默删除无主的客户数据是更差的默认行为。
 
 Domain 建模（migration `000022`、`internal/pkgpath`）：Skill 与 Knowledge package 按领域组织在仓库目录下（`platform/retrieval`、`product/faq`）。领域从 `package_path` 首段推导并落成 `skill_sources.domain` / `knowledge_sources.domain` 列，规则只在 `internal/pkgpath` 实现一份，两个 registry 共用——否则领域分组在两侧含义不同。约定：单段路径**没有** domain（扁平 package 未按领域组织，把自身名当领域会凭空造出一个分组），未分类记为 `''` 而非 NULL，避免三值逻辑。source name 由完整路径段拼接（`platform/retrieval` → `platform-retrieval`），因为 `knowledge_sources` 唯一键是 `(account_id, name)`，此前用 basename 推导会让不同领域下同名子目录静默互相覆盖。domain 不接受客户端输入，一律由 package 位置推导。`knowledge_catalog_list` 返回 domain 与全账号 domain 清单（含 collection 计数），`knowledge_search` 支持 domain 过滤并与 `source_ids` 取交集（只能收窄，不能放宽）。
 
