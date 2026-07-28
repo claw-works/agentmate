@@ -35,7 +35,11 @@ type Event struct {
 	OccurredAt     time.Time       `json:"occurred_at"`
 	IdempotencyKey string          `json:"idempotency_key"`
 	ContentHash    string          `json:"content_hash"`
-	CreatedAt      time.Time       `json:"created_at"`
+	// SkillVersionID attributes the event to the skill execution that produced
+	// it. Absent when the event has no skill origin, for example a note the
+	// user wrote directly.
+	SkillVersionID *string   `json:"skill_version_id,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type RecordEventRequest struct {
@@ -49,6 +53,9 @@ type RecordEventRequest struct {
 	SourceID       string         `json:"source_id"`
 	OccurredAt     *time.Time     `json:"occurred_at"`
 	IdempotencyKey string         `json:"idempotency_key"`
+	// SkillVersionID is optional. When set it must belong to the caller's
+	// account; the server verifies this rather than trusting the client.
+	SkillVersionID string `json:"skill_version_id"`
 }
 
 type Entry struct {
@@ -171,4 +178,77 @@ type createEntryInput struct {
 	ImportanceValue  float64
 	ExtractionMethod string
 	ExtractorVersion string
+}
+
+// ─── M1: attribution ───
+
+// TimelineEntryKind distinguishes the two journals being merged. A timeline is
+// deliberately not a single table: skill executions and memory events are
+// written by different domains at different times, and forcing them into one
+// table would couple their write paths.
+const (
+	TimelineKindSkillLog    = "skill_log"
+	TimelineKindMemoryEvent = "memory_event"
+)
+
+// TimelineItem is one entry in a session timeline. Only the fields relevant to
+// attribution are surfaced: the goal is to answer "what ran, in what order, and
+// what did it record", not to duplicate either record in full.
+type TimelineItem struct {
+	Kind           string    `json:"kind"`
+	ID             string    `json:"id"`
+	OccurredAt     time.Time `json:"occurred_at"`
+	SessionID      string    `json:"session_id,omitempty"`
+	SkillVersionID *string   `json:"skill_version_id,omitempty"`
+	SkillName      string    `json:"skill_name,omitempty"`
+	SkillVersion   string    `json:"skill_version,omitempty"`
+	// Skill log fields.
+	Outcome       string `json:"outcome,omitempty"`
+	WasTriggered  *bool  `json:"was_triggered,omitempty"`
+	FailureReason string `json:"failure_reason,omitempty"`
+	DurationMs    *int   `json:"duration_ms,omitempty"`
+	// Memory event fields.
+	EventType string `json:"event_type,omitempty"`
+	// Attributed reports whether this item can be tied to a specific skill
+	// version. Unattributed items are still shown — hiding them would make a
+	// timeline look complete when it is not — but they cannot support
+	// attribution conclusions.
+	Attributed bool `json:"attributed"`
+}
+
+type SessionTimelineParams struct {
+	SessionID      string
+	SkillVersionID string
+	Limit          int
+}
+
+type SessionTimelineResponse struct {
+	SessionID string         `json:"session_id"`
+	Items     []TimelineItem `json:"items"`
+	Total     int            `json:"total"`
+	// Counters make the coverage of an attribution query explicit rather than
+	// something the caller has to derive by scanning items.
+	SkillLogCount     int  `json:"skill_log_count"`
+	MemoryEventCount  int  `json:"memory_event_count"`
+	UnattributedCount int  `json:"unattributed_count"`
+	Truncated         bool `json:"truncated"`
+}
+
+// EntryAttribution answers the reverse question: which skill execution produced
+// this durable memory. The chain is entry -> source event -> skill version, so
+// it breaks at the first missing link, and the response says where it broke
+// instead of returning an empty result.
+type EntryAttribution struct {
+	EntryID        string  `json:"entry_id"`
+	SourceEventID  *string `json:"source_event_id,omitempty"`
+	SessionID      string  `json:"session_id,omitempty"`
+	SkillVersionID *string `json:"skill_version_id,omitempty"`
+	SkillName      string  `json:"skill_name,omitempty"`
+	SkillVersion   string  `json:"skill_version,omitempty"`
+	// Resolution is one of: "skill_version", "session_only", "event_only",
+	// "none". It tells the caller how far the chain resolved.
+	Resolution string `json:"resolution"`
+	// SessionTimeline is the surrounding session activity when a session is
+	// known, capped and ordered by time.
+	SessionTimeline []TimelineItem `json:"session_timeline,omitempty"`
 }

@@ -15,6 +15,9 @@ var toolScopes = map[string]string{
 	"memory_store":  "memory:rw",
 	"memory_search": "memory:r",
 	"memory_get":    "memory:r",
+
+	"memory_timeline":    "memory:r",
+	"memory_attribution": "memory:r",
 }
 
 func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
@@ -38,6 +41,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		mcp.WithInteger("sequence_no", mcp.Min(0), mcp.Description("Monotonic sequence number within the session")),
 		mcp.WithString("source_type", mcp.Description("Optional source resource type")),
 		mcp.WithString("source_id", mcp.Description("Optional source resource ID")),
+		mcp.WithString("skill_version_id", mcp.Description("Optional: the skill version whose execution produced this event. Pass it whenever the event comes from running a skill; session_id alone cannot tell which skill in a multi-skill session produced the event. Part of the idempotency hash.")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		owner, ok := mcpauth.OwnerFromContext(ctx)
 		if !ok {
@@ -53,6 +57,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 			SessionID:      mcpauth.StrArg(args, "session_id"),
 			SourceType:     mcpauth.StrArg(args, "source_type"),
 			SourceID:       mcpauth.StrArg(args, "source_id"),
+			SkillVersionID: mcpauth.StrArg(args, "skill_version_id"),
 		}
 		if value, ok := args["sequence_no"].(float64); ok {
 			sequence := int64(value)
@@ -159,6 +164,43 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 			return mcpauth.ErrResult(err.Error()), nil
 		}
 		return mcpauth.JSONResult(entry)
+	})
+
+	s.AddTool(mcp.NewTool("memory_timeline",
+		mcp.WithDescription("Time-ordered merge of skill executions and memory events for one session or one skill version. Use it to see what ran and what it recorded, in order. Requires session_id or skill_version_id: an unfiltered timeline is a data dump, not attribution. The response reports skill_log_count, memory_event_count, unattributed_count and truncated so the coverage of an attribution conclusion is explicit."),
+		mcp.WithString("session_id", mcp.Description("External session identifier")),
+		mcp.WithString("skill_version_id", mcp.Description("Skill version ID; returns everything this version touched")),
+		mcp.WithNumber("limit", mcp.Description("Max merged items (default 200, max 500)")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		response, err := svc.SessionTimeline(ctx, owner, SessionTimelineParams{
+			SessionID:      mcpauth.StrArg(args, "session_id"),
+			SkillVersionID: mcpauth.StrArg(args, "skill_version_id"),
+			Limit:          mcpauth.IntArg(args, "limit"),
+		})
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	s.AddTool(mcp.NewTool("memory_attribution",
+		mcp.WithDescription("Resolve which skill execution produced a durable memory. Walks entry -> source event -> skill version and reports how far the chain resolved via resolution: skill_version, session_only, event_only, or none. Includes the surrounding session timeline when a session is known."),
+		mcp.WithString("id", mcp.Required(), mcp.Description("Memory entry ID")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		response, err := svc.EntryAttribution(ctx, owner, mcpauth.StrArg(req.GetArguments(), "id"))
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
 	})
 
 	return server.NewStreamableHTTPServer(s, server.WithHTTPContextFunc(mcpauth.HTTPContextFunc(authSvc)))

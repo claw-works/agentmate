@@ -42,6 +42,18 @@ func (s *Service) RecordEvent(ctx context.Context, owner ownership.Owner, req Re
 	if err := validateEventRequest(req); err != nil {
 		return nil, false, err
 	}
+	// The account-scoped composite foreign key already makes cross-account
+	// attribution impossible. This check exists to turn that constraint
+	// violation into a readable error instead of a raw FK failure.
+	if req.SkillVersionID != "" {
+		exists, err := s.repo.SkillVersionExistsInAccount(ctx, owner.Account(), req.SkillVersionID)
+		if err != nil {
+			return nil, false, err
+		}
+		if !exists {
+			return nil, false, invalidInputf("skill_version_id not found in this account")
+		}
+	}
 
 	hash, err := hashEvent(req)
 	if err != nil {
@@ -277,6 +289,7 @@ func normalizeEventRequest(req *RecordEventRequest) {
 	req.SourceType = strings.ToLower(strings.TrimSpace(req.SourceType))
 	req.SourceID = strings.TrimSpace(req.SourceID)
 	req.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
+	req.SkillVersionID = strings.TrimSpace(req.SkillVersionID)
 	if req.OccurredAt != nil {
 		value := req.OccurredAt.UTC()
 		req.OccurredAt = &value
@@ -421,10 +434,16 @@ func hashEvent(req RecordEventRequest) (string, error) {
 		SourceType string         `json:"source_type"`
 		SourceID   string         `json:"source_id"`
 		OccurredAt *time.Time     `json:"occurred_at,omitempty"`
+		// Attribution is part of the event's identity. Leaving it out of the
+		// hash would let a replay that adds or changes skill_version_id return
+		// the original unattributed row, so the caller would believe the
+		// attribution landed when it silently did not.
+		SkillVersionID string `json:"skill_version_id,omitempty"`
 	}{
 		ScopeType: req.ScopeType, ScopeKey: req.ScopeKey, SessionID: req.SessionID,
 		SequenceNo: req.SequenceNo, EventType: req.EventType, Payload: req.Payload,
 		SourceType: req.SourceType, SourceID: req.SourceID, OccurredAt: req.OccurredAt,
+		SkillVersionID: req.SkillVersionID,
 	}
 	encoded, err := json.Marshal(canonical)
 	if err != nil {
@@ -568,4 +587,102 @@ var validMemoryTypes = map[string]bool{
 var validStatuses = map[string]bool{
 	StatusPending: true, StatusActive: true, StatusSuperseded: true,
 	StatusInvalidated: true, StatusArchived: true, StatusExpired: true,
+}
+
+// ─── M1: attribution ───
+
+// SessionTimeline returns skill executions and memory events for one session or
+// one skill version, time-ordered.
+//
+// Requiring at least one anchor is deliberate: an unfiltered timeline over a
+// whole account is not attribution, it is a data dump, and it would grow
+// unbounded with usage.
+func (s *Service) SessionTimeline(ctx context.Context, owner ownership.Owner, params SessionTimelineParams) (*SessionTimelineResponse, error) {
+	if err := validateOwner(owner); err != nil {
+		return nil, err
+	}
+	params.SessionID = strings.TrimSpace(params.SessionID)
+	params.SkillVersionID = strings.TrimSpace(params.SkillVersionID)
+	if params.SessionID == "" && params.SkillVersionID == "" {
+		return nil, invalidInputf("session_id or skill_version_id required")
+	}
+	if params.Limit < 0 {
+		return nil, invalidInputf("limit must not be negative")
+	}
+	if params.Limit == 0 {
+		params.Limit = 200
+	}
+	if params.Limit > 500 {
+		return nil, invalidInputf("limit must be at most 500")
+	}
+
+	items, err := s.repo.SessionTimeline(ctx, owner.Account(), params)
+	if err != nil {
+		return nil, err
+	}
+	response := &SessionTimelineResponse{
+		SessionID: params.SessionID,
+		Items:     items,
+		Total:     len(items),
+		// A full page means later activity may exist beyond it. Reporting this
+		// matters for attribution: a conclusion drawn from a truncated timeline
+		// can be wrong, and the caller has no other way to know.
+		Truncated: len(items) == params.Limit,
+	}
+	for _, item := range items {
+		switch item.Kind {
+		case TimelineKindSkillLog:
+			response.SkillLogCount++
+		case TimelineKindMemoryEvent:
+			response.MemoryEventCount++
+		}
+		if !item.Attributed {
+			response.UnattributedCount++
+		}
+	}
+	return response, nil
+}
+
+// EntryAttribution resolves which skill execution produced a durable memory,
+// and includes the surrounding session activity when a session is known.
+func (s *Service) EntryAttribution(ctx context.Context, owner ownership.Owner, entryID string) (*EntryAttribution, error) {
+	if err := validateOwner(owner); err != nil {
+		return nil, err
+	}
+	entryID = strings.TrimSpace(entryID)
+	if entryID == "" {
+		return nil, invalidInputf("entry id required")
+	}
+
+	attribution, err := s.repo.GetEntryAttribution(ctx, owner.Account(), entryID)
+	if err != nil {
+		return nil, err
+	}
+
+	switch {
+	case attribution.SkillVersionID != nil && *attribution.SkillVersionID != "":
+		attribution.Resolution = "skill_version"
+	case attribution.SessionID != "":
+		// The event exists and names a session, but no skill version was
+		// recorded. Session scope is as far as this chain goes.
+		attribution.Resolution = "session_only"
+	case attribution.SourceEventID != nil:
+		attribution.Resolution = "event_only"
+	default:
+		// No source event at all: the memory was written directly rather than
+		// derived from journaled activity.
+		attribution.Resolution = "none"
+	}
+
+	if attribution.SessionID != "" {
+		timeline, err := s.repo.SessionTimeline(ctx, owner.Account(), SessionTimelineParams{
+			SessionID: attribution.SessionID,
+			Limit:     50,
+		})
+		if err != nil {
+			return nil, err
+		}
+		attribution.SessionTimeline = timeline
+	}
+	return attribution, nil
 }

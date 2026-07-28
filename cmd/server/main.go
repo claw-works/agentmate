@@ -164,6 +164,8 @@ func main() {
 	protected.GET("/memory/entries", auth.RequireScope("memory:r"), memoryHandler.ListEntries)
 	protected.GET("/memory/entries/:id", auth.RequireScope("memory:r"), memoryHandler.GetEntry)
 	protected.POST("/memory/search", auth.RequireScope("memory:r"), memoryHandler.SearchEntries)
+	protected.GET("/memory/timeline", auth.RequireScope("memory:r"), memoryHandler.SessionTimeline)
+	protected.GET("/memory/entries/:id/attribution", auth.RequireScope("memory:r"), memoryHandler.EntryAttribution)
 	// Memory - write
 	protected.POST("/memory/events", auth.RequireScope("memory:rw"), memoryHandler.RecordEvent)
 	protected.POST("/memory/entries", auth.RequireScope("memory:rw"), memoryHandler.CreateEntry)

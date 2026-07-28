@@ -30,13 +30,13 @@ func (r *Repo) RecordEvent(ctx context.Context, owner ownership.Owner, req Recor
 	err = r.pool.QueryRow(ctx,
 		`INSERT INTO memory_events
 		 (account_id, user_id, key_id, scope_type, scope_key, session_id, sequence_no, event_type,
-		  payload, source_type, source_id, occurred_at, idempotency_key, content_hash)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		  payload, source_type, source_id, occurred_at, idempotency_key, content_hash, skill_version_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		 ON CONFLICT (account_id, idempotency_key) DO NOTHING
-		 RETURNING id, account_id, user_id, key_id, scope_type, scope_key, session_id, sequence_no,
-		   event_type, payload, source_type, source_id, occurred_at, idempotency_key, content_hash, created_at`,
+		 RETURNING `+eventColumns,
 		owner.Account(), owner.UserID, owner.KeyID, req.ScopeType, req.ScopeKey, req.SessionID, req.SequenceNo,
 		req.EventType, payload, req.SourceType, req.SourceID, occurredAt, req.IdempotencyKey, contentHash,
+		nullableSkillVersionID(req.SkillVersionID),
 	).Scan(scanEvent(&event)...)
 	if err == nil {
 		return &event, true, nil
@@ -46,8 +46,7 @@ func (r *Repo) RecordEvent(ctx context.Context, owner ownership.Owner, req Recor
 	}
 
 	err = r.pool.QueryRow(ctx,
-		`SELECT id, account_id, user_id, key_id, scope_type, scope_key, session_id, sequence_no,
-		   event_type, payload, source_type, source_id, occurred_at, idempotency_key, content_hash, created_at
+		`SELECT `+eventColumns+`
 		 FROM memory_events
 		 WHERE account_id = $1 AND idempotency_key = $2`,
 		owner.Account(), req.IdempotencyKey,
@@ -57,6 +56,19 @@ func (r *Repo) RecordEvent(ctx context.Context, owner ownership.Owner, req Recor
 	}
 	return &event, false, nil
 }
+
+// nullableSkillVersionID maps an absent attribution to NULL. Storing "" would
+// violate the UUID column type, and storing a zero UUID would fabricate a
+// reference to a skill version that does not exist.
+func nullableSkillVersionID(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+const eventColumns = `id, account_id, user_id, key_id, scope_type, scope_key, session_id, sequence_no,
+	event_type, payload, source_type, source_id, occurred_at, idempotency_key, content_hash, skill_version_id, created_at`
 
 func (r *Repo) CreateEntry(ctx context.Context, owner ownership.Owner, in createEntryInput) (*EntryDetail, error) {
 	tx, err := r.pool.Begin(ctx)
@@ -232,7 +244,8 @@ func scanEvent(event *Event) []any {
 	return []any{
 		&event.ID, &event.AccountID, &event.UserID, &event.KeyID, &event.ScopeType, &event.ScopeKey,
 		&event.SessionID, &event.SequenceNo, &event.EventType, &event.Payload, &event.SourceType,
-		&event.SourceID, &event.OccurredAt, &event.IdempotencyKey, &event.ContentHash, &event.CreatedAt,
+		&event.SourceID, &event.OccurredAt, &event.IdempotencyKey, &event.ContentHash,
+		&event.SkillVersionID, &event.CreatedAt,
 	}
 }
 
@@ -261,4 +274,125 @@ func marshalJSON(value any) ([]byte, error) {
 		return nil, fmt.Errorf("marshal json: %w", err)
 	}
 	return encoded, nil
+}
+
+// SkillVersionExistsInAccount reports whether a skill version belongs to the
+// account. Memory reads skill_versions directly instead of depending on the
+// skills package: this is a single existence probe for an account-scoped
+// attribution check, and a package dependency between the two domains would be
+// a much heavier coupling than one query.
+func (r *Repo) SkillVersionExistsInAccount(ctx context.Context, accountID, skillVersionID string) (bool, error) {
+	var exists bool
+	err := r.pool.QueryRow(ctx,
+		`SELECT EXISTS (
+		   SELECT 1 FROM skill_versions
+		    WHERE id = $1::uuid AND account_id = $2
+		 )`,
+		skillVersionID, accountID,
+	).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+// ─── M1: attribution queries ───
+
+// SessionTimeline merges skill executions and memory events into one
+// time-ordered view. Both legs are account-scoped and share the same filter
+// semantics: an empty session_id or skill_version_id means "do not filter on
+// it", so the same query serves "everything in this session" and "everything
+// this skill version touched".
+//
+// The union runs in the database rather than merging two result sets in Go so
+// that LIMIT applies to the merged ordering. Merging after two independent
+// LIMITs would silently drop the interleaved tail.
+func (r *Repo) SessionTimeline(ctx context.Context, accountID string, params SessionTimelineParams) ([]TimelineItem, error) {
+	limit := params.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT kind, id::text, occurred_at, session_id, skill_version_id::text,
+		        skill_name, skill_version, outcome, was_triggered, failure_reason, duration_ms, event_type
+		 FROM (
+		   SELECT 'skill_log' AS kind, log.id, log.created_at AS occurred_at,
+		          COALESCE(log.session_id, '') AS session_id, log.skill_version_id,
+		          COALESCE(log.skill_name, '') AS skill_name, COALESCE(log.skill_version, '') AS skill_version,
+		          COALESCE(log.outcome, '') AS outcome, log.was_triggered,
+		          COALESCE(log.failure_reason, '') AS failure_reason, log.duration_ms,
+		          '' AS event_type
+		     FROM skill_logs AS log
+		    WHERE log.account_id = $1
+		      AND ($2 = '' OR log.session_id = $2)
+		      AND ($3 = '' OR log.skill_version_id::text = $3)
+		   UNION ALL
+		   SELECT 'memory_event' AS kind, event.id, event.occurred_at,
+		          COALESCE(event.session_id, '') AS session_id, event.skill_version_id,
+		          COALESCE(version.skill_name, '') AS skill_name, COALESCE(version.version, '') AS skill_version,
+		          '' AS outcome, NULL::boolean AS was_triggered,
+		          '' AS failure_reason, NULL::integer AS duration_ms,
+		          event.event_type
+		     FROM memory_events AS event
+		     LEFT JOIN skill_versions AS version
+		       ON version.id = event.skill_version_id AND version.account_id = event.account_id
+		    WHERE event.account_id = $1
+		      AND ($2 = '' OR event.session_id = $2)
+		      AND ($3 = '' OR event.skill_version_id::text = $3)
+		 ) AS timeline
+		 ORDER BY occurred_at, kind, id
+		 LIMIT $4`,
+		accountID, params.SessionID, params.SkillVersionID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]TimelineItem, 0)
+	for rows.Next() {
+		var item TimelineItem
+		if err := rows.Scan(
+			&item.Kind, &item.ID, &item.OccurredAt, &item.SessionID, &item.SkillVersionID,
+			&item.SkillName, &item.SkillVersion, &item.Outcome, &item.WasTriggered,
+			&item.FailureReason, &item.DurationMs, &item.EventType,
+		); err != nil {
+			return nil, err
+		}
+		item.Attributed = item.SkillVersionID != nil && *item.SkillVersionID != ""
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// GetEntryAttribution walks entry -> source event -> skill version in one query.
+// Each link is optional, so every projected column is nullable and the caller
+// classifies how far the chain resolved.
+func (r *Repo) GetEntryAttribution(ctx context.Context, accountID, entryID string) (*EntryAttribution, error) {
+	var attribution EntryAttribution
+	var sessionID *string
+	err := r.pool.QueryRow(ctx,
+		`SELECT entry.id::text,
+		        event.id::text,
+		        event.session_id,
+		        event.skill_version_id::text,
+		        COALESCE(version.skill_name, ''),
+		        COALESCE(version.version, '')
+		   FROM memory_entries AS entry
+		   LEFT JOIN memory_events AS event
+		     ON event.id = entry.source_event_id AND event.account_id = entry.account_id
+		   LEFT JOIN skill_versions AS version
+		     ON version.id = event.skill_version_id AND version.account_id = event.account_id
+		  WHERE entry.account_id = $1 AND entry.id = $2::uuid`,
+		accountID, entryID,
+	).Scan(
+		&attribution.EntryID, &attribution.SourceEventID, &sessionID,
+		&attribution.SkillVersionID, &attribution.SkillName, &attribution.SkillVersion,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if sessionID != nil {
+		attribution.SessionID = *sessionID
+	}
+	return &attribution, nil
 }

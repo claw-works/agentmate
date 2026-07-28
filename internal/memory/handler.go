@@ -126,3 +126,36 @@ func writeError(c *gin.Context, err error) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 	}
 }
+
+// ─── M1: attribution ───
+
+func (h *Handler) SessionTimeline(c *gin.Context) {
+	limit := 0
+	if raw, present := c.GetQuery("limit"); present {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be an integer"})
+			return
+		}
+		limit = parsed
+	}
+	response, err := h.svc.SessionTimeline(c.Request.Context(), auth.OwnerFromContext(c), SessionTimelineParams{
+		SessionID:      c.Query("session_id"),
+		SkillVersionID: c.Query("skill_version_id"),
+		Limit:          limit,
+	})
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) EntryAttribution(c *gin.Context) {
+	response, err := h.svc.EntryAttribution(c.Request.Context(), auth.OwnerFromContext(c), c.Param("id"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
