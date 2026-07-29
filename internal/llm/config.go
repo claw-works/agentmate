@@ -1,0 +1,137 @@
+// Package llm provides a minimal chat-completions client for the two LLM roles
+// the platform needs: the compiler that writes wiki pages, and the reviewer that
+// checks whether those pages stay faithful to their citations.
+//
+// The two roles are configured independently — endpoint, key and model each —
+// because the reviewer is supposed to be heterogeneous. A reviewer sharing the
+// generator's priors misses the generator's mistakes, so review has to be able to
+// run on a different provider entirely. Whether it actually does is recorded per
+// build rather than assumed: see Independence.
+package llm
+
+import (
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Role names the two configured LLM identities.
+const (
+	RoleCompiler = "compiler"
+	RoleReviewer = "reviewer"
+)
+
+// Independence describes how separated the reviewer is from the compiler. It is
+// stored alongside each build so the collusion risk of a given result is visible
+// in the data instead of depending on someone remembering the configuration at
+// the time.
+const (
+	// IndependenceCrossProvider: different endpoints, so different vendors.
+	IndependenceCrossProvider = "cross_provider"
+	// IndependenceSameProvider: same endpoint, different model. Reduces
+	// correlation but does not remove it — models from one vendor share training
+	// data and failure modes.
+	IndependenceSameProvider = "same_provider"
+	// IndependenceSameModel: identical model. Self-review; treat its verdicts as
+	// nearly uninformative.
+	IndependenceSameModel = "same_model"
+	// IndependenceUnavailable: the reviewer is not configured.
+	IndependenceUnavailable = "unavailable"
+)
+
+type RoleConfig struct {
+	BaseURL     string
+	APIKey      string
+	Model       string
+	Temperature float64
+	MaxTokens   int
+	Timeout     time.Duration
+}
+
+func (c RoleConfig) Configured() bool {
+	return c.APIKey != "" && c.Model != "" && c.BaseURL != ""
+}
+
+type Config struct {
+	Compiler RoleConfig
+	Reviewer RoleConfig
+}
+
+// Independence classifies the reviewer relative to the compiler.
+func (c Config) Independence() string {
+	if !c.Reviewer.Configured() {
+		return IndependenceUnavailable
+	}
+	switch {
+	case !strings.EqualFold(c.Reviewer.BaseURL, c.Compiler.BaseURL):
+		return IndependenceCrossProvider
+	case strings.EqualFold(c.Reviewer.Model, c.Compiler.Model):
+		return IndependenceSameModel
+	default:
+		return IndependenceSameProvider
+	}
+}
+
+// ConfigFromEnv reads both roles.
+//
+// Each role falls back to the embedding endpoint and key, because in practice a
+// deployment starts with one provider credential and only later splits the roles
+// apart. Falling back keeps that first deployment working while Independence
+// reports honestly that the reviewer is not actually independent yet.
+func ConfigFromEnv() Config {
+	sharedBaseURL := env("EMBEDDING_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+	sharedKey := os.Getenv("EMBEDDING_API_KEY")
+
+	compiler := RoleConfig{
+		BaseURL: strings.TrimRight(env("COMPILER_BASE_URL", sharedBaseURL), "/"),
+		APIKey:  env("COMPILER_API_KEY", sharedKey),
+		Model:   env("COMPILER_MODEL", "qwen3.7-plus"),
+		// Compilation must be as reproducible as an LLM allows: the same sources
+		// should not produce wildly different wikis run to run. It is still not
+		// deterministic, which is why builds are immutable and versioned.
+		Temperature: envFloat("COMPILER_TEMPERATURE", 0.2),
+		MaxTokens:   envInt("COMPILER_MAX_TOKENS", 4096),
+		Timeout:     time.Duration(envInt("COMPILER_TIMEOUT_SECONDS", 180)) * time.Second,
+	}
+	reviewer := RoleConfig{
+		BaseURL: strings.TrimRight(env("REVIEWER_BASE_URL", sharedBaseURL), "/"),
+		APIKey:  env("REVIEWER_API_KEY", sharedKey),
+		// A different model by default so review is at least not literal
+		// self-review. Point REVIEWER_BASE_URL at another vendor for real
+		// independence.
+		Model: env("REVIEWER_MODEL", "qwen-max"),
+		// Judgement should be near-deterministic: the same claim and the same
+		// source ought to get the same verdict.
+		Temperature: envFloat("REVIEWER_TEMPERATURE", 0),
+		MaxTokens:   envInt("REVIEWER_MAX_TOKENS", 2048),
+		Timeout:     time.Duration(envInt("REVIEWER_TIMEOUT_SECONDS", 120)) * time.Second,
+	}
+	return Config{Compiler: compiler, Reviewer: reviewer}
+}
+
+func env(key, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func envInt(key string, fallback int) int {
+	if value, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key))); err == nil && value > 0 {
+		return value
+	}
+	return fallback
+}
+
+func envFloat(key string, fallback float64) float64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || value < 0 {
+		return fallback
+	}
+	return value
+}
