@@ -91,8 +91,22 @@ func ConfigFromEnv() Config {
 		// should not produce wildly different wikis run to run. It is still not
 		// deterministic, which is why builds are immutable and versioned.
 		Temperature: envFloat("COMPILER_TEMPERATURE", 0.2),
-		MaxTokens:   envInt("COMPILER_MAX_TOKENS", 4096),
-		Timeout:     time.Duration(envInt("COMPILER_TIMEOUT_SECONDS", 180)) * time.Second,
+		// A whole wiki is emitted in one reply, so the output budget has to hold
+		// every page at once. 4096 was the first value tried and it truncated a
+		// three-document knowledge base immediately; 16384 then truncated a 6 KB
+		// corpus while a larger one had fit in 13k, because a reasoning compiler
+		// spends its output budget on its own thinking before it writes anything.
+		// The budget therefore has to be a large multiple of the expected wiki
+		// size, not a snug fit. The client turns a truncated reply into a failed
+		// build rather than a partial wiki, which is what made this visible
+		// instead of silently dropping pages.
+		MaxTokens: envInt("COMPILER_MAX_TOKENS", 32768),
+		// Long by deliberate choice: one call emits a whole wiki, and a reasoning
+		// model producing 16k tokens routinely runs past three minutes — 180s
+		// timed out on a three-document knowledge base. A generous ceiling here is
+		// not a substitute for the asynchronous job K3.4 adds; it only makes the
+		// synchronous path usable for small corpora.
+		Timeout: time.Duration(envInt("COMPILER_TIMEOUT_SECONDS", 900)) * time.Second,
 	}
 	reviewer := RoleConfig{
 		BaseURL: strings.TrimRight(env("REVIEWER_BASE_URL", sharedBaseURL), "/"),

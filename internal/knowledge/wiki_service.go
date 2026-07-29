@@ -132,17 +132,30 @@ func (s *Service) Compile(ctx context.Context, owner ownership.Owner, req Compil
 	addEvent(BuildEventStarted, "", fmt.Sprintf("full compile of revision %s with %s", revision.RevisionKey, s.compiler.Model()))
 	addEvent(BuildEventSourceRead, "", fmt.Sprintf("%d indexable documents", len(documents)))
 
-	pages, usage, err := s.compileWithModel(ctx, *profile, manifest, documents)
+	pages, rejected, usage, err := s.compileWithModel(ctx, *profile, manifest, documents)
 	if err != nil {
 		// A compilation failure is recorded as a failed build rather than
 		// discarded: the attempt, its cost and its error are part of the audit
 		// trail even though it produced nothing usable.
-		failed, finishErr := s.repo.FinishBuild(ctx, owner.Account(), build.ID,
-			BuildStatusFailed, CheckStatusPending, nil, err.Error())
+		//
+		// The terminal write runs on a detached context because the most common
+		// failure is the caller giving up on a slow compile. Writing through the
+		// cancelled context would fail too, leaving the build stuck in `running`
+		// forever — a record that lies indefinitely is worse than one that says
+		// "cancelled".
+		status := BuildStatusFailed
+		if ctx.Err() != nil {
+			status = BuildStatusCancelled
+		}
+		failed, finishErr := s.finishBuild(ctx, owner.Account(), build.ID,
+			status, CheckStatusPending, nil, err.Error())
 		if finishErr != nil {
-			return nil, fmt.Errorf("compile failed (%v) and the build could not be marked failed: %w", err, finishErr)
+			return nil, fmt.Errorf("compile failed (%v) and the build could not be marked %s: %w", err, status, finishErr)
 		}
 		return &CompileResponse{Build: failed}, nil
+	}
+	for _, path := range rejected {
+		addEvent(BuildEventPageRejected, path, "path is reserved for a platform-generated page")
 	}
 	for _, page := range pages {
 		addEvent(BuildEventPageWritten, page.Path, fmt.Sprintf("%s, %d citations, %d links",
@@ -150,10 +163,12 @@ func (s *Service) Compile(ctx context.Context, owner ownership.Owner, req Compil
 	}
 
 	// index must come after every content page exists, since it links all of them.
+	contentPageCount := len(pages)
 	pages = append(pages, buildIndexPage(manifest, pages))
+	addEvent(BuildEventFinished, "", fmt.Sprintf(
+		"%d content pages, plus the generated index and this log", contentPageCount))
 	// log is generated last and describes everything before it, so it cannot
 	// describe its own writing.
-	addEvent(BuildEventFinished, "", fmt.Sprintf("%d pages compiled", len(pages)))
 	pages = append(pages, buildLogPage(events))
 
 	knownPaths := make(map[string]struct{}, len(documents))
@@ -181,7 +196,7 @@ func (s *Service) Compile(ctx context.Context, owner ownership.Owner, req Compil
 		for _, failure := range failures {
 			addEvent(BuildEventCheckFailed, failure.PagePath, failure.Rule+": "+failure.Detail)
 		}
-		failed, finishErr := s.repo.FinishBuild(ctx, owner.Account(), build.ID,
+		failed, finishErr := s.finishBuild(ctx, owner.Account(), build.ID,
 			BuildStatusFailed, CheckStatusFailed, failures,
 			fmt.Sprintf("%d check failures", len(failures)))
 		if finishErr != nil {
@@ -195,7 +210,7 @@ func (s *Service) Compile(ctx context.Context, owner ownership.Owner, req Compil
 		InputTokens:  usage.PromptTokens,
 		OutputTokens: usage.CompletionTokens,
 	}); err != nil {
-		failed, finishErr := s.repo.FinishBuild(ctx, owner.Account(), build.ID,
+		failed, finishErr := s.finishBuild(ctx, owner.Account(), build.ID,
 			BuildStatusFailed, CheckStatusPassed, nil, "commit failed: "+err.Error())
 		if finishErr != nil {
 			return nil, fmt.Errorf("commit failed (%v) and the build could not be marked failed: %w", err, finishErr)
@@ -203,7 +218,7 @@ func (s *Service) Compile(ctx context.Context, owner ownership.Owner, req Compil
 		return &CompileResponse{Build: failed}, nil
 	}
 
-	succeeded, err := s.repo.FinishBuild(ctx, owner.Account(), build.ID,
+	succeeded, err := s.finishBuild(ctx, owner.Account(), build.ID,
 		BuildStatusSucceeded, CheckStatusPassed, nil, "")
 	if err != nil {
 		return nil, err
@@ -335,4 +350,21 @@ func pagePaths(pages []WikiPage) []string {
 		paths = append(paths, page.Path)
 	}
 	return paths
+}
+
+// finishBuild writes a build's terminal state on a context that keeps the
+// request's values but drops its cancellation.
+//
+// That write must survive the caller hanging up. The most common failure of a
+// synchronous compile is exactly that — a client giving up on a slow model — and
+// writing through the cancelled context would fail too, leaving the build stuck
+// in `running` forever. A record that lies indefinitely is worse than one saying
+// "cancelled".
+func (s *Service) finishBuild(
+	ctx context.Context, accountID, buildID, status, checkStatus string,
+	failures []CheckFailure, buildError string,
+) (*BuildRevision, error) {
+	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	return s.repo.FinishBuild(finishCtx, accountID, buildID, status, checkStatus, failures, buildError)
 }

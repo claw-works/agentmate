@@ -1,8 +1,10 @@
 # Knowledge Wiki Compiler（K3）设计 v0.1
 
-**状态**：DESIGN（未实现）
+**状态**：K3.1 + K3.2 已实现并在真实环境验证（migration 000027，`internal/llm`、
+`internal/knowledge/wiki_*.go`）。K3.3–K3.9 仍是 DESIGN。
 **前置**：K1（source/revision/document）、K2（catalog/chunk/link/hybrid 检索）均已实现
 **上层背景**：`skill-knowledge-architecture-v0.1.md` §13–§15 与其中的 K3 里程碑清单
+**实现状态明细**：见 §13
 
 ## 1. 要解决的问题
 
@@ -527,3 +529,82 @@ K3.9 依赖 K4 的 KnowledgeResolutionRun 与 M1 的 session/skill 关联——�
 的终点，不代表它能在 K3 阶段独立完成。
 
 K4（Skill-driven discovery）依赖 K3.6 就位——discovery 要选的是 wiki build，不是 raw chunk。
+
+
+## 13. 实现状态与真实环境验证结果
+
+### 13.1 已实现（K3.1 + K3.2）
+
+| 部件 | 位置 |
+|---|---|
+| 对话模型客户端（compiler / reviewer 双角色） | `internal/llm/` |
+| profile 版本化、build/page/citation/link/event 表 | `migrations/000027_create_knowledge_wiki.*.sql` |
+| 领域模型与错误语义 | `internal/knowledge/wiki_model.go` |
+| 全量编译（单次调用 + 输出规范化） | `internal/knowledge/wiki_compile.go` |
+| check（12 条机械不变量，唯一门禁） | `internal/knowledge/wiki_check.go` |
+| 编排（幂等复用 / 自动激活 / diff / 回滚） | `internal/knowledge/wiki_service.go` |
+| 持久化 | `internal/knowledge/wiki_repo.go` |
+| REST | `internal/knowledge/wiki_handler.go` |
+| MCP（8 个工具） | `internal/knowledge/wiki_mcp.go` |
+| 集成测试（9 个，脚本化模型驱动） | `internal/knowledge/wiki_integration_test.go` |
+
+未实现：K3.3（异步 job）、K3.4（增量）、K3.6（wiki 进检索）、K3.7（lint）、
+K3.8（review 实际调用）、K3.9（validation 与 proposal）。
+`review_status` 恒为 `skipped`，`reviewer_*` 字段只记配置不记判定。
+
+### 13.2 真实环境验证（本地 Docker + DashScope qwen3.7-plus + GitHub demo repo）
+
+编译两个真实 KB（`claw-works/agentmate-demo-wiki` 的 `platform/registry` 与
+`product/support`），全部通过：
+
+- **平台生成的 index 覆盖全部内容页**：registry 12/12，support 10/10；
+- **citation 全部落到真实 raw document**：registry 4 篇 raw 上 40+ 条 citation
+  `document_id` 全部非空，support 同样 0 条悬空；
+- **link 全部闭合**，出入双向可读，`references` / `mentions_entity` / `elaborates` 均被真实使用；
+- **log 可 grep**：`grep '^## \['` 命中 15 行 = 15 条 event；
+- **自动激活生效**，`knowledge_sources.active_build_id` 随之移动；
+- **幂等复用**：同输入身份二次触发返回同一 build 且不调用模型（集成测试断言调用计数）；
+- **diff/回滚**：激活旧 build 后读路径立即回到旧内容，`previous_build_id` 让回滚本身可撤销；
+- **same_provider 警告出现在每次 build 的 warnings 里**，不需要翻配置才知道审阅不独立。
+
+同时验证了一个**设计预期的负向结果**：`product/support/raw/limitations.md` 里的过期声明
+没有产出 `contradicts` link。这是对的——矛盾的另一端在 `platform/retrieval` 这个**另一个
+package**，而 K3 按 package 编译，跨库矛盾属于 K5。§11 埋这个检验点正是为了确认边界，
+而不是为了让 K3 报出来。
+
+### 13.3 真实环境暴露的四个问题（均已修）
+
+1. **输出预算不是按 wiki 体积估，而是按"推理模型会先花掉多少"估。**
+   4096 立刻截断；16384 在一个 6 KB 语料上截断，而另一个更大的语料只用了 13k。
+   原因是 qwen3.7-plus 的思考 token 与正文共用 `max_tokens`，同一份输入两次的开销
+   差一倍以上。默认值最终定在 32768。截断被客户端识别为**失败**而不是当作完整回复解析——
+   否则会静默丢页。这条同时是"单次调用有硬上限、K3.4 增量不是优化而是必需"的实测依据。
+
+2. **客户端断开会留下永久 `running` 的 build。**
+   最初终态写入沿用请求 context，而同步编译最常见的失败恰恰是调用方等不及先挂断，
+   于是终态写入也一起被取消。改为 `context.WithoutCancel` + 独立 15s 超时，并在
+   `ctx.Err() != nil` 时记为 `cancelled`。一条永远撒谎的记录比一条写着"取消"的记录更糟。
+   实测：20s 超时的请求现在留下 `cancelled` 而不是 `running`。
+
+3. **模型会去写 `wiki/index.md`，撞上平台生成的同名页，整个 build 被 `path_unique` 判死。**
+   这是可预见的模型行为，让它每次都失败等于系统不可用。改为保留这两个路径、丢弃模型
+   在该路径上的产出，并把每次丢弃记为 `page_rejected` event——丢弃是可审计的，不是隐形的。
+   同时 `CompilerVersion`/`PromptVersion` 一并升版，因为出处必须反映这次改动。
+
+4. **模型页全被丢弃时不能产出空 wiki**，否则会得到一个"成功但什么都没有"的 build。
+   现在报 `no usable pages` 并记为 failed。
+
+另外两条**未修、已记录**的观察：
+
+- **provider 偶发 `unexpected EOF`**：4 分钟的非流式长连接被中途断开，重试即成功。
+  客户端没有重试逻辑，因此一次网络抖动会烧掉一个 build。放到 K3.3 一起做——
+  在同步路径上加重试会让一次 4 分钟调用变成 8 分钟，而带租约的异步 job 本来就要处理重试。
+- **同步编译单次耗时 200–400 秒**，已经超出任何合理的 HTTP 客户端默认超时。
+  这不是可以调参绕过的问题，是 K3.3 必须做的直接原因。
+
+### 13.4 与设计的偏离
+
+- `parent_build_id` 在 full build 上**不记录**。它参与输入身份六元组，若每次都把最近一个
+  成功 build 记为 parent，身份就永远唯一、幂等复用永远不命中。full build 的血缘可以由
+  source + 时序还原；该字段留给 incremental build，那里 parent 是真正的输入。
+- `mode=incremental` 显式拒绝而不是降级为 full。降级会让调用方以为省了成本。

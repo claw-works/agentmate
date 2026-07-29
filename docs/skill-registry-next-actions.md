@@ -52,7 +52,10 @@ demo 仓库已改为 **领域 / 主题两级**并重推：
 
 ## 待办：wiki 层（K3）
 
-**详细设计已完成：`knowledge-wiki-compiler-k3-v0.1.md`**（数据模型、四个操作、异步 job、
+**K3.1 + K3.2 已实现并在真实环境验证（2026-07-29）**，详见
+`knowledge-wiki-compiler-k3-v0.1.md` §13。剩余 K3.3–K3.9 仍为设计。
+
+**详细设计：`knowledge-wiki-compiler-k3-v0.1.md`**（数据模型、四个操作、异步 job、
 成本闸门、API 草案、质量三层模型、演进闭环、四项待产品决策、验收标准、K3.1–K3.9 实施顺序）。
 
 已定的质量与演进模型（2026-07-27 讨论结论）：
@@ -163,3 +166,43 @@ supersede 与 checkpoint 无需新表）。真实链路验证通过：
 - [ ] 仍待决策：memory entry 多数无 title，Context Pack 的 MEMORY 层条目只显示 memory_type。
 - [ ] 仍待决策：`api_logs`、`retrieval_queries`、`retrieval_feedback` 三表的 `account_id`
       仍为 `SET NULL`（详见上一节）。
+
+
+## 2026-07-29 K3.1 + K3.2 wiki 编译器已实现
+
+migration `000027`；新包 `internal/llm`；`internal/knowledge/wiki_{model,compile,check,service,repo,handler,mcp}.go`；
+9 个集成测试用脚本化模型驱动（不依赖真实模型可达，因为真实模型两次不会说同样的话）。
+REST 8 个端点、MCP 8 个工具。
+
+真实环境（本地 Docker + DashScope `qwen3.7-plus` + `claw-works/agentmate-demo-wiki`）验证通过：
+
+- [x] `platform/registry` 编译出 14 page（12 内容 + index + log），`product/support` 12 page；
+      两者 check 全过、自动激活、`active_build_id` 随之移动。
+- [x] index 覆盖全部内容页（12/12、10/10）；log `grep '^## \['` 命中数 = event 数。
+- [x] citation 全部 `document_id` 非空（0 条悬空）；link 全部闭合、出入双向可读；
+      `references` / `mentions_entity` / `elaborates` 均被真实使用。
+- [x] 幂等：同输入身份二次触发返回同一 build 且不调模型；`force` 才产生新 build。
+- [x] diff：同一份 raw 两次编译得到 3 added / 4 removed / 9 changed / 1 unchanged
+      —— 这是"wiki 不可重现、必须 immutable 且可 diff"的最直接实测证据。
+- [x] 回滚：激活旧 build 后读路径立即回到旧内容；`previous_build_id` 让回滚可撤销。
+- [x] 负向：未授权 401、不存在 build 404、非法 uuid 404、缺页 404、路径穿越（含编码）404、
+      SQL 注入式 page path 404、激活 cancelled build 409、未配置模型 501 且不留 build。
+- [x] `same_provider` 警告出现在每次 build 的 warnings 中。
+- [x] 设计预期的负向结果：`product/support` 的过期声明**没有**产出 `contradicts` link，
+      因为矛盾的另一端在 `platform/retrieval`（另一个 package）。K3 按 package 编译，
+      跨库矛盾属 K5。§11 埋这个检验点就是为了确认边界。
+
+本轮暴露并修掉四个真实缺陷（细节见 K3 文档 §13.3）：
+
+1. 输出预算按"推理模型先花掉多少"估而非按 wiki 体积估：4096 与 16384 都截断，最终 32768。
+2. 客户端断开留下永久 `running` 的 build：终态写入改用 `context.WithoutCancel` 并记 `cancelled`。
+3. 模型自己写 `wiki/index.md` 撞名导致整个 build 被 `path_unique` 判死：改为保留路径 + 丢弃
+   + 记 `page_rejected` event，`CompilerVersion`/`PromptVersion` 一并升版。
+4. 模型页全被丢弃时会产出空 wiki：改为报 `no usable pages` 并 failed。
+
+- [ ] 未修、已记录：provider 偶发 `unexpected EOF`（4 分钟非流式长连接被断），客户端无重试，
+      一次网络抖动烧掉一个 build。放到 K3.3 与租约重试一起做。
+- [ ] 未修、已记录：同步编译 200–400 秒，超出任何合理 HTTP 客户端默认超时。这是 K3.3
+      必须做的直接原因，不是调参能绕过的。
+- [ ] K3 剩余待产品决策（四项，见 K3 文档 §10）：编译与 review 各用哪个模型、编译触发时机、
+      保留多少历史 build、proposal 的处置人。

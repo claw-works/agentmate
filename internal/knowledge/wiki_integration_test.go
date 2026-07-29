@@ -490,3 +490,91 @@ func containsString(values []string, target string) bool {
 	}
 	return false
 }
+
+// TestCompileRejectsReservedPagePaths pins the ownership boundary between model
+// and platform. A real qwen3.7-plus build wrote its own wiki/index.md, which
+// collided with the generated one and failed the whole build on path_unique — a
+// foreseeable model behaviour that must not make the system unusable. The page is
+// dropped instead, and the drop is recorded rather than hidden.
+func TestCompileRejectsReservedPagePaths(t *testing.T) {
+	ctx := context.Background()
+	reply := wikiReply(
+		wikiPage("wiki/index.md", PageKindIndex, "My own index", "- everything", nil, nil),
+		wikiPage("wiki/log.md", PageKindLog, "My own log", "stuff happened", nil, nil),
+		wikiPage("wiki/overview.md", PageKindSummary, "Overview", "Summary of the overview.",
+			[]string{"raw/overview.md"}, nil),
+	)
+	client := &scriptedClient{replies: []string{reply}}
+	service := newWikiService(t, ctx, client)
+	pool := integrationPool(t, ctx)
+	owner, cleanup := createKnowledgeIntegrationOwner(t, ctx, pool, "wiki-reserved")
+	defer cleanup()
+
+	source := seedWikiSource(t, ctx, service, owner, "wiki-reserved-kb", "Overview body.\n")
+
+	response, err := service.Compile(ctx, owner, CompileRequest{SourceID: source.ID})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if response.Build.Status != BuildStatusSucceeded {
+		t.Fatalf("expected succeeded, got %s (%s / %s)",
+			response.Build.Status, response.Build.Error, response.Build.CheckFailures)
+	}
+	// One model page survived, plus the platform's index and log.
+	if response.Build.PagesWritten != 3 {
+		t.Fatalf("expected 3 pages, got %d (%v)", response.Build.PagesWritten, response.Pages)
+	}
+
+	// The generated index must be the platform's, not the model's.
+	index, err := service.GetPage(ctx, owner.Account(), response.Build.ID, "wiki/index.md")
+	if err != nil {
+		t.Fatalf("get index: %v", err)
+	}
+	if strings.Contains(index.Content, "everything") {
+		t.Fatalf("the model's index survived: %s", index.Content)
+	}
+	if !strings.Contains(index.Content, "wiki/overview.md") {
+		t.Fatalf("generated index must link every content page, got:\n%s", index.Content)
+	}
+
+	events, err := service.ListBuildEvents(ctx, owner.Account(), response.Build.ID)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	rejected := make([]string, 0)
+	for _, event := range events {
+		if event.EventType == BuildEventPageRejected {
+			rejected = append(rejected, event.PagePath)
+		}
+	}
+	if len(rejected) != 2 {
+		t.Fatalf("expected both reserved paths recorded as rejected, got %v", rejected)
+	}
+}
+
+// TestCompileFailsWhenEveryPageIsRejected keeps the rejection from turning into a
+// silently empty wiki: if nothing usable survives, that is a failed build.
+func TestCompileFailsWhenEveryPageIsRejected(t *testing.T) {
+	ctx := context.Background()
+	reply := wikiReply(
+		wikiPage("wiki/index.md", PageKindIndex, "Only an index", "- nothing", nil, nil),
+	)
+	client := &scriptedClient{replies: []string{reply}}
+	service := newWikiService(t, ctx, client)
+	pool := integrationPool(t, ctx)
+	owner, cleanup := createKnowledgeIntegrationOwner(t, ctx, pool, "wiki-allrejected")
+	defer cleanup()
+
+	source := seedWikiSource(t, ctx, service, owner, "wiki-allrejected-kb", "Overview body.\n")
+
+	response, err := service.Compile(ctx, owner, CompileRequest{SourceID: source.ID})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if response.Build.Status != BuildStatusFailed {
+		t.Fatalf("expected failed, got %s", response.Build.Status)
+	}
+	if !strings.Contains(response.Build.Error, "no usable pages") {
+		t.Fatalf("expected an explicit reason, got %q", response.Build.Error)
+	}
+}

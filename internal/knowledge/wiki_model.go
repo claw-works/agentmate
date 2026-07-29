@@ -64,12 +64,12 @@ const (
 // CompilerVersion identifies the compilation implementation. It is part of build
 // provenance: changing how pages are assembled changes the output even when the
 // model and prompt are untouched.
-const CompilerVersion = "wiki-compiler-1"
+const CompilerVersion = "wiki-compiler-2"
 
 // PromptVersion identifies the prompt text. Same reasoning as CompilerVersion —
 // editing a prompt silently alters every future build, so the edit must be
 // visible in provenance.
-const PromptVersion = "wiki-prompt-1"
+const PromptVersion = "wiki-prompt-2"
 
 // ReviewerPromptVersion identifies the review prompt, versioned for the same
 // reason as PromptVersion: the review standard must be explicit and auditable,
@@ -228,11 +228,14 @@ const (
 	BuildEventSourceRead  = "source_read"
 	BuildEventPageWritten = "page_written"
 	BuildEventPageReused  = "page_reused"
-	BuildEventCheckFailed = "check_failed"
-	BuildEventCheckPassed = "check_passed"
-	BuildEventActivated   = "activated"
-	BuildEventFailed      = "failed"
-	BuildEventFinished    = "finished"
+	// BuildEventPageRejected records a model page the platform refused, so a
+	// dropped page is auditable rather than invisible.
+	BuildEventPageRejected = "page_rejected"
+	BuildEventCheckFailed  = "check_failed"
+	BuildEventCheckPassed  = "check_passed"
+	BuildEventActivated    = "activated"
+	BuildEventFailed       = "failed"
+	BuildEventFinished     = "finished"
 )
 
 // ─── requests and responses ───
