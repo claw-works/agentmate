@@ -505,16 +505,22 @@ signal 上报刻意做成显式 API 而不是服务端推断：信号来自客�
 ## 12. 实施顺序
 
 ```
-K3.1  profile 版本化 + build/page/citation/link 数据模型 + 全量编译（同步，小语料）
-K3.2  check（机械不变量，唯一门禁）+ 自动激活 + build diff/回滚
-K3.3  异步 job（租约 + 心跳 + 幂等 + 成本记账）
-K3.4  增量编译（raw diff → 影响面 → 复用）
-K3.5  index / log 生成
-K3.6  wiki page 进检索（新 namespace）+ 两级 query
-K3.7  lint
-K3.8  review（异构模型忠实性审阅，只标记）
-K3.9  validation 信号上报 + 归因 + proposal 生成与处置
+K3.1  ✅ profile 版本化 + build/page/citation/link 数据模型 + 全量编译
+K3.2  ✅ check（机械不变量，唯一门禁）+ 自动激活 + build diff/回滚
+K3.3  ✅ 异步 job（租约 + 心跳 + 有界重试 + 成本记账）
+K3.5  ✅ index / log 生成 —— 与 K3.2 一同落地，见下
+K3.4  ⬜ 增量编译（raw diff → 影响面 → 复用）
+K3.6  ⬜ wiki page 进检索（新 namespace）+ 两级 query
+K3.7  ⬜ lint
+K3.8  ⬜ review（异构模型忠实性审阅，只标记）
+K3.9  ⬜ validation 信号上报 + 归因 + proposal 生成与处置
 ```
+
+**K3.5 实际随 K3.2 一起落地，不是提前抢跑，而是 check 逼出来的。** check 有一条
+"index 必须覆盖全部内容页"的规则；这条规则要成立，index 就必须由平台生成而非模型生成，
+否则它考核的是模型的勤勉度而不是 build 的完整性。于是"生成 index/log"变成 check 的
+前置条件，无法留到 K3.5。log 同理：它渲染的是 build event 序列，而 event 是编译过程的
+产物，不是事后能补的东西。原顺序把它排在增量编译之后是排错了。
 
 K3.2 提到很前面是刻意的：**自动激活必须与 check 同时落地**。先有自动激活而没有机械门禁，
 等于无条件接受一切编译输出；而 diff/回滚是这个决定的安全网，不能推后。
@@ -551,9 +557,17 @@ K4（Skill-driven discovery）依赖 K3.6 就位——discovery 要选的是 wik
 K3.3（带租约的异步 job、有界重试、成本记账）见 §14，位置在
 `migrations/000028_add_knowledge_build_lease.*.sql` 与 `internal/knowledge/wiki_worker.go`。
 
+K3.5（index / log 生成）也已实现，位置在 `wiki_compile.go` 的 `buildIndexPage`/
+`buildLogPage`，由 `RunBuild` 在 check 之前追加并随 wiki 一起提交。原因见 §12。
+
 未实现：K3.4（增量）、K3.6（wiki 进检索）、K3.7（lint）、K3.8（review 实际调用）、
-K3.9（validation 与 proposal）。`review_status` 恒为 `skipped`，
-`reviewer_*` 字段只记配置不记判定。
+K3.9（validation 与 proposal）。
+
+需要说清楚哪些是"字段在但路径不通"，否则很容易把已声明的类型误读成已实现的功能：
+`review_status` 恒为 `skipped`，`RunBuild` 从不调用 `s.reviewer`，`reviewer_model` 与
+`reviewer_independence` 只记配置不记判定；`pages_reused` 与 `derived_from_build_id`
+永远为 0/NULL，因为没有增量编排路径写它们；`knowledge_page_links` 的悬空链接与孤立页
+是 lint 所需的数据，但没有 lint。
 
 ### 13.2 真实环境验证（本地 Docker + DashScope qwen3.7-plus + GitHub demo repo）
 
