@@ -20,6 +20,18 @@ type Config struct {
 	EmbeddingDimension int
 	EmbeddingFormat    string
 
+	// CheapLLM* is read but not yet consumed by anything.
+	//
+	// It reserves the credential for the cheap-LLM query planner and reranker in
+	// memory-design-v0.3 (§“未来 cheap LLM query planner/reranker”), which has not
+	// been implemented. Setting these variables therefore has no observable effect
+	// today, and that is worth stating here: a populated config field reads like a
+	// wired capability, and the next person to set CHEAP_LLM_MODEL will otherwise
+	// spend time wondering why nothing changed.
+	//
+	// The DeepSeek credential itself does have a live consumer — REVIEWER_API_KEY in
+	// internal/llm, where a second vendor is what makes reviewer_independence
+	// cross_provider instead of same_provider.
 	CheapLLMBaseURL            string
 	CheapLLMChatCompletionsURL string
 	CheapLLMAPIKey             string

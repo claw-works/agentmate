@@ -255,3 +255,52 @@ migration `000028`；`internal/knowledge/wiki_worker.go`；`internal/llm` 加重
       `max_build_tokens` 是事后 check 不是事前拦截）；provider 侧幂等（重试会重新完整调用，
       若上次其实已生成完只是返回途中断连，就是重复付费）；队列优先级/公平性
       （单一 FIFO，一个账号排 50 个会让其他账号等在后面）。
+
+
+## 2026-07-29 reviewer 接第二家 provider，independence 达到 cross_provider
+
+`.env` 里本来就有一份 DeepSeek 凭据（`CHEAP_LLM_API_KEY`，与 `EMBEDDING_API_KEY` **不同**），
+于是 reviewer 指向 `https://api.deepseek.com` 的 `deepseek-v4-pro`，
+`reviewer_independence` 从 `same_provider` 变成 **`cross_provider`** 并落到每个 build 上。
+这解掉了 K3 四项待决策里的第 1 项（编译与 review 各用哪个模型）。
+
+实测两个 DeepSeek 模型均可用、OpenAI 兼容、支持 `response_format: json_object`；
+两者都是推理模型（一个 trivial 回答就花掉 48/43 个 `reasoning_tokens`，DeepSeek 把
+`reasoning_tokens` 单列出来，正好印证"输出预算被思考吃掉"这个坑）。
+
+**compiler 仍留在 qwen3.7-plus**，依据是同一个 KB（`platform/retrieval`）的对照编译：
+
+| compiler | 内容页 | citation | link | 悬空 | 输出 token | 耗时 | check |
+|---|---|---|---|---|---|---|---|
+| qwen3.7-plus | 4 | 20 | 20 | 0 | 8707 | ~95s | 过 |
+| deepseek-v4-pro | 5 | 32 | 27 | 0 | 15567 | ~290s | 过 |
+
+deepseek-v4-pro 产出更密（页更多、引用更多），代价是输出 token 1.8 倍、耗时 3 倍。
+两者都通过 check、悬空引用均为 0。**结论只有 n=1，不足以定论质量优劣**，因此按 token
+更省的一侧留在 qwen；异步队列落地后耗时已不是主要约束，token 才是。
+`deepseek-v4-flash` 是后续的成本杠杆（review 不阻塞，弱一点可接受），但 K3.8 未实现前
+换 pro/flash 除了改这个记录字段没有可观测差异，不急着定。
+
+### 本轮暴露并修掉的三个真实问题
+
+1. **`docker-compose.yml` 的 environment 是白名单，`COMPILER_*`/`REVIEWER_*`/`WIKI_WORKER_*`
+   一个都没转发进容器。** 也就是说 K3.3 那轮我调的 `COMPILER_MAX_TOKENS=32768`、
+   `COMPILER_TIMEOUT_SECONDS=900` 等等**全是靠 Go 里的默认值生效的**，环境变量根本无法覆盖 ——
+   运维想改参数会发现改了没反应，而日志看起来一切正常。已全部补上转发，并在
+   `.env.example` 里补齐这两组变量。
+
+2. **改进配置会静默删掉"没人审过"这个信号。** 那条常驻警告原本只在
+   `same_provider`/`same_model` 时触发；一旦 reviewer 真的接了第二家 provider，警告整个消失，
+   而 review 依然没实现、`review_status` 依然是 `skipped`。**更好的配置不该减少调用方
+   得到的关于"验证了什么"的信息**。改为：只要 review 未实现就无条件告知，independence
+   警告作为附加信息而非替代品。加了 `TestEnqueueAlwaysSaysReviewDidNotRun` 钉住三种
+   independence 下都必须说这句话。
+
+3. **`CheapLLM*` 配置读进来后无人消费。** 它是 `memory-design-v0.3` 里 cheap LLM
+   query planner/reranker 的占位，有设计依据、不是意外死代码，但设了没有任何效果。
+   已在 `internal/retrieval/config.go` 注明"读取但尚未被消费"，并指出 DeepSeek 凭据
+   真正的活跃消费者是 `REVIEWER_API_KEY`。一个填满的配置字段读起来像已接通的能力，
+   下一个设 `CHEAP_LLM_MODEL` 的人会白花时间找为什么没变化。
+
+- [ ] 未做：`COMPILER_*`/`REVIEWER_*` 的单价仍为 0，因此"哪个模型更省钱"这个问题
+      目前**无法用数据回答**，上表只能比 token 与耗时。要真正比较需要填两家的实际单价。

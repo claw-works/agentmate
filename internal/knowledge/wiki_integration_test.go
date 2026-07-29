@@ -859,3 +859,39 @@ func containsString(values []string, target string) bool {
 	}
 	return false
 }
+
+// TestEnqueueAlwaysSaysReviewDidNotRun guards a signal that a configuration
+// improvement can silently delete.
+//
+// The warning about review used to fire only when the reviewer shared the
+// compiler's provider. Pointing the reviewer at a second vendor therefore removed
+// the only thing telling an operator that nothing had been reviewed — while review
+// remained unimplemented and review_status remained skipped. Better configuration
+// must not reduce what the caller is told about what was verified.
+func TestEnqueueAlwaysSaysReviewDidNotRun(t *testing.T) {
+	ctx := context.Background()
+	pool := integrationPool(t, ctx)
+	owner, cleanup := createKnowledgeIntegrationOwner(t, ctx, pool, "wiki-reviewwarn")
+	defer cleanup()
+
+	for _, independence := range []string{
+		llm.IndependenceCrossProvider, llm.IndependenceSameProvider, llm.IndependenceUnavailable,
+	} {
+		service, _ := newWikiService(t, ctx, &scriptedClient{replies: []string{goodReply()}})
+		service.WithLLM(LLMSetup{Compiler: &scriptedClient{replies: []string{goodReply()}}, Independence: independence})
+		source := seedWikiSource(t, ctx, service, owner, "wiki-reviewwarn-"+independence, "Overview body.\n")
+
+		response := enqueue(t, ctx, service, owner, CompileRequest{SourceID: source.ID})
+		joined := strings.Join(response.Warnings, " | ")
+		if !strings.Contains(joined, "review is not implemented") {
+			t.Errorf("independence=%s: the caller must be told review did not run, got %q", independence, joined)
+		}
+		// The independence warning is additional information, not a replacement for
+		// the one above.
+		wantIndependence := independence == llm.IndependenceSameProvider
+		if got := strings.Contains(joined, "reviewer independence is"); got != wantIndependence {
+			t.Errorf("independence=%s: independence warning present=%v, want %v (%q)",
+				independence, got, wantIndependence, joined)
+		}
+	}
+}

@@ -468,8 +468,15 @@ Model configuration (both roles fall back to `EMBEDDING_BASE_URL` /
 | `COMPILER_MAX_TOKENS` | `32768` | A reasoning model spends this budget on its own thinking before writing, so it must be a large multiple of the expected wiki size; a truncated reply fails the build rather than yielding a partial wiki |
 | `COMPILER_TIMEOUT_SECONDS` | `900` | |
 | `REVIEWER_BASE_URL` / `REVIEWER_API_KEY` | embedding endpoint and key | Point at another vendor for real independence |
-| `REVIEWER_MODEL` | `qwen-max` | Different from the compiler by default, so review is at least not literal self-review |
+| `REVIEWER_MODEL` | `qwen-max` | Different from the compiler by default, so review is at least not literal self-review. The local deployment points this at DeepSeek `deepseek-v4-pro`, which is what makes independence `cross_provider` |
 | `REVIEWER_TEMPERATURE` | `0` | The same claim and source should get the same verdict |
+
+Every compile also warns, unconditionally, that review is not implemented yet and
+`review_status` stays `skipped` — check is the only verification a build receives.
+That warning is deliberately not conditional on independence: it used to be, and
+pointing the reviewer at a second vendor would then have removed the only signal
+saying nothing had been reviewed. Better configuration must not reduce what the
+caller is told about what was verified.
 
 Reviewer independence is classified per build as `cross_provider`,
 `same_provider`, `same_model` or `unavailable`, and stored on the build. A

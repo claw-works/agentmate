@@ -88,14 +88,7 @@ func (s *Service) EnqueueCompile(ctx context.Context, owner ownership.Owner, req
 		ActivateOnSuccess:    req.Activate == nil || *req.Activate,
 	}
 
-	response := &EnqueueCompileResponse{}
-	if s.reviewerIndependence == llm.IndependenceSameProvider || s.reviewerIndependence == llm.IndependenceSameModel {
-		// Said on every build rather than only in documentation: a reviewer sharing
-		// the compiler's priors misses the compiler's mistakes, and the operator
-		// should see that where the result is consumed.
-		response.Warnings = append(response.Warnings,
-			"reviewer independence is "+s.reviewerIndependence+"; review verdicts share the compiler's blind spots")
-	}
+	response := &EnqueueCompileResponse{Warnings: s.reviewWarnings()}
 
 	// Input identity, not content identity: LLM output is not reproducible, so a
 	// content hash can neither confirm nor deny that a rebuild is needed.
@@ -284,6 +277,33 @@ func (s *Service) RunBuild(ctx context.Context, build *BuildRevision) error {
 // accounting that looks authoritative and is wrong; zero is visibly unknown.
 func (s *Service) costMicros(usage llm.Usage) int64 {
 	return s.compilerPricing.Cost(usage)
+}
+
+// reviewWarnings states what review did and did not contribute to a build.
+//
+// The first warning is unconditional while review is unimplemented, and that is
+// the point: it used to be the same_provider warning that told an operator not to
+// lean on review, so configuring a genuinely cross-provider reviewer would have
+// made the only signal disappear while review still never ran. An improvement to
+// the configuration must not quietly remove information about what was verified.
+//
+// The independence warning stays for the case where a reviewer shares the
+// compiler's priors, because a reviewer drawing on the same training data misses
+// the same things — reduced correlation is not impartiality.
+func (s *Service) reviewWarnings() []string {
+	warnings := make([]string, 0, 2)
+	// K3.8 has not landed: RunBuild never calls s.reviewer, so review_status stays
+	// skipped on every build. Say so where the result is consumed rather than only
+	// in the design document.
+	warnings = append(warnings,
+		"review is not implemented yet: review_status stays \"skipped\" and no faithfulness check ran on this build; "+
+			"check is the only verification it received")
+	if s.reviewerIndependence == llm.IndependenceSameProvider || s.reviewerIndependence == llm.IndependenceSameModel {
+		warnings = append(warnings,
+			"reviewer independence is "+s.reviewerIndependence+
+				"; once review runs, its verdicts will share the compiler's blind spots")
+	}
+	return warnings
 }
 
 // maybeActivate moves the active pointer unless the caller opted out.

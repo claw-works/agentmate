@@ -67,6 +67,34 @@ services:
       CHEAP_LLM_CHAT_COMPLETIONS_URL: ${CHEAP_LLM_CHAT_COMPLETIONS_URL:-https://api.deepseek.com/chat/completions}
       CHEAP_LLM_API_KEY: ${CHEAP_LLM_API_KEY:-}
       CHEAP_LLM_MODEL: ${CHEAP_LLM_MODEL:-deepseek-v4-flash}
+      # Wiki compiler and reviewer (K3). These are forwarded explicitly because the
+      # environment block is an allowlist: a variable absent here is simply invisible
+      # to the container, so the Go defaults silently win and the operator's .env has
+      # no effect. Each falls back to the embedding credential, which is how a
+      # single-credential deployment works, and reviewer_independence then reports
+      # same_provider honestly rather than claiming independence it does not have.
+      COMPILER_BASE_URL: ${COMPILER_BASE_URL:-}
+      COMPILER_API_KEY: ${COMPILER_API_KEY:-}
+      COMPILER_MODEL: ${COMPILER_MODEL:-}
+      COMPILER_TEMPERATURE: ${COMPILER_TEMPERATURE:-}
+      COMPILER_MAX_TOKENS: ${COMPILER_MAX_TOKENS:-}
+      COMPILER_TIMEOUT_SECONDS: ${COMPILER_TIMEOUT_SECONDS:-}
+      COMPILER_INPUT_MICROS_PER_1K_TOKENS: ${COMPILER_INPUT_MICROS_PER_1K_TOKENS:-}
+      COMPILER_OUTPUT_MICROS_PER_1K_TOKENS: ${COMPILER_OUTPUT_MICROS_PER_1K_TOKENS:-}
+      REVIEWER_BASE_URL: ${REVIEWER_BASE_URL:-}
+      REVIEWER_API_KEY: ${REVIEWER_API_KEY:-}
+      REVIEWER_MODEL: ${REVIEWER_MODEL:-}
+      REVIEWER_TEMPERATURE: ${REVIEWER_TEMPERATURE:-}
+      REVIEWER_MAX_TOKENS: ${REVIEWER_MAX_TOKENS:-}
+      REVIEWER_TIMEOUT_SECONDS: ${REVIEWER_TIMEOUT_SECONDS:-}
+      REVIEWER_INPUT_MICROS_PER_1K_TOKENS: ${REVIEWER_INPUT_MICROS_PER_1K_TOKENS:-}
+      REVIEWER_OUTPUT_MICROS_PER_1K_TOKENS: ${REVIEWER_OUTPUT_MICROS_PER_1K_TOKENS:-}
+      # Wiki compile queue (K3.3).
+      WIKI_WORKER_CONCURRENCY: ${WIKI_WORKER_CONCURRENCY:-}
+      WIKI_WORKER_POLL_SECONDS: ${WIKI_WORKER_POLL_SECONDS:-}
+      WIKI_WORKER_HEARTBEAT_SECONDS: ${WIKI_WORKER_HEARTBEAT_SECONDS:-}
+      WIKI_WORKER_RETRY_BACKOFF_SECONDS: ${WIKI_WORKER_RETRY_BACKOFF_SECONDS:-}
+      WIKI_WORKER_MAX_RETRY_BACKOFF_SECONDS: ${WIKI_WORKER_MAX_RETRY_BACKOFF_SECONDS:-}
     restart: unless-stopped
 
 volumes:
