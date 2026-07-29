@@ -135,3 +135,48 @@ func TestCompleteRejectsEmptyChoices(t *testing.T) {
 		t.Fatal("expected an error when the provider returns no choices")
 	}
 }
+
+// TestRetryableClassification pins which failures are worth another multi-minute
+// model call. Getting this wrong is expensive in both directions: retrying a
+// truncated reply pays twice for the same outcome, while not retrying a dropped
+// connection throws away a build over a network blip.
+func TestRetryableClassification(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "transport failure", err: &Error{Message: "unexpected EOF", Retryable: true}, want: true},
+		{name: "rate limited", err: &Error{Status: 429, Retryable: retryableStatus(429)}, want: true},
+		{name: "provider fault", err: &Error{Status: 503, Retryable: retryableStatus(503)}, want: true},
+		{name: "bad request", err: &Error{Status: 400, Retryable: retryableStatus(400)}, want: false},
+		{name: "unauthorized", err: &Error{Status: 401, Retryable: retryableStatus(401)}, want: false},
+		{name: "truncated reply", err: &Error{Status: 200, Message: "hit the token limit", Retryable: false}, want: false},
+		// An unknown error is not retryable: a compile is expensive, so the default
+		// has to be the cheap answer.
+		{name: "unknown error", err: errors.New("something else"), want: false},
+		{name: "not configured", err: ErrNotConfigured, want: false},
+	} {
+		if got := Retryable(testCase.err); got != testCase.want {
+			t.Errorf("%s: Retryable = %v, want %v", testCase.name, got, testCase.want)
+		}
+	}
+}
+
+// TestPricingIsZeroWhenUnconfigured keeps an invented default out of the
+// accounting. A made-up rate produces an authoritative-looking wrong number; zero
+// is visibly unknown.
+func TestPricingIsZeroWhenUnconfigured(t *testing.T) {
+	usage := Usage{PromptTokens: 1000, CompletionTokens: 2000, TotalTokens: 3000}
+	var unset Pricing
+	if unset.Configured() {
+		t.Fatal("an unset price must not report itself as configured")
+	}
+	if cost := unset.Cost(usage); cost != 0 {
+		t.Fatalf("expected zero cost when no price is configured, got %d", cost)
+	}
+	priced := Pricing{InputMicrosPer1KTokens: 2000, OutputMicrosPer1KTokens: 6000}
+	if cost := priced.Cost(usage); cost != 14000 {
+		t.Fatalf("expected 14000 micros, got %d", cost)
+	}
+}

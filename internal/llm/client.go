@@ -16,6 +16,48 @@ import (
 // missing credential is an operator problem, not a defect in the sources.
 var ErrNotConfigured = errors.New("llm role is not configured")
 
+// Error carries whether a failure is worth retrying, because the caller cannot
+// tell from the message and guessing is expensive in both directions: retrying a
+// truncated reply burns another multi-minute call for the same outcome, while not
+// retrying a dropped connection throws away a build over a network blip.
+//
+// Retryable covers transport failures, rate limits and provider-side errors.
+// Everything that would deterministically recur — a bad request, an oversized
+// reply — is not retryable.
+type Error struct {
+	Role string
+	// Status is 0 for failures that never reached a response.
+	Status    int
+	Message   string
+	Retryable bool
+}
+
+func (e *Error) Error() string {
+	if e.Status == 0 {
+		return fmt.Sprintf("%s completion failed: %s", e.Role, e.Message)
+	}
+	return fmt.Sprintf("%s completion failed with status %d: %s", e.Role, e.Status, e.Message)
+}
+
+// Retryable reports whether err is worth another attempt. An error of an unknown
+// kind is treated as not retryable: a compile is expensive, so the default has to
+// be the cheap answer.
+func Retryable(err error) bool {
+	var typed *Error
+	if errors.As(err, &typed) {
+		return typed.Retryable
+	}
+	return false
+}
+
+// retryableStatus classifies HTTP status codes. 408 and 429 are explicit
+// invitations to try again; 5xx is the provider saying the failure is on its side.
+func retryableStatus(status int) bool {
+	return status == http.StatusRequestTimeout ||
+		status == http.StatusTooManyRequests ||
+		status >= http.StatusInternalServerError
+}
+
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -127,7 +169,9 @@ func (c *HTTPClient) Complete(ctx context.Context, messages []Message, opts ...O
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, err
+		// A request that never got a response is retryable unless the caller's own
+		// context was cancelled — in that case nobody is waiting for a retry.
+		return nil, &Error{Role: c.role, Message: err.Error(), Retryable: ctx.Err() == nil}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -135,8 +179,11 @@ func (c *HTTPClient) Complete(ctx context.Context, messages []Message, opts ...O
 		// on a misbehaving endpoint is a denial-of-service on ourselves. The key
 		// is never echoed, only the provider's message.
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return nil, fmt.Errorf("%s completion failed with status %d: %s",
-			c.role, resp.StatusCode, strings.TrimSpace(string(detail)))
+		return nil, &Error{
+			Role: c.role, Status: resp.StatusCode,
+			Message:   strings.TrimSpace(string(detail)),
+			Retryable: retryableStatus(resp.StatusCode),
+		}
 	}
 
 	var out struct {
@@ -148,16 +195,23 @@ func (c *HTTPClient) Complete(ctx context.Context, messages []Message, opts ...O
 		Usage Usage `json:"usage"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
+		// A body that started arriving and then stopped is a transport failure, not
+		// a malformed contract: worth retrying.
+		return nil, &Error{Role: c.role, Status: resp.StatusCode,
+			Message: "decode response: " + err.Error(), Retryable: true}
 	}
 	if len(out.Choices) == 0 {
-		return nil, fmt.Errorf("%s completion returned no choices", c.role)
+		return nil, &Error{Role: c.role, Status: resp.StatusCode,
+			Message: "response contained no choices", Retryable: true}
 	}
 	choice := out.Choices[0]
 	if choice.FinishReason == "length" {
 		// Truncated output would be parsed as if complete, silently losing pages
-		// or citations. Fail loudly instead.
-		return nil, fmt.Errorf("%s completion hit the token limit; raise max_tokens or split the input", c.role)
+		// or citations. Fail loudly instead — and do not retry: the same budget
+		// will truncate the same way, so a retry only doubles the bill.
+		return nil, &Error{Role: c.role, Status: resp.StatusCode,
+			Message:   "hit the token limit; raise max_tokens or split the input",
+			Retryable: false}
 	}
 	model := out.Model
 	if model == "" {

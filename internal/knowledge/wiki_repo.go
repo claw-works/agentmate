@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -96,7 +97,9 @@ const buildColumns = `id, account_id, user_id, key_id, source_id, source_revisio
 	profile_version_id, compiler_version, model, prompt_version, reviewer_model, reviewer_prompt_version,
 	reviewer_independence, parent_build_id, mode, status, check_status, check_failures, review_status,
 	pages_written, pages_reused, input_tokens, output_tokens, cost_micros, review_tokens, review_cost_micros,
-	error, started_at, finished_at, created_at, updated_at`
+	error, started_at, finished_at, created_at, updated_at,
+	lease_owner, lease_expires_at, heartbeat_at, attempt, max_attempts, next_attempt_at, queued_at,
+	activate_on_success`
 
 func scanBuild(build *BuildRevision) []any {
 	return []any{
@@ -108,6 +111,9 @@ func scanBuild(build *BuildRevision) []any {
 		&build.PagesWritten, &build.PagesReused, &build.InputTokens, &build.OutputTokens,
 		&build.CostMicros, &build.ReviewTokens, &build.ReviewCostMicros, &build.Error,
 		&build.StartedAt, &build.FinishedAt, &build.CreatedAt, &build.UpdatedAt,
+		&build.LeaseOwner, &build.LeaseExpiresAt, &build.HeartbeatAt,
+		&build.Attempt, &build.MaxAttempts, &build.NextAttemptAt, &build.QueuedAt,
+		&build.ActivateOnSuccess,
 	}
 }
 
@@ -121,20 +127,30 @@ type createBuildInput struct {
 	ReviewerIndependence string
 	ParentBuildID        *string
 	Mode                 string
+	MaxAttempts          int
+	ActivateOnSuccess    bool
 }
 
+// CreateBuild enqueues a build. It starts `queued`, not `running`: the caller
+// enqueues and returns, and a worker claims it later. started_at is therefore
+// left NULL until a worker actually begins, so queue wait and compile time stay
+// distinguishable.
 func (r *Repo) CreateBuild(ctx context.Context, owner ownership.Owner, in createBuildInput) (*BuildRevision, error) {
+	if in.MaxAttempts <= 0 {
+		in.MaxAttempts = 3
+	}
 	var build BuildRevision
 	err := r.pool.QueryRow(ctx,
 		`INSERT INTO knowledge_build_revisions
 		   (account_id, user_id, key_id, source_id, source_revision_id, raw_package_hash, profile_version_id,
 		    compiler_version, model, prompt_version, reviewer_model, reviewer_prompt_version,
-		    reviewer_independence, parent_build_id, mode, status, started_at)
-		 VALUES ($1, $2, $3, $4::uuid, $5::uuid, $6, $7::uuid, $8, $9, $10, $11, $12, $13, $14::uuid, $15, 'running', NOW())
+		    reviewer_independence, parent_build_id, mode, status, max_attempts, activate_on_success)
+		 VALUES ($1, $2, $3, $4::uuid, $5::uuid, $6, $7::uuid, $8, $9, $10, $11, $12, $13, $14::uuid, $15, 'queued', $16, $17)
 		 RETURNING `+buildColumns,
 		owner.Account(), nullableString(owner.UserID), owner.KeyID, in.SourceID, in.SourceRevisionID,
 		in.RawPackageHash, in.ProfileVersionID, CompilerVersion, in.Model, PromptVersion,
 		in.ReviewerModel, ReviewerPromptVersion, in.ReviewerIndependence, in.ParentBuildID, in.Mode,
+		in.MaxAttempts, in.ActivateOnSuccess,
 	).Scan(scanBuild(&build)...)
 	if err != nil {
 		return nil, err
@@ -173,6 +189,192 @@ func (r *Repo) FindBuildByInputIdentity(ctx context.Context, accountID string, i
 		return nil, err
 	}
 	return &build, nil
+}
+
+// ─── queue: claim, heartbeat, release (K3.3) ───
+
+// ClaimNextBuild leases one eligible build to a worker.
+//
+// Eligibility is `queued` or `running` with an expired lease. Including `running`
+// is what makes a crashed worker recoverable: nothing else will ever release that
+// row. Recovery keys on lease expiry rather than on worker liveness, because a
+// partitioned worker looks identical from here and has the same consequence —
+// nobody is making progress.
+//
+// SKIP LOCKED so several workers can poll the same queue without serialising on
+// the head of it.
+func (r *Repo) ClaimNextBuild(ctx context.Context, leaseOwner string, leaseFor time.Duration) (*BuildRevision, error) {
+	if leaseOwner == "" {
+		return nil, fmt.Errorf("lease owner required")
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var buildID, accountID string
+	var attempt, maxAttempts int
+	err = tx.QueryRow(ctx,
+		`SELECT id::text, account_id::text, attempt, max_attempts
+		   FROM knowledge_build_revisions
+		  WHERE status IN ('queued', 'running')
+		    AND next_attempt_at <= NOW()
+		    AND (lease_expires_at IS NULL OR lease_expires_at <= NOW())
+		  ORDER BY next_attempt_at, queued_at
+		  LIMIT 1
+		  FOR UPDATE SKIP LOCKED`,
+	).Scan(&buildID, &accountID, &attempt, &maxAttempts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// The attempt budget is checked at claim time, not at failure time. A worker
+	// that dies without reporting anything still consumed an attempt, so a build
+	// that reliably kills its worker retires instead of cycling forever.
+	if attempt >= maxAttempts {
+		var build BuildRevision
+		if err := tx.QueryRow(ctx,
+			`UPDATE knowledge_build_revisions
+			    SET status = 'failed', lease_owner = '', lease_expires_at = NULL,
+			        error = CASE WHEN error = '' THEN $3 ELSE error || ' (' || $3 || ')' END,
+			        finished_at = NOW(), updated_at = NOW()
+			  WHERE id = $1::uuid AND account_id = $2::uuid
+			 RETURNING `+buildColumns,
+			buildID, accountID,
+			fmt.Sprintf("gave up after %d attempts", attempt),
+		).Scan(scanBuild(&build)...); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		// Reported as "nothing claimed": the caller has no work to do, and the
+		// build is already closed out.
+		return nil, nil
+	}
+
+	// A reclaimed build may carry output from the attempt that died. Since a
+	// successful commit sets `succeeded` in the same transaction that writes the
+	// pages, a claimable row should have none — this clears them anyway so recovery
+	// does not depend on that invariant holding forever somewhere else.
+	for _, table := range []string{
+		"knowledge_page_citations", "knowledge_page_links",
+		"knowledge_build_events", "knowledge_pages",
+	} {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM `+table+` WHERE account_id = $1::uuid AND build_id = $2::uuid`,
+			accountID, buildID,
+		); err != nil {
+			return nil, fmt.Errorf("clear abandoned %s: %w", table, err)
+		}
+	}
+
+	var build BuildRevision
+	if err := tx.QueryRow(ctx,
+		`UPDATE knowledge_build_revisions
+		    SET status = 'running', attempt = attempt + 1,
+		        lease_owner = $3, lease_expires_at = NOW() + make_interval(secs => $4),
+		        heartbeat_at = NOW(),
+		        started_at = COALESCE(started_at, NOW()), updated_at = NOW()
+		  WHERE id = $1::uuid AND account_id = $2::uuid
+		 RETURNING `+buildColumns,
+		buildID, accountID, leaseOwner, leaseFor.Seconds(),
+	).Scan(scanBuild(&build)...); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &build, nil
+}
+
+// HeartbeatBuild extends the lease. It fails with ErrLeaseLost once the lease has
+// moved on, which is how a worker learns to abandon work another worker has taken
+// over instead of racing it to the commit.
+func (r *Repo) HeartbeatBuild(ctx context.Context, accountID, buildID, leaseOwner string, leaseFor time.Duration) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE knowledge_build_revisions
+		    SET lease_expires_at = NOW() + make_interval(secs => $4), heartbeat_at = NOW(), updated_at = NOW()
+		  WHERE account_id = $1 AND id = $2::uuid AND lease_owner = $3 AND status = 'running'`,
+		accountID, buildID, leaseOwner, leaseFor.Seconds(),
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: build %s", ErrLeaseLost, buildID)
+	}
+	return nil
+}
+
+// RequeueBuild returns a build to the queue after a retryable failure, with the
+// error recorded and the next attempt pushed out by the backoff.
+//
+// Intervals are built with make_interval from a seconds value rather than by
+// casting a Go duration string: Go renders sub-second durations as "1ns", which
+// Postgres rejects outright, and "1m0s" happens to parse only by luck of
+// abbreviation. Passing a number leaves nothing to interpretation.
+func (r *Repo) RequeueBuild(
+	ctx context.Context, accountID, buildID, leaseOwner, buildError string, retryIn time.Duration,
+) (*BuildRevision, error) {
+	var build BuildRevision
+	err := r.pool.QueryRow(ctx,
+		`UPDATE knowledge_build_revisions
+		    SET status = 'queued', lease_owner = '', lease_expires_at = NULL,
+		        error = $4, next_attempt_at = NOW() + make_interval(secs => $5), updated_at = NOW()
+		  WHERE account_id = $1 AND id = $2::uuid AND lease_owner = $3
+		 RETURNING `+buildColumns,
+		accountID, buildID, leaseOwner, buildError, retryIn.Seconds(),
+	).Scan(scanBuild(&build)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("%w: build %s", ErrLeaseLost, buildID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &build, nil
+}
+
+// YieldBuild hands a build back on graceful shutdown.
+//
+// The attempt is refunded, unlike on a crash. A rolling deploy must not spend the
+// retry budget of every in-flight build: the attempt never got a fair chance to
+// fail. A crash cannot reach this path, so the poison-build protection that makes
+// attempts count claims still holds.
+func (r *Repo) YieldBuild(ctx context.Context, accountID, buildID, leaseOwner string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE knowledge_build_revisions
+		    SET status = 'queued', lease_owner = '', lease_expires_at = NULL,
+		        attempt = GREATEST(attempt - 1, 0),
+		        next_attempt_at = NOW(), updated_at = NOW()
+		  WHERE account_id = $1 AND id = $2::uuid AND lease_owner = $3 AND status = 'running'`,
+		accountID, buildID, leaseOwner,
+	)
+	return err
+}
+
+// QueueDepth reports how much work is waiting, per status. Used by the queue
+// observability endpoint: without it, "my compile is slow" is unanswerable.
+func (r *Repo) QueueDepth(ctx context.Context, accountID string) (*QueueStats, error) {
+	stats := &QueueStats{}
+	err := r.pool.QueryRow(ctx,
+		`SELECT
+		   count(*) FILTER (WHERE status = 'queued'),
+		   count(*) FILTER (WHERE status = 'running'),
+		   count(*) FILTER (WHERE status = 'queued' AND next_attempt_at > NOW()),
+		   COALESCE(EXTRACT(EPOCH FROM (NOW() - min(queued_at) FILTER (WHERE status = 'queued')))::bigint, 0)
+		 FROM knowledge_build_revisions
+		 WHERE ($1 = '' OR account_id::text = $1)`,
+		accountID,
+	).Scan(&stats.Queued, &stats.Running, &stats.WaitingForRetry, &stats.OldestQueuedSeconds)
+	if err != nil {
+		return nil, err
+	}
+	return stats, nil
 }
 
 func (r *Repo) GetBuild(ctx context.Context, accountID, buildID string) (*BuildRevision, error) {
@@ -234,18 +436,25 @@ func (r *Repo) ListBuilds(ctx context.Context, accountID, sourceID string, limit
 	return items, total, rows.Err()
 }
 
-// CommitBuild writes the whole compiled wiki in one transaction.
+// CommitBuild writes the whole compiled wiki and marks the build succeeded in one
+// transaction.
 //
 // All or nothing is a requirement, not an optimisation: half a wiki is worse than
 // none, because an agent cannot tell that pages are missing and would answer from
 // an incomplete graph as if it were complete.
+//
+// The terminal status is set in the same transaction on purpose. When it was a
+// separate statement, a worker killed in between left pages behind on a build that
+// still said `running` — and once builds are reclaimed by another worker, that
+// window becomes a source of duplicated pages. Committing them together makes
+// "this build has pages" and "this build succeeded" the same fact.
 func (r *Repo) CommitBuild(
 	ctx context.Context, owner ownership.Owner, buildID string,
 	pages []WikiPage, events []BuildEvent, usage buildUsage,
-) error {
+) (*BuildRevision, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -264,7 +473,7 @@ func (r *Repo) CommitBuild(
 			owner.Account(), buildID, page.Path, page.Kind, page.Title, page.Content,
 			frontmatter, page.ContentHash, page.DerivedFromBuildID,
 		).Scan(&pageID); err != nil {
-			return fmt.Errorf("insert page %s: %w", page.Path, err)
+			return nil, fmt.Errorf("insert page %s: %w", page.Path, err)
 		}
 		pageIDs[page.Path] = pageID
 	}
@@ -284,7 +493,7 @@ func (r *Repo) CommitBuild(
 				 ON CONFLICT (build_id, source_page_id, target_path, link_type) DO NOTHING`,
 				owner.Account(), buildID, sourcePageID, targetPageID, link.TargetPath, link.LinkType, link.Note,
 			); err != nil {
-				return fmt.Errorf("insert link %s -> %s: %w", page.Path, link.TargetPath, err)
+				return nil, fmt.Errorf("insert link %s -> %s: %w", page.Path, link.TargetPath, err)
 			}
 		}
 		for _, citation := range page.Citations {
@@ -295,7 +504,7 @@ func (r *Repo) CommitBuild(
 				owner.Account(), buildID, sourcePageID, citation.DocumentID, citation.DocumentPath,
 				citation.HeadingPath, citation.ChunkKey, citation.Claim, citation.Excerpt,
 			); err != nil {
-				return fmt.Errorf("insert citation for %s: %w", page.Path, err)
+				return nil, fmt.Errorf("insert citation for %s: %w", page.Path, err)
 			}
 		}
 	}
@@ -311,22 +520,38 @@ func (r *Repo) CommitBuild(
 			 VALUES ($1, $2::uuid, $3, $4, $5, $6, $7)`,
 			owner.Account(), buildID, event.SequenceNo, event.EventType, event.PagePath, event.Detail, payload,
 		); err != nil {
-			return fmt.Errorf("insert build event %d: %w", event.SequenceNo, err)
+			return nil, fmt.Errorf("insert build event %d: %w", event.SequenceNo, err)
 		}
 	}
 
-	if _, err := tx.Exec(ctx,
+	// Terminal state, usage and lease release all land here. The lease is cleared
+	// because a succeeded build must never look claimable again.
+	var build BuildRevision
+	if err := tx.QueryRow(ctx,
 		`UPDATE knowledge_build_revisions
-		    SET pages_written = $3, pages_reused = $4,
+		    SET status = 'succeeded', check_status = 'passed', check_failures = '[]'::jsonb, error = '',
+		        pages_written = $3, pages_reused = $4,
 		        input_tokens = $5, output_tokens = $6, cost_micros = $7,
-		        updated_at = NOW()
-		  WHERE account_id = $1 AND id = $2::uuid`,
+		        lease_owner = '', lease_expires_at = NULL,
+		        finished_at = NOW(), updated_at = NOW()
+		  WHERE account_id = $1 AND id = $2::uuid AND lease_owner = $8
+		 RETURNING `+buildColumns,
 		owner.Account(), buildID, usage.PagesWritten, usage.PagesReused,
-		usage.InputTokens, usage.OutputTokens, usage.CostMicros,
-	); err != nil {
-		return err
+		usage.InputTokens, usage.OutputTokens, usage.CostMicros, usage.LeaseOwner,
+	).Scan(scanBuild(&build)...); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The lease moved to another worker while this one was compiling. Its
+			// output is discarded rather than merged: the other worker is producing
+			// a complete wiki, and interleaving two of them yields a graph neither
+			// of them checked.
+			return nil, fmt.Errorf("%w: build %s", ErrLeaseLost, buildID)
+		}
+		return nil, err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &build, nil
 }
 
 type buildUsage struct {
@@ -335,10 +560,15 @@ type buildUsage struct {
 	InputTokens  int
 	OutputTokens int
 	CostMicros   int64
+	// LeaseOwner guards the commit: only the worker still holding the lease may
+	// write the wiki.
+	LeaseOwner string
 }
 
 // FinishBuild records the terminal state, including the check verdict. check is
 // the only gate, so a failed check means the build never becomes activatable.
+//
+// The lease is cleared here too: a terminal build must never look claimable again.
 func (r *Repo) FinishBuild(ctx context.Context, accountID, buildID, status, checkStatus string, failures []CheckFailure, buildError string) (*BuildRevision, error) {
 	encoded, err := json.Marshal(failures)
 	if err != nil {
@@ -351,6 +581,7 @@ func (r *Repo) FinishBuild(ctx context.Context, accountID, buildID, status, chec
 	if err := r.pool.QueryRow(ctx,
 		`UPDATE knowledge_build_revisions
 		    SET status = $3, check_status = $4, check_failures = $5, error = $6,
+		        lease_owner = '', lease_expires_at = NULL,
 		        finished_at = NOW(), updated_at = NOW()
 		  WHERE account_id = $1 AND id = $2::uuid
 		 RETURNING `+buildColumns,
@@ -644,6 +875,56 @@ func (r *Repo) CountPages(ctx context.Context, accountID, buildID string) (int, 
 		accountID, buildID,
 	).Scan(&count)
 	return count, err
+}
+
+// GetProfileVersion loads an immutable profile version by ID. The worker resolves
+// the profile from the build rather than from the manifest, so a manifest edited
+// after enqueue cannot change the rules the build is checked against.
+func (r *Repo) GetProfileVersion(ctx context.Context, accountID, id string) (*ProfileVersion, error) {
+	var version ProfileVersion
+	err := r.pool.QueryRow(ctx,
+		`SELECT `+profileVersionColumns+` FROM knowledge_profile_versions
+		  WHERE account_id = $1 AND id = $2::uuid`,
+		accountID, id,
+	).Scan(scanProfileVersion(&version)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("profile version not found: %s", id)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &version, nil
+}
+
+// CountRevisionIndexableDocuments is the enqueue-time check that there is
+// anything to compile, without loading every document body just to count them.
+func (r *Repo) CountRevisionIndexableDocuments(ctx context.Context, accountID, revisionID string) (int, error) {
+	var count int
+	err := r.pool.QueryRow(ctx,
+		`SELECT count(*) FROM knowledge_documents
+		  WHERE account_id = $1 AND revision_id = $2 AND indexable = true AND content_snapshot <> ''`,
+		accountID, revisionID,
+	).Scan(&count)
+	return count, err
+}
+
+// RecordAttemptUsage accumulates the cost of a failed attempt.
+//
+// Additive rather than overwriting: a build that failed twice before succeeding
+// cost all three attempts, and reporting only the last makes the bill
+// unexplainable. It runs on its own context for the same reason terminal writes
+// do — the attempt failed, quite possibly because that context died.
+func (r *Repo) RecordAttemptUsage(ctx context.Context, accountID, buildID string, inputTokens, outputTokens int, costMicros int64) error {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	_, err := r.pool.Exec(writeCtx,
+		`UPDATE knowledge_build_revisions
+		    SET input_tokens = input_tokens + $3, output_tokens = output_tokens + $4,
+		        cost_micros = cost_micros + $5, updated_at = NOW()
+		  WHERE account_id = $1 AND id = $2::uuid`,
+		accountID, buildID, inputTokens, outputTokens, costMicros,
+	)
+	return err
 }
 
 func sortStrings(values []string) {

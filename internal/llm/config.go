@@ -47,6 +47,31 @@ type RoleConfig struct {
 	Temperature float64
 	MaxTokens   int
 	Timeout     time.Duration
+	// Pricing is per-role because the compiler and reviewer are different models
+	// and often different vendors.
+	Pricing Pricing
+}
+
+// Pricing converts token counts into recorded cost.
+//
+// Both rates default to zero, and a zero rate yields zero cost rather than a
+// guess. Cost control is a design requirement, and an invented default would put
+// an authoritative-looking wrong number in the accounting — worse than a visible
+// zero that says "nobody told us the price".
+type Pricing struct {
+	InputMicrosPer1KTokens  int64
+	OutputMicrosPer1KTokens int64
+}
+
+func (p Pricing) Configured() bool {
+	return p.InputMicrosPer1KTokens > 0 || p.OutputMicrosPer1KTokens > 0
+}
+
+// Cost prices one completion in micros. Integer arithmetic throughout: money in
+// floats accumulates error that later has to be explained to someone.
+func (p Pricing) Cost(usage Usage) int64 {
+	return (int64(usage.PromptTokens)*p.InputMicrosPer1KTokens +
+		int64(usage.CompletionTokens)*p.OutputMicrosPer1KTokens) / 1000
 }
 
 func (c RoleConfig) Configured() bool {
@@ -107,6 +132,10 @@ func ConfigFromEnv() Config {
 		// not a substitute for the asynchronous job K3.4 adds; it only makes the
 		// synchronous path usable for small corpora.
 		Timeout: time.Duration(envInt("COMPILER_TIMEOUT_SECONDS", 900)) * time.Second,
+		Pricing: Pricing{
+			InputMicrosPer1KTokens:  int64(envInt("COMPILER_INPUT_MICROS_PER_1K_TOKENS", 0)),
+			OutputMicrosPer1KTokens: int64(envInt("COMPILER_OUTPUT_MICROS_PER_1K_TOKENS", 0)),
+		},
 	}
 	reviewer := RoleConfig{
 		BaseURL: strings.TrimRight(env("REVIEWER_BASE_URL", sharedBaseURL), "/"),
@@ -120,6 +149,10 @@ func ConfigFromEnv() Config {
 		Temperature: envFloat("REVIEWER_TEMPERATURE", 0),
 		MaxTokens:   envInt("REVIEWER_MAX_TOKENS", 2048),
 		Timeout:     time.Duration(envInt("REVIEWER_TIMEOUT_SECONDS", 120)) * time.Second,
+		Pricing: Pricing{
+			InputMicrosPer1KTokens:  int64(envInt("REVIEWER_INPUT_MICROS_PER_1K_TOKENS", 0)),
+			OutputMicrosPer1KTokens: int64(envInt("REVIEWER_OUTPUT_MICROS_PER_1K_TOKENS", 0)),
+		},
 	}
 	return Config{Compiler: compiler, Reviewer: reviewer}
 }

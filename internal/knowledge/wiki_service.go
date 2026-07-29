@@ -17,17 +17,17 @@ import (
 // leave a failed build behind implying otherwise.
 var ErrCompilerUnavailable = errors.New("wiki compiler is not configured")
 
-// Compile builds the wiki for one source's active raw revision.
+// EnqueueCompile validates the request, resolves the inputs, and queues a build.
 //
-// The sequence is: resolve inputs, reuse if an identical build exists, compile,
-// generate index and log, run check, commit, then activate if check passed.
+// It does not compile. A synchronous compile was measured at 200-400 seconds
+// against a reasoning model, which is beyond any sane HTTP client default timeout,
+// and a caller that gives up loses the work. Raising timeouts does not fix that —
+// it only moves the point at which the connection breaks.
 //
-// Activation is automatic by design (K3 §2.3): the knowledge base belongs to the
-// user while the quality standard belongs to the platform, so asking a SaaS user
-// to approve compiler output is an identity mismatch that yields either rubber
-// stamping or a wiki that never updates. check is what makes automatic activation
-// safe, which is why the two ship together.
-func (s *Service) Compile(ctx context.Context, owner ownership.Owner, req CompileRequest) (*CompileResponse, error) {
+// Everything cheap and deterministic still happens here: a job that cannot
+// possibly succeed is rejected now, while a caller is present to be told why,
+// rather than queued and failed minutes later where nobody is looking.
+func (s *Service) EnqueueCompile(ctx context.Context, owner ownership.Owner, req CompileRequest) (*EnqueueCompileResponse, error) {
 	if s.compiler == nil || !s.compiler.Configured() {
 		return nil, ErrCompilerUnavailable
 	}
@@ -68,23 +68,12 @@ func (s *Service) Compile(ctx context.Context, owner ownership.Owner, req Compil
 		return nil, err
 	}
 
-	documents, err := s.repo.ListRevisionIndexableDocuments(ctx, owner.Account(), revisionID)
+	documentCount, err := s.repo.CountRevisionIndexableDocuments(ctx, owner.Account(), revisionID)
 	if err != nil {
 		return nil, err
 	}
-	if len(documents) == 0 {
+	if documentCount == 0 {
 		return nil, fmt.Errorf("revision has no indexable documents to compile")
-	}
-
-	// The previous succeeded build is the drift baseline for check. It is
-	// deliberately *not* recorded as parent_build_id on a full build: parent takes
-	// part in the input identity, so stamping the latest build as parent would
-	// make every identity unique and reuse would never hit. Lineage for full
-	// builds is recoverable from source plus time order; parent_build_id is
-	// reserved for incremental builds, where it is a genuine input.
-	parent, err := s.repo.PreviousSucceededBuild(ctx, owner.Account(), source.ID, "")
-	if err != nil {
-		return nil, err
 	}
 
 	input := createBuildInput{
@@ -96,6 +85,16 @@ func (s *Service) Compile(ctx context.Context, owner ownership.Owner, req Compil
 		ReviewerModel:        s.reviewerModel(),
 		ReviewerIndependence: s.reviewerIndependence,
 		Mode:                 req.Mode,
+		ActivateOnSuccess:    req.Activate == nil || *req.Activate,
+	}
+
+	response := &EnqueueCompileResponse{}
+	if s.reviewerIndependence == llm.IndependenceSameProvider || s.reviewerIndependence == llm.IndependenceSameModel {
+		// Said on every build rather than only in documentation: a reviewer sharing
+		// the compiler's priors misses the compiler's mistakes, and the operator
+		// should see that where the result is consumed.
+		response.Warnings = append(response.Warnings,
+			"reviewer independence is "+s.reviewerIndependence+"; review verdicts share the compiler's blind spots")
 	}
 
 	// Input identity, not content identity: LLM output is not reproducible, so a
@@ -107,7 +106,9 @@ func (s *Service) Compile(ctx context.Context, owner ownership.Owner, req Compil
 		}
 		if existing != nil {
 			activated, activateErr := s.maybeActivate(ctx, owner, existing, req.Activate)
-			response := &CompileResponse{Build: existing, Reused: true, Activated: activated}
+			response.Build = existing
+			response.Reused = true
+			response.Activated = activated
 			if activateErr != nil {
 				response.Warnings = append(response.Warnings, "activation failed: "+activateErr.Error())
 			}
@@ -119,6 +120,54 @@ func (s *Service) Compile(ctx context.Context, owner ownership.Owner, req Compil
 	if err != nil {
 		return nil, err
 	}
+	response.Build = build
+	// Queue depth is returned with the receipt because "queued" alone does not
+	// tell the caller whether to expect four minutes or an hour.
+	if stats, statsErr := s.repo.QueueDepth(ctx, owner.Account()); statsErr == nil {
+		response.Queue = stats
+	}
+	return response, nil
+}
+
+// RunBuild compiles one claimed build. It is the worker side of the queue and
+// assumes the caller holds the lease.
+//
+// Returning an error means the attempt failed in a way the worker must classify;
+// returning nil means the build reached a terminal state, successful or not. A
+// check failure is *not* an error here: the build is legitimately finished, just
+// rejected, and retrying it would be an attempt to get past the gate by repetition.
+func (s *Service) RunBuild(ctx context.Context, build *BuildRevision) error {
+	if s.compiler == nil || !s.compiler.Configured() {
+		return ErrCompilerUnavailable
+	}
+	owner := ownership.Owner{AccountID: build.AccountID, KeyID: build.KeyID}
+	if build.UserID != nil {
+		owner.UserID = *build.UserID
+	}
+
+	revision, err := s.repo.GetRevision(ctx, owner.Account(), build.SourceRevisionID)
+	if err != nil {
+		return err
+	}
+	var manifest Manifest
+	_ = json.Unmarshal(revision.Manifest, &manifest)
+
+	profile, err := s.repo.GetProfileVersion(ctx, owner.Account(), build.ProfileVersionID)
+	if err != nil {
+		return err
+	}
+
+	documents, err := s.repo.ListRevisionIndexableDocuments(ctx, owner.Account(), build.SourceRevisionID)
+	if err != nil {
+		return err
+	}
+	if len(documents) == 0 {
+		// The revision lost its documents between enqueue and run. Terminal: no
+		// number of retries will bring them back.
+		_, finishErr := s.finishBuild(ctx, owner.Account(), build.ID,
+			BuildStatusFailed, CheckStatusPending, nil, "revision has no indexable documents to compile")
+		return finishErr
+	}
 
 	sequence := 0
 	events := make([]BuildEvent, 0, 8)
@@ -129,30 +178,23 @@ func (s *Service) Compile(ctx context.Context, owner ownership.Owner, req Compil
 			Detail: detail, OccurredAt: time.Now().UTC(),
 		})
 	}
-	addEvent(BuildEventStarted, "", fmt.Sprintf("full compile of revision %s with %s", revision.RevisionKey, s.compiler.Model()))
+	started := fmt.Sprintf("full compile of revision %s with %s", revision.RevisionKey, build.Model)
+	if build.Attempt > 1 {
+		started += fmt.Sprintf(" (attempt %d of %d)", build.Attempt, build.MaxAttempts)
+	}
+	addEvent(BuildEventStarted, "", started)
 	addEvent(BuildEventSourceRead, "", fmt.Sprintf("%d indexable documents", len(documents)))
 
 	pages, rejected, usage, err := s.compileWithModel(ctx, *profile, manifest, documents)
 	if err != nil {
-		// A compilation failure is recorded as a failed build rather than
-		// discarded: the attempt, its cost and its error are part of the audit
-		// trail even though it produced nothing usable.
-		//
-		// The terminal write runs on a detached context because the most common
-		// failure is the caller giving up on a slow compile. Writing through the
-		// cancelled context would fail too, leaving the build stuck in `running`
-		// forever — a record that lies indefinitely is worse than one that says
-		// "cancelled".
-		status := BuildStatusFailed
-		if ctx.Err() != nil {
-			status = BuildStatusCancelled
+		// Handed back to the worker to classify as retryable or terminal. Cost
+		// already incurred is recorded either way: a failed attempt still spent
+		// money, and hiding that makes the bill unexplainable.
+		if usage.TotalTokens > 0 {
+			_ = s.repo.RecordAttemptUsage(ctx, owner.Account(), build.ID,
+				usage.PromptTokens, usage.CompletionTokens, s.costMicros(usage))
 		}
-		failed, finishErr := s.finishBuild(ctx, owner.Account(), build.ID,
-			status, CheckStatusPending, nil, err.Error())
-		if finishErr != nil {
-			return nil, fmt.Errorf("compile failed (%v) and the build could not be marked %s: %w", err, status, finishErr)
-		}
-		return &CompileResponse{Build: failed}, nil
+		return err
 	}
 	for _, path := range rejected {
 		addEvent(BuildEventPageRejected, path, "path is reserved for a platform-generated page")
@@ -176,8 +218,12 @@ func (s *Service) Compile(ctx context.Context, owner ownership.Owner, req Compil
 		knownPaths[document.Path] = struct{}{}
 	}
 	parentPageCount := 0
-	if parent != nil {
-		if count, err := s.repo.CountPages(ctx, owner.Account(), parent.ID); err == nil {
+	// The previous succeeded build is the drift baseline. It is deliberately not
+	// recorded as parent_build_id on a full build: parent takes part in the input
+	// identity, so stamping the latest build as parent would make every identity
+	// unique and reuse would never hit.
+	if parent, parentErr := s.repo.PreviousSucceededBuild(ctx, owner.Account(), build.SourceID, build.ID); parentErr == nil && parent != nil {
+		if count, countErr := s.repo.CountPages(ctx, owner.Account(), parent.ID); countErr == nil {
 			parentPageCount = count
 		}
 	}
@@ -192,60 +238,60 @@ func (s *Service) Compile(ctx context.Context, owner ownership.Owner, req Compil
 
 	if len(failures) > 0 {
 		// check is the gate: nothing is written when it fails, so a build that
-		// violated its invariants leaves no half-visible wiki behind.
-		for _, failure := range failures {
-			addEvent(BuildEventCheckFailed, failure.PagePath, failure.Rule+": "+failure.Detail)
-		}
-		failed, finishErr := s.finishBuild(ctx, owner.Account(), build.ID,
+		// violated its invariants leaves no half-visible wiki behind. This is
+		// terminal, not retryable — recompiling until the dice fall right would be
+		// relaxing the gate by repetition.
+		_, finishErr := s.finishBuild(ctx, owner.Account(), build.ID,
 			BuildStatusFailed, CheckStatusFailed, failures,
 			fmt.Sprintf("%d check failures", len(failures)))
-		if finishErr != nil {
-			return nil, finishErr
-		}
-		return &CompileResponse{Build: failed}, nil
+		return finishErr
 	}
 
-	if err := s.repo.CommitBuild(ctx, owner, build.ID, pages, events, buildUsage{
+	succeeded, err := s.repo.CommitBuild(ctx, owner, build.ID, pages, events, buildUsage{
 		PagesWritten: len(pages),
 		InputTokens:  usage.PromptTokens,
 		OutputTokens: usage.CompletionTokens,
-	}); err != nil {
-		failed, finishErr := s.finishBuild(ctx, owner.Account(), build.ID,
+		CostMicros:   s.costMicros(usage),
+		LeaseOwner:   build.LeaseOwner,
+	})
+	if err != nil {
+		if errors.Is(err, ErrLeaseLost) {
+			// Another worker owns this build now. Its output wins; this one is
+			// discarded without touching the row.
+			return err
+		}
+		_, finishErr := s.finishBuild(ctx, owner.Account(), build.ID,
 			BuildStatusFailed, CheckStatusPassed, nil, "commit failed: "+err.Error())
 		if finishErr != nil {
-			return nil, fmt.Errorf("commit failed (%v) and the build could not be marked failed: %w", err, finishErr)
+			return fmt.Errorf("commit failed (%v) and the build could not be marked failed: %w", err, finishErr)
 		}
-		return &CompileResponse{Build: failed}, nil
+		return nil
 	}
 
-	succeeded, err := s.finishBuild(ctx, owner.Account(), build.ID,
-		BuildStatusSucceeded, CheckStatusPassed, nil, "")
-	if err != nil {
-		return nil, err
+	if build.ActivateOnSuccess {
+		if _, _, activateErr := s.repo.ActivateBuild(ctx, owner.Account(), succeeded.ID); activateErr != nil {
+			// The wiki is committed and valid; only the pointer move failed. Not an
+			// attempt failure — retrying would recompile a wiki that already exists.
+			return nil
+		}
 	}
+	return nil
+}
 
-	response := &CompileResponse{Build: succeeded, Pages: pagePaths(pages)}
-	activated, activateErr := s.maybeActivate(ctx, owner, succeeded, req.Activate)
-	response.Activated = activated
-	if activateErr != nil {
-		// The build is committed and valid; only the pointer move failed. Report
-		// it instead of failing, so the caller knows to activate explicitly rather
-		// than assuming the compilation was lost.
-		response.Warnings = append(response.Warnings, "activation failed: "+activateErr.Error())
-	}
-	if s.reviewerIndependence == llm.IndependenceSameProvider || s.reviewerIndependence == llm.IndependenceSameModel {
-		// Say this on every build rather than only in documentation: a reviewer
-		// sharing the compiler's priors misses the compiler's mistakes, and the
-		// operator should see that where the result is consumed.
-		response.Warnings = append(response.Warnings,
-			"reviewer independence is "+s.reviewerIndependence+"; review verdicts share the compiler's blind spots")
-	}
-	return response, nil
+// costMicros prices one compilation.
+//
+// Zero when no price is configured. An invented default would put a number in the
+// accounting that looks authoritative and is wrong; zero is visibly unknown.
+func (s *Service) costMicros(usage llm.Usage) int64 {
+	return s.compilerPricing.Cost(usage)
 }
 
 // maybeActivate moves the active pointer unless the caller opted out.
 func (s *Service) maybeActivate(ctx context.Context, owner ownership.Owner, build *BuildRevision, activate *bool) (bool, error) {
 	if activate != nil && !*activate {
+		return false, nil
+	}
+	if build.Status != BuildStatusSucceeded {
 		return false, nil
 	}
 	if _, _, err := s.repo.ActivateBuild(ctx, owner.Account(), build.ID); err != nil {
@@ -286,6 +332,10 @@ func (s *Service) ListBuilds(ctx context.Context, accountID, sourceID string, li
 		offset = 0
 	}
 	return &BuildListResponse{Items: items, Total: total, Limit: limit, Offset: offset}, nil
+}
+
+func (s *Service) QueueStats(ctx context.Context, accountID string) (*QueueStats, error) {
+	return s.repo.QueueDepth(ctx, accountID)
 }
 
 func (s *Service) ListPages(ctx context.Context, accountID, buildID string) (*PageListResponse, error) {
@@ -355,11 +405,10 @@ func pagePaths(pages []WikiPage) []string {
 // finishBuild writes a build's terminal state on a context that keeps the
 // request's values but drops its cancellation.
 //
-// That write must survive the caller hanging up. The most common failure of a
-// synchronous compile is exactly that — a client giving up on a slow model — and
-// writing through the cancelled context would fail too, leaving the build stuck
-// in `running` forever. A record that lies indefinitely is worse than one saying
-// "cancelled".
+// That write must survive the caller hanging up. With the queue in place the
+// caller is a worker rather than an HTTP request, but the same reasoning applies
+// during shutdown: the context is cancelled precisely when the build most needs
+// its outcome recorded, and a record stuck at `running` lies indefinitely.
 func (s *Service) finishBuild(
 	ctx context.Context, accountID, buildID, status, checkStatus string,
 	failures []CheckFailure, buildError string,

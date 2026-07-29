@@ -17,7 +17,7 @@ import (
 func registerWikiTools(s *server.MCPServer, svc *Service) {
 	// knowledge_compile
 	s.AddTool(mcp.NewTool("knowledge_compile",
-		mcp.WithDescription("Compile a knowledge source's active raw revision into an interlinked wiki. Runs deterministic checks and, if they pass, activates the resulting build automatically. Returns the build with its provenance; a build that fails checks writes no pages."),
+		mcp.WithDescription("Queue a wiki compilation for a knowledge source's active raw revision. Returns immediately with a queued build — compilation takes minutes, so poll knowledge_build_get until status leaves queued/running. On success the build is activated automatically if checks pass; a build that fails checks writes no pages."),
 		mcp.WithString("source_id", mcp.Required(), mcp.Description("Registered knowledge source ID; it must already have an active synced revision")),
 		mcp.WithString("mode", mcp.Description("full (default). incremental is not implemented yet and is rejected rather than downgraded")),
 		mcp.WithBoolean("force", mcp.Description("Recompile even when a succeeded build already exists for the same inputs")),
@@ -40,7 +40,7 @@ func registerWikiTools(s *server.MCPServer, svc *Service) {
 				request.Activate = &value
 			}
 		}
-		response, err := svc.Compile(ctx, owner, request)
+		response, err := svc.EnqueueCompile(ctx, owner, request)
 		if err != nil {
 			if errors.Is(err, ErrCompilerUnavailable) {
 				return mcpauth.ErrResult("wiki compilation is not available: no compiler model is configured on this deployment"), nil
@@ -48,6 +48,21 @@ func registerWikiTools(s *server.MCPServer, svc *Service) {
 			return mcpauth.ErrResult(err.Error()), nil
 		}
 		return mcpauth.JSONResult(response)
+	})
+
+	// knowledge_queue_stats
+	s.AddTool(mcp.NewTool("knowledge_queue_stats",
+		mcp.WithDescription("Report the wiki compile queue for this account: builds waiting, running, waiting on a retry backoff, and the age of the oldest waiting build. Use this to tell queue wait apart from a stuck build."),
+	), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		stats, err := svc.QueueStats(ctx, owner.Account())
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(stats)
 	})
 
 	// knowledge_builds_list

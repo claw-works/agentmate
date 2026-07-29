@@ -12,6 +12,12 @@ import (
 
 // ─── K3: wiki compilation ───
 
+// Compile enqueues a build and returns a receipt.
+//
+// 202, not 200: nothing has been compiled when this returns. The synchronous
+// version took 200-400 seconds against a reasoning model, past any sane client
+// default timeout, and a caller that gave up lost the work entirely. Callers poll
+// the build.
 func (h *Handler) Compile(c *gin.Context) {
 	var req CompileRequest
 	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
@@ -19,7 +25,7 @@ func (h *Handler) Compile(c *gin.Context) {
 		return
 	}
 	owner := auth.OwnerFromContext(c)
-	response, err := h.svc.Compile(c.Request.Context(), owner, req)
+	response, err := h.svc.EnqueueCompile(c.Request.Context(), owner, req)
 	if err != nil {
 		// An unconfigured compiler is an operator problem, not a bad request, and
 		// not a server fault either: 501 says "this deployment cannot do that".
@@ -30,7 +36,24 @@ func (h *Handler) Compile(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, response)
+	if response.Reused {
+		// Nothing was queued, so the request is already fully satisfied.
+		c.JSON(http.StatusOK, response)
+		return
+	}
+	c.JSON(http.StatusAccepted, response)
+}
+
+// QueueStats answers "why is my compile not done yet". Without it, waiting in a
+// queue is indistinguishable from a stuck worker.
+func (h *Handler) QueueStats(c *gin.Context) {
+	owner := auth.OwnerFromContext(c)
+	stats, err := h.svc.QueueStats(c.Request.Context(), owner.Account())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, stats)
 }
 
 func (h *Handler) ListBuilds(c *gin.Context) {

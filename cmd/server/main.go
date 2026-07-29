@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -86,11 +89,13 @@ func main() {
 	// can run on a different vendor. Whether it actually does is recorded on every
 	// build via Independence rather than assumed here.
 	llmCfg := llm.ConfigFromEnv()
-	knowledgeSvc.WithLLM(
-		llm.NewHTTPClient(llm.RoleCompiler, llmCfg.Compiler),
-		llm.NewHTTPClient(llm.RoleReviewer, llmCfg.Reviewer),
-		llmCfg.Independence(),
-	)
+	knowledgeSvc.WithLLM(knowledge.LLMSetup{
+		Compiler:        llm.NewHTTPClient(llm.RoleCompiler, llmCfg.Compiler),
+		Reviewer:        llm.NewHTTPClient(llm.RoleReviewer, llmCfg.Reviewer),
+		Independence:    llmCfg.Independence(),
+		CompilerPricing: llmCfg.Compiler.Pricing,
+		ReviewerPricing: llmCfg.Reviewer.Pricing,
+	})
 	log.Printf("wiki compiler model=%s reviewer=%s independence=%s",
 		llmCfg.Compiler.Model, llmCfg.Reviewer.Model, llmCfg.Independence())
 	knowledgeHandler := knowledge.NewHandler(knowledgeSvc)
@@ -257,6 +262,7 @@ func main() {
 	// Compilation writes a new build and moves the active pointer, so it needs
 	// write scope even though it only reads the raw layer.
 	protected.POST("/knowledge/compile", auth.RequireScope("knowledge:rw"), knowledgeHandler.Compile)
+	protected.GET("/knowledge/queue", auth.RequireScope("knowledge:r"), knowledgeHandler.QueueStats)
 	protected.POST("/knowledge/builds/:build_id/activate", auth.RequireScope("knowledge:rw"), knowledgeHandler.ActivateBuild)
 
 	// Admin
@@ -284,10 +290,38 @@ func main() {
 
 	registerFrontend(r)
 
+	// The compile worker runs in-process. Compilation is a multi-minute model call
+	// and cannot live inside a request, but it does not need a separate deployment
+	// either: the queue is a table, so several replicas of this same binary form
+	// the worker pool, and leases keep them from compiling the same build twice.
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	wikiWorker := knowledge.NewWorker(knowledgeSvc, knowledgeRepo, knowledge.WorkerConfigFromEnv(llmCfg.Compiler.Timeout))
+	wikiWorker.Start(workerCtx)
+
+	server := &http.Server{Addr: ":" + port, Handler: r}
+	go func() {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
+	}()
+
 	printBanner(port)
-	if err := r.Run(":" + port); err != nil {
-		log.Fatal(err)
+
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	<-signals
+	log.Printf("shutting down")
+
+	// Stop accepting requests first, then let the worker hand its builds back.
+	// Doing it the other way round would let a request enqueue work into a queue
+	// nobody is serving any more.
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelShutdown()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("http shutdown: %v", err)
 	}
+	stopWorker()
+	wikiWorker.Stop(25 * time.Second)
 }
 
 const banner = `

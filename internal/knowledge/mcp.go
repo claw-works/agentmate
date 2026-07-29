@@ -31,6 +31,7 @@ var toolScopes = map[string]string{
 	"knowledge_build_diff":     "knowledge:r",
 	"knowledge_build_events":   "knowledge:r",
 	"knowledge_build_activate": "knowledge:rw",
+	"knowledge_queue_stats":    "knowledge:r",
 }
 
 func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {

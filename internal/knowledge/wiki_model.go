@@ -151,6 +151,28 @@ type BuildRevision struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
 
+	// ─── queue state (K3.3) ───
+	//
+	// The lease lives on the build rather than in a separate jobs table, so there
+	// is exactly one row that answers "is this build running" — two rows can
+	// disagree after a crash, which is when the answer matters most.
+
+	// LeaseOwner is an opaque worker identity: host plus a process-lifetime
+	// nonce, so a restarted process never inherits its own stale lease.
+	LeaseOwner     string     `json:"lease_owner,omitempty"`
+	LeaseExpiresAt *time.Time `json:"lease_expires_at,omitempty"`
+	HeartbeatAt    *time.Time `json:"heartbeat_at,omitempty"`
+	// Attempt counts claims rather than failures, so a build that silently kills
+	// every worker touching it still runs out of attempts.
+	Attempt       int       `json:"attempt"`
+	MaxAttempts   int       `json:"max_attempts"`
+	NextAttemptAt time.Time `json:"next_attempt_at"`
+	QueuedAt      time.Time `json:"queued_at"`
+	// ActivateOnSuccess carries the request's intent across the queue: the caller
+	// is long gone by the time a worker runs, so the intent lives on the job.
+
+	ActivateOnSuccess bool `json:"activate_on_success"`
+
 	// IsActive is derived from the source pointer, not stored on the build, so
 	// there is exactly one place that decides which build is current.
 	IsActive bool `json:"is_active"`
@@ -317,3 +339,36 @@ type ActivateBuildResponse struct {
 // succeed, or it did not pass check. check is the only gate, so this is where
 // that rule is enforced regardless of who asks.
 var ErrBuildNotActivatable = errors.New("build is not activatable")
+
+// ErrLeaseLost means another worker took over this build. The losing worker must
+// discard its output rather than merge it: the new owner is producing a complete
+// wiki, and interleaving two of them yields a graph neither of them checked.
+var ErrLeaseLost = errors.New("build lease lost")
+
+// QueueStats answers "why is my compile not done yet" without reading the build
+// table by hand. Without it, queue wait is indistinguishable from a stuck worker.
+type QueueStats struct {
+	Queued          int `json:"queued"`
+	Running         int `json:"running"`
+	WaitingForRetry int `json:"waiting_for_retry"`
+	// OldestQueuedSeconds is the age of the oldest waiting build, which is the
+	// number that actually tells whether the queue is keeping up.
+	OldestQueuedSeconds int64 `json:"oldest_queued_seconds"`
+}
+
+// EnqueueCompileResponse is returned by the asynchronous compile entry point.
+//
+// Compilation is queued rather than performed inline: a synchronous compile was
+// measured at 200-400 seconds, past any sane HTTP client default, and a caller
+// that gives up loses the work. Callers poll the build instead.
+type EnqueueCompileResponse struct {
+	Build *BuildRevision `json:"build"`
+	// Reused is true when a succeeded build already matched the input identity, in
+	// which case nothing was queued at all.
+	Reused bool `json:"reused"`
+	// Activated is only ever true on the reuse path, where there is already a
+	// wiki to point at.
+	Activated bool        `json:"activated"`
+	Queue     *QueueStats `json:"queue,omitempty"`
+	Warnings  []string    `json:"warnings,omitempty"`
+}

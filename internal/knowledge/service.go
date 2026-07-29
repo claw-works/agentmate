@@ -38,6 +38,8 @@ type Service struct {
 	compiler             llm.Client
 	reviewer             llm.Client
 	reviewerIndependence string
+	compilerPricing      llm.Pricing
+	reviewerPricing      llm.Pricing
 }
 
 // NewService keeps the retrieval dependency optional (mirroring the skills
@@ -56,16 +58,30 @@ func NewService(repo *Repo, retrievalSvc ...*retrieval.Service) *Service {
 	return s
 }
 
-// WithLLM attaches the two model roles. It is a separate setter rather than
+// LLMSetup carries the two model roles and their prices.
+type LLMSetup struct {
+	Compiler llm.Client
+	Reviewer llm.Client
+	// Independence is recorded on every build, so the collusion risk of a result
+	// is visible in the data rather than depending on someone recalling the
+	// configuration at the time.
+	Independence    string
+	CompilerPricing llm.Pricing
+	ReviewerPricing llm.Pricing
+}
+
+// WithLLM attaches the model roles. It is a separate setter rather than
 // constructor arguments so that the many existing call sites — tests included —
 // keep compiling and keep meaning "no compiler configured".
-func (s *Service) WithLLM(compiler, reviewer llm.Client, independence string) *Service {
-	s.compiler = compiler
-	s.reviewer = reviewer
-	if independence == "" {
-		independence = llm.IndependenceUnavailable
+func (s *Service) WithLLM(setup LLMSetup) *Service {
+	s.compiler = setup.Compiler
+	s.reviewer = setup.Reviewer
+	if setup.Independence == "" {
+		setup.Independence = llm.IndependenceUnavailable
 	}
-	s.reviewerIndependence = independence
+	s.reviewerIndependence = setup.Independence
+	s.compilerPricing = setup.CompilerPricing
+	s.reviewerPricing = setup.ReviewerPricing
 	return s
 }
 
