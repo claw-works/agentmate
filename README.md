@@ -335,10 +335,11 @@ Knowledge Registry K1: knowledge sources with immutable revisions and document
 snapshots. K1 covers source registration, Git/local ingest, canonical package
 identity, and account-scoped document reads. K2 adds the K0 catalog,
 deterministic Markdown chunking, a document link graph, and account-scoped
-hybrid retrieval. K3.1–K3.2 add the wiki compiler: profile versioning, immutable
+hybrid retrieval. K3.1–K3.3 add the wiki compiler: profile versioning, immutable
 wiki builds, deterministic checks as the only activation gate, build diff and
-rollback. Still planned: asynchronous compilation, incremental builds, wiki-page
-retrieval, lint, LLM review and validation signals (see
+rollback, and a leased compile queue with bounded retries and cost accounting.
+Still planned: incremental builds, wiki-page retrieval, lint, LLM review and
+validation signals (see
 `docs/knowledge-wiki-compiler-k3-v0.1.md` §13 for exactly what is and is not
 implemented).
 
@@ -398,7 +399,8 @@ If the model wrote the index, check's coverage rule would be testing the model's
 diligence instead of the build's completeness. Those two paths are reserved; a
 model page landing there is dropped and recorded as a `page_rejected` event.
 
-- `POST /api/knowledge/compile` — Compile a source's active raw revision into a wiki build; runs check and activates on pass. Body `source_id` (required), `mode` (`full`; `incremental` is rejected rather than silently downgraded), `force` (recompile despite a matching input identity), `activate` (default true). Returns the build, whether it was reused, whether it activated, and warnings — including a standing warning when reviewer independence is not `cross_provider`. Returns 501 when no compiler model is configured, which is an operator gap rather than a failed build (scope: `knowledge:rw`)
+- `POST /api/knowledge/compile` — **Queue** a compilation of the source's active raw revision. Returns `202` with a `queued` build; nothing has been compiled when it returns. Body `source_id` (required), `mode` (`full`; `incremental` is rejected rather than silently downgraded), `force` (recompile despite a matching input identity), `activate` (default true, carried on the job because the caller is long gone when a worker runs). Returns `200` instead when an existing build already matched the input identity, in which case nothing was queued. Warnings include a standing one when reviewer independence is not `cross_provider`. Returns 501 when no compiler model is configured, which is an operator gap rather than a failed build (scope: `knowledge:rw`)
+- `GET /api/knowledge/queue` — Compile queue for this account: builds waiting, running, waiting on a retry backoff, and the age of the oldest waiting build. Without this, queue wait and a stuck worker look identical from outside (scope: `knowledge:r`)
 - `GET /api/knowledge/builds?source_id=&limit=&offset=` — Build history, newest first, with `is_active` derived from the source pointer (scope: `knowledge:r`)
 - `GET /api/knowledge/builds/:build_id` — One build with full provenance, check verdict and failures, and token spend (scope: `knowledge:r`)
 - `GET /api/knowledge/builds/:build_id/pages` — Page metadata without bodies (scope: `knowledge:r`)
@@ -407,10 +409,53 @@ model page landing there is dropped and recorded as a `page_rejected` event.
 - `GET /api/knowledge/builds/:build_id/events` — The ordered build log, rendered as `wiki/log.md` on succeeded builds (scope: `knowledge:r`)
 - `POST /api/knowledge/builds/:build_id/activate` — Point the source's wiki at this build. This is also the rollback operation; the response carries `previous_build_id` so a rollback can be undone. Returns 409 for a build that did not succeed or did not pass check (scope: `knowledge:rw`)
 
-Compilation is currently **synchronous and slow** — 200–400 seconds per package
-against a reasoning model — which is beyond any sane HTTP client default timeout.
-If the client hangs up, the build is recorded as `cancelled` rather than left
-stuck in `running`. Asynchronous compilation with leases is the next milestone.
+Compilation runs in a **leased queue**, not in the request: a compile takes 200-400
+seconds against a reasoning model, past any sane client default timeout, and a
+caller that gave up used to lose the work. Enqueue returns in milliseconds.
+
+The queue is the build table rather than a broker. The build row already exists and
+already needs a status, so the lease lives on it — a broker would add a second
+place that answers "is this build running", and the two can disagree after a crash,
+which is when the answer matters. Workers are replicas of this same binary; leases
+keep two of them from compiling the same build.
+
+Recovery keys on lease expiry, not worker liveness: a partitioned worker looks
+identical from the database and has the same consequence, which is that nobody is
+making progress. `attempt` counts claims rather than failures, so a build that
+silently kills every worker it touches retires instead of cycling forever. Graceful
+shutdown yields its builds and refunds the attempt, so a rolling deploy neither
+stalls in-flight work for a lease period nor spends its retry budget.
+
+What gets retried is the substance:
+
+| Failure | Retried | Why |
+|---|---|---|
+| Transport failure, dropped connection, truncated body | yes | A four-minute non-streaming connection does get dropped |
+| 408, 429, 5xx | yes | The provider is explicitly saying "later" |
+| Other 4xx | no | Would deterministically recur |
+| Reply truncated by `max_tokens` | no | The same budget truncates the same way; a retry only doubles the bill |
+| **check failure** | **no** | Recompiling until the dice fall right is relaxing the gate by repetition |
+| Unknown error | no | A compile is expensive, so the default has to be the cheap answer |
+
+Backoff grows exponentially from 30s and caps at 600s. Cost is recorded per attempt
+and accumulated, since a build that failed twice before succeeding cost all three
+calls; prices default to zero because an invented rate would put an
+authoritative-looking wrong number in the accounting.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `WIKI_WORKER_CONCURRENCY` | `2` | The binding constraint is provider rate limits and cost, not local CPU |
+| `WIKI_WORKER_POLL_SECONDS` | `5` | Polling, not LISTEN/NOTIFY: a wakeup would never fire for a build whose worker died |
+| `WIKI_WORKER_HEARTBEAT_SECONDS` | `15` | Must stay well under the lease, or a brief database hiccup costs a live worker its lease |
+| `WIKI_WORKER_RETRY_BACKOFF_SECONDS` | `30` | Base for exponential backoff |
+| `WIKI_WORKER_MAX_RETRY_BACKOFF_SECONDS` | `600` | Without a cap a build disappears for hours over a blip |
+| `COMPILER_INPUT_MICROS_PER_1K_TOKENS` | `0` | Zero means "price unknown", not "free" |
+| `COMPILER_OUTPUT_MICROS_PER_1K_TOKENS` | `0` | |
+
+The lease duration is derived from `COMPILER_TIMEOUT_SECONDS` rather than
+configured separately: a lease shorter than a compile guarantees that a perfectly
+healthy worker gets its build stolen mid-compile, and then two workers write the
+same wiki.
 
 Model configuration (both roles fall back to `EMBEDDING_BASE_URL` /
 `EMBEDDING_API_KEY`, which is how a single-credential deployment starts):
@@ -516,7 +561,7 @@ integration opt into only the modules it needs.
 | `POST /mcp/memory` | `memory_record`, `memory_store`, `memory_search`, `memory_get`, `memory_timeline`, `memory_attribution`, `memory_supersede`, `memory_feedback`, `memory_feedback_list`, `memory_checkpoint_save`, `memory_resume` |
 | `POST /mcp/skills` | `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_source_sync`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active`, `skill_catalog_list`, `skill_compile`, `skill_version_instructions`, `skill_version_resources`, `skill_resource_get`, `skill_quality_run`, `skill_quality_get` |
 | `POST /mcp/context` | `context_pack` |
-| `POST /mcp/knowledge` | `knowledge_sources_list`, `knowledge_source_sync`, `knowledge_documents_list`, `knowledge_document_get`, `knowledge_catalog_list`, `knowledge_search`, `knowledge_index_active`, `knowledge_document_links`, `knowledge_compile`, `knowledge_builds_list`, `knowledge_build_get`, `knowledge_build_pages`, `knowledge_page_get`, `knowledge_build_diff`, `knowledge_build_events`, `knowledge_build_activate` |
+| `POST /mcp/knowledge` | `knowledge_sources_list`, `knowledge_source_sync`, `knowledge_documents_list`, `knowledge_document_get`, `knowledge_catalog_list`, `knowledge_search`, `knowledge_index_active`, `knowledge_document_links`, `knowledge_compile`, `knowledge_builds_list`, `knowledge_build_get`, `knowledge_build_pages`, `knowledge_page_get`, `knowledge_build_diff`, `knowledge_build_events`, `knowledge_build_activate`, `knowledge_queue_stats` |
 
 Authenticate with a valid API key via `X-Api-Key` header, `Authorization: Bearer ak_xxx`,
 or `?api_key=ak_xxx` query param. MCP tool calls enforce the same API key scopes as REST

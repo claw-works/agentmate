@@ -1,7 +1,7 @@
 # Knowledge Wiki Compiler（K3）设计 v0.1
 
-**状态**：K3.1 + K3.2 已实现并在真实环境验证（migration 000027，`internal/llm`、
-`internal/knowledge/wiki_*.go`）。K3.3–K3.9 仍是 DESIGN。
+**状态**：K3.1 + K3.2 + K3.3 已实现并在真实环境验证（migration 000027/000028，`internal/llm`、
+`internal/knowledge/wiki_*.go`）。K3.4–K3.9 仍是 DESIGN。
 **前置**：K1（source/revision/document）、K2（catalog/chunk/link/hybrid 检索）均已实现
 **上层背景**：`skill-knowledge-architecture-v0.1.md` §13–§15 与其中的 K3 里程碑清单
 **实现状态明细**：见 §13
@@ -548,9 +548,12 @@ K4（Skill-driven discovery）依赖 K3.6 就位——discovery 要选的是 wik
 | MCP（8 个工具） | `internal/knowledge/wiki_mcp.go` |
 | 集成测试（9 个，脚本化模型驱动） | `internal/knowledge/wiki_integration_test.go` |
 
-未实现：K3.3（异步 job）、K3.4（增量）、K3.6（wiki 进检索）、K3.7（lint）、
-K3.8（review 实际调用）、K3.9（validation 与 proposal）。
-`review_status` 恒为 `skipped`，`reviewer_*` 字段只记配置不记判定。
+K3.3（带租约的异步 job、有界重试、成本记账）见 §14，位置在
+`migrations/000028_add_knowledge_build_lease.*.sql` 与 `internal/knowledge/wiki_worker.go`。
+
+未实现：K3.4（增量）、K3.6（wiki 进检索）、K3.7（lint）、K3.8（review 实际调用）、
+K3.9（validation 与 proposal）。`review_status` 恒为 `skipped`，
+`reviewer_*` 字段只记配置不记判定。
 
 ### 13.2 真实环境验证（本地 Docker + DashScope qwen3.7-plus + GitHub demo repo）
 
@@ -602,9 +605,127 @@ package**，而 K3 按 package 编译，跨库矛盾属于 K5。§11 埋这个�
 - **同步编译单次耗时 200–400 秒**，已经超出任何合理的 HTTP 客户端默认超时。
   这不是可以调参绕过的问题，是 K3.3 必须做的直接原因。
 
+以上两条**已在 K3.3 解决**（§14）：传输失败进入有界重试，编译进入带租约的异步队列，
+`POST /compile` 现在 49 毫秒返回 202。
+
 ### 13.4 与设计的偏离
 
 - `parent_build_id` 在 full build 上**不记录**。它参与输入身份六元组，若每次都把最近一个
   成功 build 记为 parent，身份就永远唯一、幂等复用永远不命中。full build 的血缘可以由
   source + 时序还原；该字段留给 incremental build，那里 parent 是真正的输入。
 - `mode=incremental` 显式拒绝而不是降级为 full。降级会让调用方以为省了成本。
+
+
+## 14. K3.3：带租约的异步编译
+
+### 14.1 为什么队列放在 build 表里
+
+租约字段直接加在 `knowledge_build_revisions` 上（migration 000028），不另建 job 表。
+build 行本来就存在、本来就需要一个 status；再开一张表就有**两处回答"这个 build 是不是在跑"**，
+而两处会在崩溃之后不一致——恰好是最需要正确答案的时刻。
+
+代价：queue 查询与 build 历史查询共用一张会持续增长的表。用部分索引
+（`WHERE status IN ('queued','running')`）压住，终态行不进索引。
+
+### 14.2 回收依据是租约到期，不是 worker 存活
+
+不做心跳探活判定"worker 死了没"。被网络分区的 worker 从数据库看过去和崩溃的 worker
+完全一样，后果也一样：没人在推进。因此只看 `lease_expires_at`。
+
+`attempt` 记的是**领取次数而非失败次数**。一个会静默弄死 worker 的 build（OOM、panic）
+永远不会自己报告失败，如果只在失败时计数，它会被无限重试。代价是优雅关停也会消耗一次——
+所以关停路径显式**退还** attempt（`YieldBuild`）：滚动发布不该烧掉所有在途 build 的重试预算，
+而崩溃到不了这条路径，投毒保护仍然成立。
+
+worker 身份是 `host/pid/nonce`。nonce 不是装饰：容器重启后 PID 仍然是 1，没有 nonce
+的话新进程看起来就是同一个 owner，能继承自己的过期租约，回收机制直接失效。
+真实环境已确认这一点——重启前后 owner 为 `440a8d2e2eed/1/cf21960242ae` 与
+`440a8d2e2eed/1/9064d03ddbc3`，只有 nonce 不同。
+
+### 14.3 重试分类是这一节的实质
+
+| 失败 | 是否重试 | 理由 |
+|---|---|---|
+| 传输失败 / 连接被断 / 解码中断 | 是 | 上一轮记录的 `unexpected EOF` 就是这一类 |
+| 429 / 408 / 5xx | 是 | provider 明确表示"稍后再来" |
+| 4xx（除上述） | 否 | 会确定性复现 |
+| 输出被 `max_tokens` 截断 | 否 | 同预算重试还是截断，只是账单翻倍 |
+| **check 失败** | **否** | 见下 |
+| 未知错误 | 否 | 编译很贵，默认值必须取便宜的那个 |
+
+**check 失败不重试是政策决定而非优化。** 编译不可重现，所以重试确实可能"这次就过了"——
+但那正是**靠重复摇骰子通过门禁**，等于用重试放松标准，与架构不变量（§7.5：可自动进化的是
+发现问题的能力，不可自动放松通过门槛）直接冲突。
+
+退避从 30s 起指数增长、上限 600s。刚断掉一个四分钟连接的 provider，一秒后通常还是不高兴；
+但没有上限的话一次抖动能让 build 消失几个小时。
+
+### 14.4 提交与成功状态合并进一个事务
+
+原先 `CommitBuild` 写页面、`FinishBuild` 改状态，是两步。worker 在中间被杀会留下
+**有页面但状态仍为 running** 的 build；一旦有了回收机制，这个窗口就变成重复页面的来源。
+合并后 "这个 build 有页面" 与 "这个 build 成功了" 是同一个事实。
+
+提交额外受租约保护（`WHERE lease_owner = $n`）：租约已经易主的 worker 拿到
+`ErrLeaseLost` 并**丢弃自己的产物**，而不是与新 owner 抢着提交。理由与 check 一致——
+交错两份各自完整的 wiki，得到的是一份谁都没检查过的图。
+
+心跳发现租约丢失时会**取消正在进行的编译**。不取消的话，一个已经无权提交的 worker
+还在继续为模型付费。
+
+### 14.5 成本记账
+
+每次尝试的 token 与成本**累加**到 build 上（`RecordAttemptUsage`）。失败两次后成功的
+build 花了三次调用的钱，只报最后一次会让账单无法解释。
+
+单价按角色配置，默认 **0**。编一个默认单价会在账上放一个看起来权威的错数字；
+0 是可见的"没人告诉我们价格"。
+
+### 14.6 API 变化
+
+`POST /api/knowledge/compile` 从同步 200 变成 **202 + queued build**，调用方轮询
+`GET /api/knowledge/builds/:id`。新增 `GET /api/knowledge/queue` 与 MCP
+`knowledge_queue_stats`——没有它，"排队等待"和"worker 卡死"从外面看完全一样。
+
+**不保留同步路径。** 两条路径意味着两套行为要维护，而其中一条已知不可用（200–400 秒）。
+
+enqueue 时仍然做完所有便宜且确定的检查（source 有 active revision、有可索引文档、
+mode 合法、输入身份复用），因为此时调用方还在，能被告知原因；排队之后再失败没人看得见。
+
+### 14.7 真实环境验证结果（2026-07-29）
+
+- [x] `POST /compile` **49 毫秒**返回 202（此前 200–400 秒），队列深度随 receipt 返回。
+- [x] 心跳每 15 秒推进 `heartbeat_at`，租约 30 分钟（由 compile timeout 推导，不独立配置——
+      租约短于编译会让健康 worker 的 build 被抢走）。
+- [x] 编译完成后 `lease_owner`/`lease_expires_at` 清空，`queued_at`/`started_at`/`finished_at`
+      三个时间点让**排队等待与编译耗时可分离**（排队 2 秒、编译 140 秒）。
+- [x] 并发 2 生效：两个 build 同时 running，同一 worker 持有。
+- [x] **优雅重启**：`docker compose restart server` 时两个在途 build 被 yield，
+      新 worker（nonce 不同）在数秒内重新领取，`attempt` 退还后仍为 1 —— 重启没有花掉重试预算；
+      两个 build 最终各自产出 20 页与 16 页，**page 路径零重复**。
+- [x] migration 000028 把同步时代遗留的 2 个永久 `running` 行关成 `cancelled`——
+      否则 worker 一上线就会去领一个永远完不成的任务。
+- [x] `cost_micros = 0`（未配置单价），`input_tokens`/`output_tokens` 真实记录。
+- [x] 三个 demo KB 现在都有 active wiki。
+
+集成测试新增 6 个：重试后成功、耗尽 attempt 后放弃、终态失败不重试、
+被弃 build 回收后只留一份 wiki、心跳丢租约后提交被拒、yield 退还 attempt。
+另有 3 个 worker 单元测试（退避增长与上限、租约由 compile timeout 推导、worker 身份唯一）
+与 2 个 llm 单元测试（重试分类、未配置单价记 0）。
+
+### 14.8 本轮暴露的缺陷
+
+**Go duration 字符串当 Postgres interval 用。** 原先租约与退避写成
+`NOW() + $n::interval` 并传 `duration.String()`。Postgres 直接拒绝 `"1ns"`，
+而 `"1m0s"` 能解析纯属缩写巧合（m→minute、s→second）。后果是亚秒退避的
+`RequeueBuild` 静默失败，build 永远持着租约、永远不到终态。改为
+`make_interval(secs => $n)` 传数字，不留解释空间。这个缺陷是集成测试抓到的，
+生产默认值（30 秒退避）恰好能工作——它只会在有人把退避调到亚秒时爆发。
+
+### 14.9 仍未做
+
+- **成本闸门**：只有记账没有预算上限。profile 的 `max_build_tokens` 是事后 check，
+  不是事前拦截；账号级配额与预估拦截未做。
+- **provider 侧幂等**：重试会重新发起完整调用。若上一次其实已经生成完但连接在返回途中断开，
+  这一次是重复付费。要真正解决需要 provider 支持幂等键。
+- **优先级 / 公平性**：单一 FIFO 队列。一个账号排入 50 个 build 会让其他账号排在后面。
