@@ -32,6 +32,7 @@ type KnowledgeProvider interface {
 type MemoryProvider interface {
 	SearchEntries(ctx context.Context, owner ownership.Owner, req memory.SearchEntriesRequest) (*memory.SearchResponse, error)
 	SessionTimeline(ctx context.Context, owner ownership.Owner, params memory.SessionTimelineParams) (*memory.SessionTimelineResponse, error)
+	Resume(ctx context.Context, owner ownership.Owner, sessionID string) (*memory.ResumeResponse, error)
 }
 
 // FactProvider covers live application state. These are queried in real time and

@@ -396,3 +396,347 @@ func (r *Repo) GetEntryAttribution(ctx context.Context, accountID, entryID strin
 	}
 	return &attribution, nil
 }
+
+// ─── M3: supersede ───
+
+// SupersedeEntry marks the superseded entry as replaced by the superseding one,
+// in one transaction.
+//
+// Three invariants are enforced in SQL rather than in the service, so a
+// concurrent call cannot slip between check and write:
+//
+//   - both entries belong to the caller's account;
+//   - the superseded entry is not already replaced by a different entry
+//     (re-running the same supersede is idempotent, switching the replacement is
+//     a conflict);
+//   - the pair does not form a cycle — the superseding entry must not already be
+//     replaced, directly or transitively, by the entry it is about to replace.
+//     Chains are legitimate (C replaces B which replaced A); cycles are not,
+//     because they make "which one is current" unanswerable.
+//
+// valid_to is closed at the supersede time so the replaced entry stops being
+// temporally valid, and status moves to superseded so search stops returning it.
+func (r *Repo) SupersedeEntry(ctx context.Context, owner ownership.Owner, supersedingID, supersededID string, at time.Time) (*Entry, *Entry, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Lock both rows in a stable order to avoid deadlocking against a concurrent
+	// supersede of the same pair in the opposite direction.
+	var lockedStatus string
+	for _, id := range sortedPair(supersedingID, supersededID) {
+		if err := tx.QueryRow(ctx,
+			`SELECT status FROM memory_entries WHERE account_id = $1 AND id = $2::uuid FOR UPDATE`,
+			owner.Account(), id,
+		).Scan(&lockedStatus); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, nil, fmt.Errorf("%w: %s", ErrNotFound, id)
+			}
+			return nil, nil, err
+		}
+	}
+
+	var alreadyReplacedBy *string
+	var supersededStatus string
+	if err := tx.QueryRow(ctx,
+		`SELECT superseded_by::text, status FROM memory_entries WHERE account_id = $1 AND id = $2::uuid`,
+		owner.Account(), supersededID,
+	).Scan(&alreadyReplacedBy, &supersededStatus); err != nil {
+		return nil, nil, err
+	}
+	if alreadyReplacedBy != nil {
+		if *alreadyReplacedBy == supersedingID {
+			// Idempotent replay: return the current state unchanged.
+			superseding, err := getEntryTx(ctx, tx, owner.Account(), supersedingID)
+			if err != nil {
+				return nil, nil, err
+			}
+			superseded, err := getEntryTx(ctx, tx, owner.Account(), supersededID)
+			if err != nil {
+				return nil, nil, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return nil, nil, err
+			}
+			return superseding, superseded, nil
+		}
+		return nil, nil, fmt.Errorf("%w: entry %s is already superseded by %s", ErrSupersedeConflict, supersededID, *alreadyReplacedBy)
+	}
+
+	// Cycle check: walk the superseding entry's own replacement chain.
+	var cycle bool
+	if err := tx.QueryRow(ctx,
+		`WITH RECURSIVE chain AS (
+		   SELECT id, superseded_by FROM memory_entries
+		    WHERE account_id = $1 AND id = $2::uuid
+		   UNION ALL
+		   SELECT next.id, next.superseded_by FROM memory_entries AS next
+		     JOIN chain ON chain.superseded_by = next.id
+		    WHERE next.account_id = $1
+		 )
+		 SELECT EXISTS (SELECT 1 FROM chain WHERE id = $3::uuid)`,
+		owner.Account(), supersedingID, supersededID,
+	).Scan(&cycle); err != nil {
+		return nil, nil, err
+	}
+	if cycle {
+		return nil, nil, fmt.Errorf("%w: a cycle between %s and %s", ErrSupersedeConflict, supersedingID, supersededID)
+	}
+
+	var superseded Entry
+	if err := tx.QueryRow(ctx,
+		`UPDATE memory_entries
+		    SET superseded_by = $3::uuid,
+		        status = $4,
+		        -- Close the validity window at the supersede time unless the
+		        -- entry already expired earlier; moving valid_to forward would
+		        -- resurrect it for the interval in between.
+		        valid_to = LEAST(COALESCE(valid_to, $5::timestamptz), $5::timestamptz),
+		        updated_at = NOW()
+		  WHERE account_id = $1 AND id = $2::uuid
+		 RETURNING `+entryColumns,
+		owner.Account(), supersededID, supersedingID, StatusSuperseded, at,
+	).Scan(scanEntry(&superseded)...); err != nil {
+		return nil, nil, err
+	}
+
+	superseding, err := getEntryTx(ctx, tx, owner.Account(), supersedingID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, err
+	}
+	return superseding, &superseded, nil
+}
+
+func getEntryTx(ctx context.Context, tx pgx.Tx, accountID, id string) (*Entry, error) {
+	var entry Entry
+	if err := tx.QueryRow(ctx,
+		`SELECT `+entryColumns+` FROM memory_entries WHERE account_id = $1 AND id = $2::uuid`,
+		accountID, id,
+	).Scan(scanEntry(&entry)...); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
+		}
+		return nil, err
+	}
+	return &entry, nil
+}
+
+func sortedPair(a, b string) []string {
+	if a <= b {
+		return []string{a, b}
+	}
+	return []string{b, a}
+}
+
+// ─── M3: feedback ───
+
+// RecordFeedback stores one usefulness signal and moves the entry's counter, in
+// one transaction so the counter can never drift from the signal log.
+//
+// The signal row is the durable record; the counters on memory_entries are a
+// denormalised projection kept for ranking, where a per-search aggregate query
+// would be too costly. Because the counters are derived, they can be rebuilt
+// from memory_feedback at any time.
+//
+// A repeated (entry, session, signal) triple is ignored rather than counted
+// twice: an agent retrying a call must not be able to inflate a memory's
+// standing. The insert therefore relies on a unique constraint and reports
+// whether it actually created a row.
+func (r *Repo) RecordFeedback(ctx context.Context, owner ownership.Owner, in FeedbackRequest, at time.Time) (*Feedback, bool, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	metadata, err := marshalJSON(in.Metadata)
+	if err != nil {
+		return nil, false, err
+	}
+
+	var feedback Feedback
+	err = tx.QueryRow(ctx,
+		`INSERT INTO memory_feedback
+		   (account_id, user_id, key_id, memory_id, signal, reason, session_id, skill_version_id, metadata, observed_at)
+		 VALUES ($1, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10)
+		 ON CONFLICT (account_id, memory_id, session_id, signal) DO NOTHING
+		 RETURNING `+feedbackColumns,
+		owner.Account(), nullableString(owner.UserID), owner.KeyID, in.MemoryID, in.Signal, in.Reason,
+		in.SessionID, nullableSkillVersionID(in.SkillVersionID), metadata, at,
+	).Scan(scanFeedback(&feedback)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Already recorded: return the existing row without touching counters.
+		if err := tx.QueryRow(ctx,
+			`SELECT `+feedbackColumns+` FROM memory_feedback
+			  WHERE account_id = $1 AND memory_id = $2::uuid AND session_id = $3 AND signal = $4`,
+			owner.Account(), in.MemoryID, in.SessionID, in.Signal,
+		).Scan(scanFeedback(&feedback)...); err != nil {
+			return nil, false, err
+		}
+		// Still return the entry: a caller that retried wants the current
+		// counters, and omitting them would look like the entry has none.
+		entry, err := getEntryTx(ctx, tx, owner.Account(), in.MemoryID)
+		if err != nil {
+			return nil, false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, false, err
+		}
+		feedback.Entry = entry
+		return &feedback, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+
+	column := "useful_count"
+	if in.Signal == SignalHarmful {
+		column = "harmful_count"
+	}
+	var entry Entry
+	if err := tx.QueryRow(ctx,
+		`UPDATE memory_entries
+		    SET `+column+` = `+column+` + 1, updated_at = NOW()
+		  WHERE account_id = $1 AND id = $2::uuid
+		 RETURNING `+entryColumns,
+		owner.Account(), in.MemoryID,
+	).Scan(scanEntry(&entry)...); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, fmt.Errorf("%w: %s", ErrNotFound, in.MemoryID)
+		}
+		return nil, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, err
+	}
+	feedback.Entry = &entry
+	return &feedback, true, nil
+}
+
+// ListFeedback returns the signal log for one entry, newest first.
+func (r *Repo) ListFeedback(ctx context.Context, accountID, memoryID string, limit int) ([]Feedback, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT `+feedbackColumns+` FROM memory_feedback
+		  WHERE account_id = $1 AND memory_id = $2::uuid
+		  ORDER BY observed_at DESC, id
+		  LIMIT $3`,
+		accountID, memoryID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]Feedback, 0)
+	for rows.Next() {
+		var item Feedback
+		if err := rows.Scan(scanFeedback(&item)...); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+const feedbackColumns = `id, account_id, user_id, key_id, memory_id, signal, reason, session_id,
+	skill_version_id, metadata, observed_at, created_at`
+
+func scanFeedback(feedback *Feedback) []any {
+	return []any{
+		&feedback.ID, &feedback.AccountID, &feedback.UserID, &feedback.KeyID, &feedback.MemoryID,
+		&feedback.Signal, &feedback.Reason, &feedback.SessionID, &feedback.SkillVersionID,
+		&feedback.Metadata, &feedback.ObservedAt, &feedback.CreatedAt,
+	}
+}
+
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+// ─── M3: checkpoint ───
+
+// LatestCheckpoint returns the newest checkpoint event of a session, or nil when
+// the session has none.
+func (r *Repo) LatestCheckpoint(ctx context.Context, accountID, sessionID string) (*Event, error) {
+	var event Event
+	err := r.pool.QueryRow(ctx,
+		`SELECT `+eventColumns+`
+		   FROM memory_events
+		  WHERE account_id = $1 AND session_id = $2 AND event_type = 'checkpoint'
+		  ORDER BY occurred_at DESC, sequence_no DESC NULLS LAST, created_at DESC
+		  LIMIT 1`,
+		accountID, sessionID,
+	).Scan(scanEvent(&event)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &event, nil
+}
+
+// TimelineSince returns session activity strictly after a point in time. Used to
+// show what happened after the last checkpoint, which is the part a naive resume
+// would drop.
+func (r *Repo) TimelineSince(ctx context.Context, accountID, sessionID string, since time.Time, limit int) ([]TimelineItem, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT kind, id::text, occurred_at, session_id, skill_version_id::text,
+		        skill_name, skill_version, outcome, was_triggered, failure_reason, duration_ms, event_type
+		 FROM (
+		   SELECT 'skill_log' AS kind, log.id, log.created_at AS occurred_at,
+		          COALESCE(log.session_id, '') AS session_id, log.skill_version_id,
+		          COALESCE(log.skill_name, '') AS skill_name, COALESCE(log.skill_version, '') AS skill_version,
+		          COALESCE(log.outcome, '') AS outcome, log.was_triggered,
+		          COALESCE(log.failure_reason, '') AS failure_reason, log.duration_ms,
+		          '' AS event_type
+		     FROM skill_logs AS log
+		    WHERE log.account_id = $1 AND log.session_id = $2 AND log.created_at > $3
+		   UNION ALL
+		   SELECT 'memory_event' AS kind, event.id, event.occurred_at,
+		          COALESCE(event.session_id, '') AS session_id, event.skill_version_id,
+		          COALESCE(version.skill_name, '') AS skill_name, COALESCE(version.version, '') AS skill_version,
+		          '' AS outcome, NULL::boolean AS was_triggered,
+		          '' AS failure_reason, NULL::integer AS duration_ms,
+		          event.event_type
+		     FROM memory_events AS event
+		     LEFT JOIN skill_versions AS version
+		       ON version.id = event.skill_version_id AND version.account_id = event.account_id
+		    WHERE event.account_id = $1 AND event.session_id = $2 AND event.occurred_at > $3
+		 ) AS timeline
+		 ORDER BY occurred_at, kind, id
+		 LIMIT $4`,
+		accountID, sessionID, since, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]TimelineItem, 0)
+	for rows.Next() {
+		var item TimelineItem
+		if err := rows.Scan(
+			&item.Kind, &item.ID, &item.OccurredAt, &item.SessionID, &item.SkillVersionID,
+			&item.SkillName, &item.SkillVersion, &item.Outcome, &item.WasTriggered,
+			&item.FailureReason, &item.DurationMs, &item.EventType,
+		); err != nil {
+			return nil, err
+		}
+		item.Attributed = item.SkillVersionID != nil && *item.SkillVersionID != ""
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}

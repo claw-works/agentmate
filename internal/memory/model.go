@@ -158,11 +158,17 @@ type SearchEntriesRequest struct {
 }
 
 type SearchItem struct {
-	Entry     *EntryDetail `json:"entry"`
-	Rank      int          `json:"rank"`
-	Score     float64      `json:"score"`
-	Channels  []string     `json:"channels"`
-	HitReason string       `json:"hit_reason"`
+	Entry *EntryDetail `json:"entry"`
+	Rank  int          `json:"rank"`
+	// Score is the retrieval score adjusted by recorded usefulness.
+	Score float64 `json:"score"`
+	// RetrievalScore and FeedbackAdjustment are reported separately so a
+	// surprising order can be explained: without them a caller cannot tell a
+	// weak semantic match from a demotion by negative feedback.
+	RetrievalScore     float64  `json:"retrieval_score"`
+	FeedbackAdjustment float64  `json:"feedback_adjustment"`
+	Channels           []string `json:"channels"`
+	HitReason          string   `json:"hit_reason"`
 }
 
 type SearchResponse struct {
@@ -251,4 +257,128 @@ type EntryAttribution struct {
 	// SessionTimeline is the surrounding session activity when a session is
 	// known, capped and ordered by time.
 	SessionTimeline []TimelineItem `json:"session_timeline,omitempty"`
+}
+
+// ─── M3: supersede ───
+
+type SupersedeRequest struct {
+	// SupersedingID is the entry that takes over; SupersededID is the one being
+	// replaced. Both are required and must differ.
+	SupersedingID string `json:"superseding_id"`
+	SupersededID  string `json:"superseded_id"`
+}
+
+type SupersedeResponse struct {
+	Superseding *Entry `json:"superseding"`
+	Superseded  *Entry `json:"superseded"`
+	// ProjectionRemoved counts retrieval rows dropped for the replaced entry.
+	// Reported because a replaced memory that stays in the projection keeps
+	// consuming top-k slots even though search filters it out afterwards.
+	ProjectionRemoved int64 `json:"projection_removed"`
+	// Warning is set when the supersede committed but the projection could not
+	// be cleaned up, so the caller knows to re-run indexing rather than assuming
+	// the supersede failed.
+	Warning string `json:"warning,omitempty"`
+}
+
+// ─── M3: feedback ───
+
+const (
+	SignalUseful  = "useful"
+	SignalHarmful = "harmful"
+)
+
+type Feedback struct {
+	ID        string  `json:"id"`
+	AccountID string  `json:"account_id"`
+	UserID    *string `json:"user_id,omitempty"`
+	KeyID     *string `json:"key_id,omitempty"`
+	MemoryID  string  `json:"memory_id"`
+	Signal    string  `json:"signal"`
+	Reason    string  `json:"reason,omitempty"`
+	// SessionID and SkillVersionID are the attribution anchors, mirroring M1.
+	// Without them a signal only supports coarse trend statistics.
+	SessionID      string          `json:"session_id,omitempty"`
+	SkillVersionID *string         `json:"skill_version_id,omitempty"`
+	Metadata       json.RawMessage `json:"metadata,omitempty"`
+	ObservedAt     time.Time       `json:"observed_at"`
+	CreatedAt      time.Time       `json:"created_at"`
+	// Entry carries the updated counters when this call created the signal.
+	Entry *Entry `json:"entry,omitempty"`
+}
+
+type FeedbackRequest struct {
+	MemoryID       string         `json:"memory_id"`
+	Signal         string         `json:"signal"`
+	Reason         string         `json:"reason"`
+	SessionID      string         `json:"session_id"`
+	SkillVersionID string         `json:"skill_version_id"`
+	Metadata       map[string]any `json:"metadata"`
+}
+
+type FeedbackResponse struct {
+	Feedback *Feedback `json:"feedback"`
+	// Created is false when this signal was already recorded for the same
+	// (memory, session, signal) triple, so counters were not moved again.
+	Created bool `json:"created"`
+}
+
+// ─── M3: checkpoint ───
+
+// A checkpoint is a resumable snapshot of session intent: the goal, what has been
+// done, what is next, and open questions.
+//
+// It is stored as a memory event of type "checkpoint" rather than in its own
+// table. The journal is already immutable, ordered and idempotent per session,
+// and a checkpoint is exactly a journal entry that happens to carry structured
+// state. A separate table would duplicate those guarantees and split the session
+// timeline across two stores.
+type Checkpoint struct {
+	EventID        string    `json:"event_id"`
+	SessionID      string    `json:"session_id"`
+	ScopeType      string    `json:"scope_type"`
+	ScopeKey       string    `json:"scope_key,omitempty"`
+	Label          string    `json:"label,omitempty"`
+	Goal           string    `json:"goal"`
+	Done           []string  `json:"done,omitempty"`
+	Next           []string  `json:"next,omitempty"`
+	Open           []string  `json:"open,omitempty"`
+	Notes          string    `json:"notes,omitempty"`
+	SkillVersionID *string   `json:"skill_version_id,omitempty"`
+	OccurredAt     time.Time `json:"occurred_at"`
+}
+
+type SaveCheckpointRequest struct {
+	SessionID string   `json:"session_id"`
+	ScopeType string   `json:"scope_type"`
+	ScopeKey  string   `json:"scope_key"`
+	Label     string   `json:"label"`
+	Goal      string   `json:"goal"`
+	Done      []string `json:"done"`
+	Next      []string `json:"next"`
+	Open      []string `json:"open"`
+	Notes     string   `json:"notes"`
+	// SkillVersionID attributes the checkpoint to the execution that saved it.
+	SkillVersionID string `json:"skill_version_id"`
+	// IdempotencyKey defaults to a hash of the content, so saving the same state
+	// twice does not append a duplicate checkpoint to the journal.
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+type SaveCheckpointResponse struct {
+	Checkpoint *Checkpoint `json:"checkpoint"`
+	Created    bool        `json:"created"`
+}
+
+type ResumeResponse struct {
+	SessionID string `json:"session_id"`
+	// Checkpoint is the latest saved snapshot, or nil when the session has none.
+	Checkpoint *Checkpoint `json:"checkpoint,omitempty"`
+	// SinceCheckpoint lists activity recorded after the checkpoint was saved.
+	// Resuming from the snapshot alone would silently discard whatever happened
+	// afterwards, which is precisely the state an interrupted session is in.
+	SinceCheckpoint []TimelineItem `json:"since_checkpoint"`
+	// Resolution is "checkpoint", "journal_only" (activity but no checkpoint) or
+	// "empty", so a caller can tell a fresh session from an unsaved one.
+	Resolution string `json:"resolution"`
 }

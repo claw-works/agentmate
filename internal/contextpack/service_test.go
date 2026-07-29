@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wellxie/agentmate/internal/knowledge"
 	"github.com/wellxie/agentmate/internal/memory"
@@ -56,8 +57,26 @@ func (f *fakeKnowledge) Search(_ context.Context, _ ownership.Owner, req knowled
 type fakeMemory struct {
 	search   *memory.SearchResponse
 	timeline *memory.SessionTimelineResponse
+	resume   *memory.ResumeResponse
 	err      error
 	lastReq  memory.SearchEntriesRequest
+}
+
+func (f *fakeMemory) Resume(_ context.Context, _ ownership.Owner, sessionID string) (*memory.ResumeResponse, error) {
+	if f.resume != nil {
+		return f.resume, nil
+	}
+	// Default double: no checkpoint, journal only, mirroring a session that was
+	// never checkpointed.
+	items := []memory.TimelineItem{}
+	if f.timeline != nil {
+		items = f.timeline.Items
+	}
+	resolution := "empty"
+	if len(items) > 0 {
+		resolution = "journal_only"
+	}
+	return &memory.ResumeResponse{SessionID: sessionID, SinceCheckpoint: items, Resolution: resolution}, nil
 }
 
 func (f *fakeMemory) SearchEntries(_ context.Context, _ ownership.Owner, req memory.SearchEntriesRequest) (*memory.SearchResponse, error) {
@@ -361,9 +380,58 @@ func TestPackTaskLayerIncludesRecentSessionActivity(t *testing.T) {
 	if strings.Contains(recent, "observation") {
 		t.Fatalf("observation should be filtered out: %q", recent)
 	}
-	// Reconstructing intent from the journal is not checkpoint restore; the
-	// difference must not be blurred.
-	if !strings.Contains(taskLayer.Note, "checkpoint") {
+	// A journal replay is not a checkpoint restore; the note must not blur them.
+	if !strings.Contains(taskLayer.Note, "no checkpoint saved") {
+		t.Fatalf("task note = %q", taskLayer.Note)
+	}
+}
+
+// A saved checkpoint is preferred over reconstruction, and the activity recorded
+// after it must come along: that tail is exactly what the snapshot is missing.
+func TestPackTaskLayerPrefersCheckpointAndIncludesTail(t *testing.T) {
+	providers := fullProviders()
+	saved := time.Now().UTC().Add(-10 * time.Minute)
+	providers.Memory = &fakeMemory{
+		search: &memory.SearchResponse{},
+		resume: &memory.ResumeResponse{
+			SessionID:  "sess-2",
+			Resolution: "checkpoint",
+			Checkpoint: &memory.Checkpoint{
+				EventID: "ev-cp", SessionID: "sess-2", Label: "M3 阶段",
+				Goal:       "补齐 memory 三项能力",
+				Done:       []string{"supersede 已实现"},
+				Next:       []string{"接线 feedback"},
+				Open:       []string{"checkpoint 是否要压缩历史"},
+				OccurredAt: saved,
+			},
+			SinceCheckpoint: []memory.TimelineItem{
+				{Kind: memory.TimelineKindMemoryEvent, EventType: "outcome", SkillName: "kb-lint"},
+			},
+		},
+	}
+	service := NewService(providers)
+
+	response, err := service.Pack(context.Background(), testOwner(), nil, PackRequest{
+		Task:      "继续 M3",
+		SessionID: "sess-2",
+	})
+	if err != nil {
+		t.Fatalf("pack: %v", err)
+	}
+	taskLayer := response.Layers[len(response.Layers)-1]
+	if len(taskLayer.Items) != 3 {
+		t.Fatalf("task layer should hold goal, checkpoint and tail: %#v", taskLayer.Items)
+	}
+	if taskLayer.Items[1].Source != "checkpoint" || taskLayer.Items[2].Source != "since_checkpoint" {
+		t.Fatalf("task item sources = %q / %q", taskLayer.Items[1].Source, taskLayer.Items[2].Source)
+	}
+	rendered := taskLayer.Items[1].Content
+	for _, want := range []string{"补齐 memory 三项能力", "supersede 已实现", "接线 feedback", "checkpoint 是否要压缩历史"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("checkpoint render missing %q:\n%s", want, rendered)
+		}
+	}
+	if !strings.Contains(taskLayer.Note, "resumed from checkpoint") {
 		t.Fatalf("task note = %q", taskLayer.Note)
 	}
 }

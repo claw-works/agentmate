@@ -154,6 +154,11 @@ Empty scopes array `[]` means **full access**.
 - `GET /api/memory/entries/:id` — Get a memory with its evidence (scope: `memory:r`)
 - `POST /api/memory/search` — Hybrid PostgreSQL FTS and Qdrant search (scope: `memory:r`)
 - `GET /api/memory/timeline?session_id=&skill_version_id=&limit=` — Time-ordered merge of skill executions and memory events. Requires `session_id` or `skill_version_id`; an unfiltered account-wide timeline is a data dump, not attribution. Reports `skill_log_count`, `memory_event_count`, `unattributed_count` and `truncated` so the coverage of an attribution conclusion is explicit (scope: `memory:r`)
+- `POST /api/memory/entries/:id/supersede` — Record that this entry replaces another (body `superseded_id`). The replaced entry moves to `superseded`, its validity window closes at the supersede time, and its retrieval projection is deleted (scope: `memory:rw`)
+- `POST /api/memory/entries/:id/feedback` — Report whether a memory helped (body `signal` = `useful`|`harmful`, plus `reason`, `session_id`, `skill_version_id`, `metadata`) (scope: `memory:rw`)
+- `GET /api/memory/entries/:id/feedback?limit=` — The usefulness signal log, newest first (scope: `memory:r`)
+- `POST /api/memory/checkpoints` — Save a resumable snapshot of session intent (body `session_id`, `goal` required, plus `done`, `next`, `open`, `notes`, `label`, `scope_type`, `scope_key`, `skill_version_id`) (scope: `memory:rw`)
+- `GET /api/memory/resume?session_id=` — Latest checkpoint plus everything recorded after it; `resolution` is `checkpoint`, `journal_only` or `empty` (scope: `memory:r`)
 - `GET /api/memory/entries/:id/attribution` — Resolve which skill execution produced a durable memory. Walks entry → source event → skill version and reports how far the chain got via `resolution`: `skill_version`, `session_only`, `event_only`, or `none`. Includes the surrounding session timeline when a session is known (scope: `memory:r`)
 
 Memory events carry an optional `skill_version_id` attributing them to the skill
@@ -164,6 +169,31 @@ participates in the idempotency hash — a replay that adds or changes attributi
 returns `409 Conflict` rather than silently returning the original unattributed
 row. Leave it unset for events with no skill origin, such as a note the user wrote
 directly.
+
+Superseding builds a chain, not a graph: C replacing B which replaced A is fine,
+but a cycle is rejected with `409` because it makes "which entry is current"
+unanswerable. Replaying the same supersede is idempotent; pointing an
+already-replaced entry at a different replacement is a `409` conflict. Deleting the
+retrieval projection matters as much as the status change — search draws candidates
+from the projection and filters by status afterwards, so a replaced entry left
+indexed would keep consuming top-k slots and crowd out its replacement.
+
+Feedback signals are the durable record; `useful_count` and `harmful_count` on the
+entry are a projection of them, kept because ranking cannot afford an aggregate
+query per search. One signal of each kind per memory per session, so a retrying
+agent cannot inflate a memory's standing. The search score is nudged by a bounded
+adjustment (at most ±0.15 on a 0..1 scale) weighted by how much evidence exists:
+feedback is a weak, biased signal, so it breaks ties and demotes repeatedly harmful
+memories rather than overriding semantic relevance. `retrieval_score` and
+`feedback_adjustment` are reported separately so a surprising order can be
+explained.
+
+Checkpoints are stored as `checkpoint` events on the journal rather than in their
+own table, inheriting immutability, ordering, idempotency and skill attribution.
+The default idempotency key is derived from the content, so saving unchanged state
+is a no-op instead of appending a near-duplicate. `resume` returns the snapshot
+**plus the activity recorded after it**: a session is interrupted after its last
+checkpoint, so that tail is exactly the state the snapshot is missing.
 
 Event retries must reuse the same `idempotency_key`. Reusing a key with different
 event content returns `409 Conflict`. Durable memories require either
@@ -200,11 +230,11 @@ read comes back empty with an explanatory note, and the call still succeeds —
 partial context beats no context, but never silently. The same applies to a
 failing or unconfigured layer.
 
-Two current limitations are reported rather than hidden. Skill selection is a
-pinned `skill_name` or the top retrieval hit; dynamic discovery driven by a
-Skill's knowledge contract is K4. And `TASK` reconstructs recent intent from the
-memory journal because checkpoint restore does not exist yet — the layer note
-says so.
+`TASK` prefers a saved checkpoint over reconstruction, and includes the activity
+recorded after it. Sessions with no checkpoint fall back to a journal replay, and
+the layer note says which of the two was used. One current limitation remains
+reported rather than hidden: skill selection is a pinned `skill_name` or the top
+retrieval hit; dynamic discovery driven by a Skill's knowledge contract is K4.
 
 `FACTS` is queried live and never embedded: task state changes constantly, so an
 indexed copy would serve stale facts with the confidence of retrieved evidence.
@@ -416,7 +446,7 @@ integration opt into only the modules it needs.
 | `POST /mcp/reports` | `report_create`, `report_get`, `report_list`, `report_list_sources`, `report_update`, `report_delete` |
 | `POST /mcp/bookmarks` | `bookmark_create`, `bookmark_get`, `bookmark_list`, `bookmark_update`, `bookmark_delete` |
 | `POST /mcp/expenses` | `expense_create`, `expense_get`, `expense_list`, `expense_summary`, `expense_update`, `expense_delete` |
-| `POST /mcp/memory` | `memory_record`, `memory_store`, `memory_search`, `memory_get`, `memory_timeline`, `memory_attribution` |
+| `POST /mcp/memory` | `memory_record`, `memory_store`, `memory_search`, `memory_get`, `memory_timeline`, `memory_attribution`, `memory_supersede`, `memory_feedback`, `memory_feedback_list`, `memory_checkpoint_save`, `memory_resume` |
 | `POST /mcp/skills` | `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_source_sync`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active`, `skill_catalog_list`, `skill_compile`, `skill_version_instructions`, `skill_version_resources`, `skill_resource_get`, `skill_quality_run`, `skill_quality_get` |
 | `POST /mcp/context` | `context_pack` |
 | `POST /mcp/knowledge` | `knowledge_sources_list`, `knowledge_source_sync`, `knowledge_documents_list`, `knowledge_document_get`, `knowledge_catalog_list`, `knowledge_search`, `knowledge_index_active`, `knowledge_document_links` |

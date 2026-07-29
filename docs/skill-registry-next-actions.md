@@ -139,3 +139,27 @@ contract 会正面解决选择问题。
 
 - [ ] Memory entry 多数没有 title，pack 的 MEMORY 层条目只显示 memory_type。是否要求
       `memory_store` 生成或强制 title 需产品决策。
+
+## 2026-07-27 Memory 生命周期补齐（supersede / feedback / checkpoint）
+
+三项此前只有数据模型没有行为，现已实现（migration `000026` 新增 `memory_feedback` 表；
+supersede 与 checkpoint 无需新表）。真实链路验证通过：
+
+- [x] supersede：`status=superseded`、`valid_to` 关闭、`projection_removed=1`；被取代条目不再出现在检索结果。
+- [x] 幂等重放 200；换替代者 409；成环 409；自我取代 400。
+- [x] feedback：计数器随信号移动；同会话重放 `created=false` 且计数不变（仍返回当前计数）；
+      非法 signal 400；信号日志 3 条。
+- [x] feedback 影响排序：`retrieval=0.9919 → score=1.0000, adj=+0.0250`，两者分开返回。
+- [x] checkpoint：`resolution` 三态正确（empty / journal_only / checkpoint）；
+      同内容重存 `created=false`；resume 正确返回 checkpoint 之后的 1 条活动，
+      且 checkpoint 之前的 goal 事件未混入。
+- [x] Context Pack 的 TASK 层已改为优先 checkpoint，note 变为
+      `resumed from checkpoint saved at ...`，并附 `since_checkpoint` 条目。
+
+验证中修掉一个真实问题：supersede 的冲突与成环原本返回 500（repo 返回裸 `fmt.Errorf`，
+落到 handler 的 default 分支）。已加 `ErrSupersedeConflict` 哨兵错误，两者改为 409。
+顺带让 feedback 幂等重放也返回当前 entry —— 否则调用方拿不到当前计数，看起来像没有计数。
+
+- [ ] 仍待决策：memory entry 多数无 title，Context Pack 的 MEMORY 层条目只显示 memory_type。
+- [ ] 仍待决策：`api_logs`、`retrieval_queries`、`retrieval_feedback` 三表的 `account_id`
+      仍为 `SET NULL`（详见上一节）。

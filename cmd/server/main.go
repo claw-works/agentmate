@@ -179,6 +179,11 @@ func main() {
 	protected.POST("/memory/search", auth.RequireScope("memory:r"), memoryHandler.SearchEntries)
 	protected.GET("/memory/timeline", auth.RequireScope("memory:r"), memoryHandler.SessionTimeline)
 	protected.GET("/memory/entries/:id/attribution", auth.RequireScope("memory:r"), memoryHandler.EntryAttribution)
+	protected.GET("/memory/entries/:id/feedback", auth.RequireScope("memory:r"), memoryHandler.ListFeedback)
+	protected.GET("/memory/resume", auth.RequireScope("memory:r"), memoryHandler.Resume)
+	protected.POST("/memory/entries/:id/supersede", auth.RequireScope("memory:rw"), memoryHandler.SupersedeEntry)
+	protected.POST("/memory/entries/:id/feedback", auth.RequireScope("memory:rw"), memoryHandler.RecordFeedback)
+	protected.POST("/memory/checkpoints", auth.RequireScope("memory:rw"), memoryHandler.SaveCheckpoint)
 
 	// Layer-level scopes are enforced inside the service; the route requires
 	// only memory:r so a partially scoped key still gets the layers it may read.

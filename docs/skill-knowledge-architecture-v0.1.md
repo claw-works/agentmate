@@ -541,7 +541,22 @@ Context Pack 已实现（`internal/contextpack`，`POST /api/context/pack` 与 M
 
 - **M1**（关联查询已实现，migration `000024`）：`skill_logs` 与 memory events 通过 `skill_version_id` + `session_id` 关联查询。这层关联是 validation 信号的归因锚点之一。剩余项：Quality suggestion 链接证据正文。
 - **M2**（已实现，`internal/contextpack`）：Context Pack API，一次调用返回带来源标签的五层最小上下文。
+- **M0 生命周期补齐**（已实现，migration `000026`）：supersede、feedback 接线、checkpoint save/resume。三者此前只有数据模型没有行为。
 - **M3**（K3 之后）：Memory → KB promotion 管道；notes 作为个人 KB source。
+
+M0 落地时确定的几件事：
+
+**supersede 必须同时删除检索投影。** 只改 status 不够——检索是先从投影取候选、再回表按 status 过滤，被取代的条目若留在投影里会继续占用 top-k 名额，把替代者挤出去。投影是可从 `memory_entries` 重建的派生数据，删除无损失。
+
+**链允许、环拒绝。** C 取代 B、B 取代 A 是正常演进；成环会让"哪一条是当前的"无法回答，因此用 recursive CTE 在事务内拒绝。同一取代重放是幂等的（重试方不必知道上次是否落库），把已被取代的条目指向另一个替代者是 409 冲突——对"哪条是当前"给出两个答案不可能都对。两行按固定顺序加锁，避免与反方向的并发取代死锁。
+
+**feedback 的信号日志是事实源，计数器是投影。** 裸计数无法归因、无法审计、无法重算；`memory_feedback` 表带 `session_id` + `skill_version_id` 归因锚点（与 M1 一致），`memory_entries` 上的 `useful_count` / `harmful_count` 是它的反规范化投影，保留是因为排序负担不起每次检索都做聚合查询。同一 (memory, session, signal) 唯一——重试的 agent 不能靠重复调用抬高某条记忆的地位；真正的新判断属于新会话。
+
+**feedback 对排序的影响必须有界。** 上限 ±0.15（融合分归一化区间 0..1），且按证据量加权（`total/(total+3)`）：feedback 是弱信号且有偏（只有部分会话上报，负面比正面更易上报），让它主导会把几次点击变成永久的排序判决。它的作用是打破平局、压低反复有害的记忆，而不是把语义更相关的结果排到更差的下面。`retrieval_score` 与 `feedback_adjustment` 分开返回，否则调用方无法区分"语义匹配弱"和"被负反馈压低"。
+
+**checkpoint 存为 journal 事件而非独立表。** journal 已经提供不可变、有序、按会话幂等的保证，而 checkpoint 恰好就是一条携带结构化状态的 journal 记录；独立建表会重复这些保证，并把会话时间线拆到两个存储里。默认幂等键由内容派生，因此保存未变化的状态是空操作而不是追加近似重复的快照。
+
+**resume 必须返回快照之后的活动。** 会话是在最后一个 checkpoint **之后**被打断的，那段活动正是快照缺失的状态；只返回快照会静默丢弃它。`resolution` 区分 `checkpoint` / `journal_only`（有活动但从未存档）/ `empty`（全新会话）。M2 的 TASK 层已改为优先使用 checkpoint，仅在无存档时回退到 journal 重建。
 
 ## 14. Graph 模型与 GraphRAG 评估（v0.3 增补）
 

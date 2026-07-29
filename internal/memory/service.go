@@ -7,18 +7,28 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/wellxie/agentmate/internal/ownership"
 	"github.com/wellxie/agentmate/internal/retrieval"
 )
 
+// memoryEntrySourceType is the retrieval source_type for durable memories.
+const memoryEntrySourceType = "memory_entry"
+
 var (
 	ErrNotFound            = errors.New("memory entry not found")
 	ErrInvalidInput        = errors.New("invalid memory input")
 	ErrIdempotencyConflict = errors.New("idempotency key already used with different event content")
+	// ErrSupersedeConflict covers the two ways a supersede request contradicts
+	// existing state: the target is already replaced by a different entry, or the
+	// pair would close a cycle. Both are the caller's problem, not a server
+	// fault, so they must not surface as 500.
+	ErrSupersedeConflict = errors.New("supersede conflicts with existing state")
 )
 
 type Service struct {
@@ -167,7 +177,7 @@ func (s *Service) SearchEntries(ctx context.Context, owner ownership.Owner, req 
 	}
 
 	filters := map[string]any{
-		"source_type":     "memory_entry",
+		"source_type":     memoryEntrySourceType,
 		"metadata.status": req.Status,
 	}
 	if req.ScopeType != "" {
@@ -200,9 +210,9 @@ func (s *Service) SearchEntries(ctx context.Context, owner ownership.Owner, req 
 
 	now := time.Now().UTC()
 	items := make([]SearchItem, 0, req.TopK)
-	accessedIDs := make([]string, 0, req.TopK)
+	accessedIDs := make([]string, 0, candidateLimit)
 	for _, result := range results {
-		if result.Document == nil || result.Document.SourceType != "memory_entry" {
+		if result.Document == nil || result.Document.SourceType != memoryEntrySourceType {
 			continue
 		}
 		entry, err := s.repo.GetEntry(ctx, owner.Account(), result.Document.SourceID)
@@ -216,20 +226,53 @@ func (s *Service) SearchEntries(ctx context.Context, owner ownership.Owner, req 
 			continue
 		}
 		channels := searchChannels(result)
+		adjustment := feedbackAdjustment(entry.Entry)
 		items = append(items, SearchItem{
-			Entry:     entry,
-			Rank:      len(items) + 1,
-			Score:     result.Score,
-			Channels:  channels,
-			HitReason: searchHitReason(entry.Entry, channels),
+			Entry:              entry,
+			Rank:               len(items) + 1,
+			Score:              clampScore(result.Score + adjustment),
+			RetrievalScore:     result.Score,
+			FeedbackAdjustment: adjustment,
+			Channels:           channels,
+			HitReason:          searchHitReason(entry.Entry, channels),
 		})
 		accessedIDs = append(accessedIDs, entry.ID)
-		if len(items) == req.TopK {
+		// Take more candidates than requested: the feedback adjustment can
+		// reorder them, so truncating to top_k before adjusting would discard a
+		// memory that should have ranked higher.
+		if len(items) == candidateLimit {
 			break
 		}
 	}
-	_ = s.repo.IncrementAccess(ctx, owner.Account(), accessedIDs)
+
+	// Re-sort by adjusted score, then trim. Ranks are assigned after sorting so
+	// they describe the delivered order rather than the retrieval order.
+	sort.SliceStable(items, func(i, j int) bool { return items[i].Score > items[j].Score })
+	if len(items) > req.TopK {
+		items = items[:req.TopK]
+	}
+	for index := range items {
+		items[index].Rank = index + 1
+	}
+
+	accessed := make([]string, 0, len(items))
+	for _, item := range items {
+		accessed = append(accessed, item.Entry.ID)
+	}
+	_ = s.repo.IncrementAccess(ctx, owner.Account(), accessed)
 	return &SearchResponse{Items: items, Total: len(items)}, nil
+}
+
+// clampScore keeps the adjusted score inside the normalised 0..1 range so a
+// boosted entry cannot report a score the fusion scale does not define.
+func clampScore(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	if value > 1 {
+		return 1
+	}
+	return value
 }
 
 func (s *Service) indexEntry(ctx context.Context, owner ownership.Owner, entry *EntryDetail) *IndexState {
@@ -265,7 +308,7 @@ func (s *Service) indexEntry(ctx context.Context, owner ownership.Owner, entry *
 
 	document, err := s.retrieval.IndexDocument(ctx, owner, retrieval.UpsertDocumentInput{
 		Namespace:  retrieval.NamespaceMemory,
-		SourceType: "memory_entry",
+		SourceType: memoryEntrySourceType,
 		SourceID:   entry.ID,
 		ChunkKey:   "current",
 		Title:      entry.Title,
@@ -685,4 +728,307 @@ func (s *Service) EntryAttribution(ctx context.Context, owner ownership.Owner, e
 		attribution.SessionTimeline = timeline
 	}
 	return attribution, nil
+}
+
+// ─── M3: supersede ───
+
+// SupersedeEntry records that one durable memory replaces another.
+//
+// Marking the old entry superseded is not enough on its own: search draws
+// candidates from the retrieval projection and only then filters by status, so a
+// replaced entry would keep consuming top-k slots and crowd out the replacement.
+// Its projection is therefore removed as well. The projection is derived data,
+// rebuildable from memory_entries, so deleting it loses nothing.
+func (s *Service) SupersedeEntry(ctx context.Context, owner ownership.Owner, req SupersedeRequest) (*SupersedeResponse, error) {
+	if err := validateOwner(owner); err != nil {
+		return nil, err
+	}
+	req.SupersedingID = strings.TrimSpace(req.SupersedingID)
+	req.SupersededID = strings.TrimSpace(req.SupersededID)
+	if req.SupersedingID == "" || req.SupersededID == "" {
+		return nil, invalidInputf("superseding_id and superseded_id are required")
+	}
+	if req.SupersedingID == req.SupersededID {
+		return nil, invalidInputf("a memory entry cannot supersede itself")
+	}
+
+	superseding, superseded, err := s.repo.SupersedeEntry(ctx, owner, req.SupersedingID, req.SupersededID, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SupersedeResponse{Superseding: superseding, Superseded: superseded}
+	if s.retrieval != nil {
+		removed, deleteErr := s.retrieval.DeleteDocumentsByMetadata(ctx, owner,
+			retrieval.NamespaceMemory, memoryEntrySourceType,
+			map[string]any{"memory_id": superseded.ID}, nil)
+		if deleteErr != nil {
+			// The supersede itself is committed and correct. Report the stale
+			// projection instead of failing: a caller that sees this can re-run
+			// indexing, whereas an error would suggest the supersede did not
+			// happen.
+			response.Warning = "superseded entry remains in the retrieval projection: " + deleteErr.Error()
+		} else {
+			response.ProjectionRemoved = removed
+		}
+	}
+	return response, nil
+}
+
+// ─── M3: feedback ───
+
+var validSignals = map[string]bool{SignalUseful: true, SignalHarmful: true}
+
+// RecordFeedback stores a usefulness signal for a durable memory.
+//
+// This is the memory side of validation: the platform learns which remembered
+// experience actually helped from how it was used, not from asking. Signals feed
+// ranking and, later, promotion proposals — never automatic rewrites of the
+// memory itself.
+func (s *Service) RecordFeedback(ctx context.Context, owner ownership.Owner, req FeedbackRequest) (*FeedbackResponse, error) {
+	if err := validateOwner(owner); err != nil {
+		return nil, err
+	}
+	req.MemoryID = strings.TrimSpace(req.MemoryID)
+	req.Signal = strings.ToLower(strings.TrimSpace(req.Signal))
+	req.Reason = strings.TrimSpace(req.Reason)
+	req.SessionID = strings.TrimSpace(req.SessionID)
+	req.SkillVersionID = strings.TrimSpace(req.SkillVersionID)
+
+	if req.MemoryID == "" {
+		return nil, invalidInputf("memory_id required")
+	}
+	if !validSignals[req.Signal] {
+		return nil, invalidInputf("signal must be %s or %s", SignalUseful, SignalHarmful)
+	}
+	if utf8.RuneCountInString(req.Reason) > 2000 {
+		return nil, invalidInputf("reason must be at most 2000 characters")
+	}
+	if req.SkillVersionID != "" {
+		exists, err := s.repo.SkillVersionExistsInAccount(ctx, owner.Account(), req.SkillVersionID)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			return nil, invalidInputf("skill_version_id not found in this account")
+		}
+	}
+
+	feedback, created, err := s.repo.RecordFeedback(ctx, owner, req, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	return &FeedbackResponse{Feedback: feedback, Created: created}, nil
+}
+
+// ListFeedback returns the signal log for one entry. The log is the durable
+// record; the counters on the entry are a projection of it.
+func (s *Service) ListFeedback(ctx context.Context, owner ownership.Owner, memoryID string, limit int) ([]Feedback, error) {
+	if err := validateOwner(owner); err != nil {
+		return nil, err
+	}
+	memoryID = strings.TrimSpace(memoryID)
+	if memoryID == "" {
+		return nil, invalidInputf("memory id required")
+	}
+	// Ownership check first: a missing entry must not look like an empty log.
+	if _, err := s.repo.GetEntry(ctx, owner.Account(), memoryID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListFeedback(ctx, owner.Account(), memoryID, limit)
+}
+
+// feedbackAdjustment nudges a search score by the entry's recorded usefulness.
+//
+// The adjustment is deliberately small and bounded. Feedback is a weak, biased
+// signal — only some sessions report it, and negative experience is reported
+// more readily than positive — so letting it dominate would turn a few clicks
+// into a permanent ranking verdict. It breaks ties and demotes memories that
+// were repeatedly harmful; it does not reorder semantically better matches
+// below worse ones.
+func feedbackAdjustment(entry Entry) float64 {
+	total := entry.UsefulCount + entry.HarmfulCount
+	if total == 0 {
+		return 0
+	}
+	ratio := float64(entry.UsefulCount-entry.HarmfulCount) / float64(total)
+	// Confidence grows with evidence: one signal moves the score far less than
+	// ten do, so a single stray click cannot bury an otherwise good memory.
+	weight := float64(total) / float64(total+3)
+	return maxFeedbackAdjustment * ratio * weight
+}
+
+// maxFeedbackAdjustment caps the influence of feedback on the fused score, whose
+// normalised range is 0..1.
+const maxFeedbackAdjustment = 0.15
+
+// ─── M3: checkpoint ───
+
+const checkpointEventType = "checkpoint"
+
+// SaveCheckpoint appends a resumable snapshot of session intent to the journal.
+//
+// It reuses RecordEvent rather than writing the event directly, so a checkpoint
+// inherits the journal's guarantees for free: immutability, ordering, idempotency
+// and skill attribution. The default idempotency key is derived from the content,
+// which makes saving unchanged state a no-op instead of appending near-duplicate
+// snapshots.
+func (s *Service) SaveCheckpoint(ctx context.Context, owner ownership.Owner, req SaveCheckpointRequest) (*SaveCheckpointResponse, error) {
+	if err := validateOwner(owner); err != nil {
+		return nil, err
+	}
+	req.SessionID = strings.TrimSpace(req.SessionID)
+	req.Goal = strings.TrimSpace(req.Goal)
+	req.Label = strings.TrimSpace(req.Label)
+	req.Notes = strings.TrimSpace(req.Notes)
+	req.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
+
+	if req.SessionID == "" {
+		return nil, invalidInputf("session_id required")
+	}
+	if req.Goal == "" {
+		// A checkpoint without a goal cannot be resumed from: the lists alone do
+		// not say what the session was trying to achieve.
+		return nil, invalidInputf("goal required")
+	}
+	req.Done = trimList(req.Done)
+	req.Next = trimList(req.Next)
+	req.Open = trimList(req.Open)
+
+	payload := map[string]any{"goal": req.Goal}
+	if req.Label != "" {
+		payload["label"] = req.Label
+	}
+	if len(req.Done) > 0 {
+		payload["done"] = req.Done
+	}
+	if len(req.Next) > 0 {
+		payload["next"] = req.Next
+	}
+	if len(req.Open) > 0 {
+		payload["open"] = req.Open
+	}
+	if req.Notes != "" {
+		payload["notes"] = req.Notes
+	}
+
+	idempotencyKey := req.IdempotencyKey
+	if idempotencyKey == "" {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("marshal checkpoint payload: %w", err)
+		}
+		idempotencyKey = "checkpoint:" + req.SessionID + ":" + sha256Hex(string(encoded))
+	}
+
+	event, created, err := s.RecordEvent(ctx, owner, RecordEventRequest{
+		ScopeType:      req.ScopeType,
+		ScopeKey:       req.ScopeKey,
+		SessionID:      req.SessionID,
+		EventType:      checkpointEventType,
+		Payload:        payload,
+		SkillVersionID: req.SkillVersionID,
+		IdempotencyKey: idempotencyKey,
+	})
+	if err != nil {
+		return nil, err
+	}
+	checkpoint, err := checkpointFromEvent(event)
+	if err != nil {
+		return nil, err
+	}
+	return &SaveCheckpointResponse{Checkpoint: checkpoint, Created: created}, nil
+}
+
+// Resume returns the latest checkpoint plus whatever happened after it.
+//
+// Returning the snapshot alone would be wrong: a session is interrupted *after*
+// its last checkpoint, so the activity in between is exactly the state the agent
+// is missing. Resolution distinguishes a session that was never checkpointed from
+// one that never started.
+func (s *Service) Resume(ctx context.Context, owner ownership.Owner, sessionID string) (*ResumeResponse, error) {
+	if err := validateOwner(owner); err != nil {
+		return nil, err
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, invalidInputf("session_id required")
+	}
+
+	event, err := s.repo.LatestCheckpoint(ctx, owner.Account(), sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ResumeResponse{SessionID: sessionID, SinceCheckpoint: []TimelineItem{}}
+	if event == nil {
+		timeline, err := s.repo.SessionTimeline(ctx, owner.Account(), SessionTimelineParams{
+			SessionID: sessionID,
+			Limit:     50,
+		})
+		if err != nil {
+			return nil, err
+		}
+		response.SinceCheckpoint = timeline
+		if len(timeline) == 0 {
+			response.Resolution = "empty"
+		} else {
+			response.Resolution = "journal_only"
+		}
+		return response, nil
+	}
+
+	checkpoint, err := checkpointFromEvent(event)
+	if err != nil {
+		return nil, err
+	}
+	since, err := s.repo.TimelineSince(ctx, owner.Account(), sessionID, event.OccurredAt, 200)
+	if err != nil {
+		return nil, err
+	}
+	response.Checkpoint = checkpoint
+	response.SinceCheckpoint = since
+	response.Resolution = "checkpoint"
+	return response, nil
+}
+
+func checkpointFromEvent(event *Event) (*Checkpoint, error) {
+	var payload struct {
+		Label string   `json:"label"`
+		Goal  string   `json:"goal"`
+		Done  []string `json:"done"`
+		Next  []string `json:"next"`
+		Open  []string `json:"open"`
+		Notes string   `json:"notes"`
+	}
+	if len(event.Payload) > 0 {
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return nil, fmt.Errorf("decode checkpoint payload: %w", err)
+		}
+	}
+	return &Checkpoint{
+		EventID:        event.ID,
+		SessionID:      event.SessionID,
+		ScopeType:      event.ScopeType,
+		ScopeKey:       event.ScopeKey,
+		Label:          payload.Label,
+		Goal:           payload.Goal,
+		Done:           payload.Done,
+		Next:           payload.Next,
+		Open:           payload.Open,
+		Notes:          payload.Notes,
+		SkillVersionID: event.SkillVersionID,
+		OccurredAt:     event.OccurredAt,
+	}, nil
+}
+
+func trimList(values []string) []string {
+	trimmed := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			trimmed = append(trimmed, value)
+		}
+	}
+	return trimmed
 }

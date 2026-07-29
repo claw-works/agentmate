@@ -18,6 +18,12 @@ var toolScopes = map[string]string{
 
 	"memory_timeline":    "memory:r",
 	"memory_attribution": "memory:r",
+
+	"memory_supersede":       "memory:rw",
+	"memory_feedback":        "memory:rw",
+	"memory_feedback_list":   "memory:r",
+	"memory_checkpoint_save": "memory:rw",
+	"memory_resume":          "memory:r",
 }
 
 func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
@@ -197,6 +203,124 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 			return mcpauth.ErrResult("unauthorized"), nil
 		}
 		response, err := svc.EntryAttribution(ctx, owner, mcpauth.StrArg(req.GetArguments(), "id"))
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	s.AddTool(mcp.NewTool("memory_supersede",
+		mcp.WithDescription("Record that one durable memory replaces another. The replaced entry moves to status superseded, its validity window closes at the supersede time, and its retrieval projection is removed so it stops consuming search candidates. Chains are allowed (C replaces B which replaced A); cycles are rejected. Re-running the same supersede is idempotent, while pointing a replaced entry at a different replacement is a conflict."),
+		mcp.WithString("superseding_id", mcp.Required(), mcp.Description("The entry that takes over")),
+		mcp.WithString("superseded_id", mcp.Required(), mcp.Description("The entry being replaced")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		response, err := svc.SupersedeEntry(ctx, owner, SupersedeRequest{
+			SupersedingID: mcpauth.StrArg(args, "superseding_id"),
+			SupersededID:  mcpauth.StrArg(args, "superseded_id"),
+		})
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	s.AddTool(mcp.NewTool("memory_feedback",
+		mcp.WithDescription("Report whether a durable memory actually helped. Signals nudge search ranking by a small bounded amount — feedback is a weak, biased signal, so it breaks ties and demotes repeatedly harmful memories rather than overriding semantic relevance. Pass session_id and skill_version_id so the signal can be attributed to the execution that produced it; without them it only supports coarse trends. One signal of each kind per memory per session: a retry does not count twice."),
+		mcp.WithString("memory_id", mcp.Required(), mcp.Description("Durable memory ID")),
+		mcp.WithString("signal", mcp.Required(), mcp.Enum("useful", "harmful"), mcp.Description("Whether the memory helped or misled")),
+		mcp.WithString("reason", mcp.Description("Why, in the reporter's words (max 2000 chars)")),
+		mcp.WithString("session_id", mcp.Description("Attribution anchor: the session the signal came from")),
+		mcp.WithString("skill_version_id", mcp.Description("Attribution anchor: the skill version that used the memory")),
+		mcp.WithObject("metadata", mcp.Description("Optional structured detail")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		response, err := svc.RecordFeedback(ctx, owner, FeedbackRequest{
+			MemoryID:       mcpauth.StrArg(args, "memory_id"),
+			Signal:         mcpauth.StrArg(args, "signal"),
+			Reason:         mcpauth.StrArg(args, "reason"),
+			SessionID:      mcpauth.StrArg(args, "session_id"),
+			SkillVersionID: mcpauth.StrArg(args, "skill_version_id"),
+			Metadata:       objectArg(args, "metadata"),
+		})
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	s.AddTool(mcp.NewTool("memory_feedback_list",
+		mcp.WithDescription("List the usefulness signals recorded for one durable memory, newest first. The log is the durable record; the useful_count and harmful_count on the entry are a projection of it."),
+		mcp.WithString("memory_id", mcp.Required(), mcp.Description("Durable memory ID")),
+		mcp.WithNumber("limit", mcp.Description("Max signals (default 50, max 200)")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		items, err := svc.ListFeedback(ctx, owner, mcpauth.StrArg(args, "memory_id"), mcpauth.IntArg(args, "limit"))
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(map[string]any{"items": items, "total": len(items)})
+	})
+
+	s.AddTool(mcp.NewTool("memory_checkpoint_save",
+		mcp.WithDescription("Save a resumable snapshot of session intent: the goal, what is done, what is next, and open questions. Stored as a checkpoint event on the journal, so it inherits immutability, ordering, idempotency and skill attribution. Saving unchanged state is a no-op rather than a duplicate snapshot, because the default idempotency key is derived from the content."),
+		mcp.WithString("session_id", mcp.Required(), mcp.Description("Session this checkpoint belongs to")),
+		mcp.WithString("goal", mcp.Required(), mcp.Description("What the session is trying to achieve; a checkpoint without it cannot be resumed from")),
+		mcp.WithArray("done", mcp.Description("Steps already completed")),
+		mcp.WithArray("next", mcp.Description("Steps planned next")),
+		mcp.WithArray("open", mcp.Description("Unresolved questions or decisions")),
+		mcp.WithString("notes", mcp.Description("Free-form context worth carrying over")),
+		mcp.WithString("label", mcp.Description("Short human label for this checkpoint")),
+		mcp.WithString("scope_type", mcp.Enum("global", "project", "repository", "agent", "session"), mcp.Description("Memory scope type")),
+		mcp.WithString("scope_key", mcp.Description("Scope identifier; required for non-global scopes")),
+		mcp.WithString("skill_version_id", mcp.Description("Skill version that saved the checkpoint")),
+		mcp.WithString("idempotency_key", mcp.Description("Override the content-derived key")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		response, err := svc.SaveCheckpoint(ctx, owner, SaveCheckpointRequest{
+			SessionID:      mcpauth.StrArg(args, "session_id"),
+			ScopeType:      mcpauth.StrArg(args, "scope_type"),
+			ScopeKey:       mcpauth.StrArg(args, "scope_key"),
+			Label:          mcpauth.StrArg(args, "label"),
+			Goal:           mcpauth.StrArg(args, "goal"),
+			Done:           mcpauth.StrSliceArg(args, "done"),
+			Next:           mcpauth.StrSliceArg(args, "next"),
+			Open:           mcpauth.StrSliceArg(args, "open"),
+			Notes:          mcpauth.StrArg(args, "notes"),
+			SkillVersionID: mcpauth.StrArg(args, "skill_version_id"),
+			IdempotencyKey: mcpauth.StrArg(args, "idempotency_key"),
+		})
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	s.AddTool(mcp.NewTool("memory_resume",
+		mcp.WithDescription("Restore a session: returns its latest checkpoint plus everything recorded after it. The tail matters — a session is interrupted after its last checkpoint, so that activity is exactly the state the snapshot is missing. resolution is \"checkpoint\", \"journal_only\" (activity but never checkpointed) or \"empty\", so a fresh session can be told from an unsaved one."),
+		mcp.WithString("session_id", mcp.Required(), mcp.Description("Session to resume")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		response, err := svc.Resume(ctx, owner, mcpauth.StrArg(req.GetArguments(), "session_id"))
 		if err != nil {
 			return mcpauth.ErrResult(err.Error()), nil
 		}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/wellxie/agentmate/internal/auth"
 	"github.com/wellxie/agentmate/internal/knowledge"
@@ -391,13 +392,16 @@ func (s *Service) gatherFacts(ctx context.Context, owner ownership.Owner, scopes
 
 // ─── TASK ───
 
-// gatherTask emits the goal statement plus, when a session is known, the recent
-// decisions and outcomes of that session.
+// gatherTask emits the goal statement plus, when a session is known, its
+// resumable state.
 //
-// A resumable checkpoint is not implemented yet (it is part of the remaining
-// memory work), so this layer reconstructs recent intent from the journal rather
-// than restoring a saved state. The distinction is recorded in the layer note so
-// a caller does not mistake this for resume support.
+// A saved checkpoint is preferred over reconstruction: the checkpoint states the
+// goal, what is done and what is next, whereas a journal replay only shows what
+// happened and leaves the agent to infer intent. Whatever occurred after the
+// checkpoint is included as well — a session is interrupted *after* its last
+// checkpoint, so that tail is exactly the state the snapshot is missing. Sessions
+// with no checkpoint fall back to the journal, and the layer note says which of
+// the two was used.
 func (s *Service) gatherTask(ctx context.Context, owner ownership.Owner, scopes []string, req PackRequest, budget int) LayerResult {
 	items := []Item{{
 		Layer:   LayerTask,
@@ -407,15 +411,30 @@ func (s *Service) gatherTask(ctx context.Context, owner ownership.Owner, scopes 
 	note := ""
 
 	if req.SessionID != "" && s.providers.Memory != nil && permits(scopes, "memory:r") {
-		timeline, err := s.providers.Memory.SessionTimeline(ctx, owner, memory.SessionTimelineParams{
-			SessionID: req.SessionID,
-			Limit:     50,
-		})
-		if err != nil {
-			note = "session timeline unavailable: " + err.Error()
-		} else {
-			recent := recentSessionLines(timeline)
-			if recent != "" {
+		resumed, err := s.providers.Memory.Resume(ctx, owner, req.SessionID)
+		switch {
+		case err != nil:
+			note = "session state unavailable: " + err.Error()
+		case resumed.Checkpoint != nil:
+			items = append(items, Item{
+				Layer:   LayerTask,
+				Source:  "checkpoint",
+				Ref:     resumed.Checkpoint.EventID,
+				Title:   checkpointTitle(resumed.Checkpoint),
+				Content: renderCheckpoint(resumed.Checkpoint),
+			})
+			if tail := timelineLines(resumed.SinceCheckpoint); tail != "" {
+				items = append(items, Item{
+					Layer:   LayerTask,
+					Source:  "since_checkpoint",
+					Ref:     req.SessionID,
+					Title:   "activity after the checkpoint",
+					Content: tail,
+				})
+			}
+			note = "resumed from checkpoint saved at " + resumed.Checkpoint.OccurredAt.Format(time.RFC3339)
+		default:
+			if recent := timelineLines(resumed.SinceCheckpoint); recent != "" {
 				items = append(items, Item{
 					Layer:   LayerTask,
 					Source:  "session_recent",
@@ -424,7 +443,7 @@ func (s *Service) gatherTask(ctx context.Context, owner ownership.Owner, scopes 
 					Content: recent,
 				})
 			}
-			note = "checkpoint restore is not implemented; recent activity is reconstructed from the journal"
+			note = "no checkpoint saved for this session; intent is reconstructed from the journal"
 		}
 	}
 
@@ -432,11 +451,39 @@ func (s *Service) gatherTask(ctx context.Context, owner ownership.Owner, scopes 
 	return LayerResult{Items: kept, CharsUsed: used, Dropped: dropped, Truncated: truncated, Note: note}
 }
 
-// recentSessionLines renders the tail of a session as compact lines. Only the
-// event kinds that carry intent or result are kept: replaying every observation
-// would spend the task budget on noise.
-func recentSessionLines(timeline *memory.SessionTimelineResponse) string {
-	if timeline == nil || len(timeline.Items) == 0 {
+func checkpointTitle(checkpoint *memory.Checkpoint) string {
+	if checkpoint.Label != "" {
+		return "checkpoint: " + checkpoint.Label
+	}
+	return "checkpoint"
+}
+
+// renderCheckpoint writes the snapshot as labelled sections. Structure is kept
+// rather than flattened to prose so the agent can tell a completed step from a
+// pending one.
+func renderCheckpoint(checkpoint *memory.Checkpoint) string {
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "Goal: %s\n", checkpoint.Goal)
+	for label, values := range map[string][]string{"Done": checkpoint.Done, "Next": checkpoint.Next, "Open": checkpoint.Open} {
+		if len(values) == 0 {
+			continue
+		}
+		fmt.Fprintf(&builder, "%s:\n", label)
+		for _, value := range values {
+			fmt.Fprintf(&builder, "  - %s\n", value)
+		}
+	}
+	if checkpoint.Notes != "" {
+		fmt.Fprintf(&builder, "Notes: %s\n", checkpoint.Notes)
+	}
+	return strings.TrimRight(builder.String(), "\n")
+}
+
+// timelineLines renders session activity as compact lines. Only the event kinds
+// that carry intent or result are kept: replaying every observation would spend
+// the task budget on noise.
+func timelineLines(timeline []memory.TimelineItem) string {
+	if len(timeline) == 0 {
 		return ""
 	}
 	interesting := map[string]bool{
@@ -444,7 +491,7 @@ func recentSessionLines(timeline *memory.SessionTimelineResponse) string {
 		"correction": true, "issue": true, "checkpoint": true,
 	}
 	lines := make([]string, 0, 12)
-	for _, item := range timeline.Items {
+	for _, item := range timeline {
 		switch item.Kind {
 		case memory.TimelineKindSkillLog:
 			label := item.Outcome

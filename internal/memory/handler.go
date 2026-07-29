@@ -109,7 +109,7 @@ func writeError(c *gin.Context, err error) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	case errors.Is(err, ErrNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"error": ErrNotFound.Error()})
-	case errors.Is(err, ErrIdempotencyConflict):
+	case errors.Is(err, ErrIdempotencyConflict), errors.Is(err, ErrSupersedeConflict):
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 	default:
 		var pgErr *pgconn.PgError
@@ -153,6 +153,89 @@ func (h *Handler) SessionTimeline(c *gin.Context) {
 
 func (h *Handler) EntryAttribution(c *gin.Context) {
 	response, err := h.svc.EntryAttribution(c.Request.Context(), auth.OwnerFromContext(c), c.Param("id"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+// ─── M3: supersede, feedback, checkpoint ───
+
+func (h *Handler) SupersedeEntry(c *gin.Context) {
+	var req SupersedeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// The path identifies the replacement, so the body only needs to name what is
+	// being replaced. Accepting both and disagreeing would be ambiguous.
+	req.SupersedingID = c.Param("id")
+	response, err := h.svc.SupersedeEntry(c.Request.Context(), auth.OwnerFromContext(c), req)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) RecordFeedback(c *gin.Context) {
+	var req FeedbackRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.MemoryID = c.Param("id")
+	response, err := h.svc.RecordFeedback(c.Request.Context(), auth.OwnerFromContext(c), req)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	status := http.StatusCreated
+	if !response.Created {
+		status = http.StatusOK
+	}
+	c.JSON(status, response)
+}
+
+func (h *Handler) ListFeedback(c *gin.Context) {
+	limit := 0
+	if raw, present := c.GetQuery("limit"); present {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be an integer"})
+			return
+		}
+		limit = parsed
+	}
+	items, err := h.svc.ListFeedback(c.Request.Context(), auth.OwnerFromContext(c), c.Param("id"), limit)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items, "total": len(items)})
+}
+
+func (h *Handler) SaveCheckpoint(c *gin.Context) {
+	var req SaveCheckpointRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	response, err := h.svc.SaveCheckpoint(c.Request.Context(), auth.OwnerFromContext(c), req)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	status := http.StatusCreated
+	if !response.Created {
+		status = http.StatusOK
+	}
+	c.JSON(status, response)
+}
+
+func (h *Handler) Resume(c *gin.Context) {
+	response, err := h.svc.Resume(c.Request.Context(), auth.OwnerFromContext(c), c.Query("session_id"))
 	if err != nil {
 		writeError(c, err)
 		return
