@@ -6,22 +6,27 @@ import (
 )
 
 type KnowledgeSource struct {
-	ID               string          `json:"id"`
-	AccountID        string          `json:"account_id"`
-	UserID           *string         `json:"user_id,omitempty"`
-	KeyID            *string         `json:"key_id,omitempty"`
-	Name             string          `json:"name"`
-	Type             string          `json:"type"`
-	RepositoryURL    string          `json:"repository_url"`
-	PackagePath      string          `json:"package_path"`
-	Domain           string          `json:"domain,omitempty"`
-	DefaultRef       string          `json:"default_ref"`
-	SyncMode         string          `json:"sync_mode"`
-	Status           string          `json:"status"`
-	ActiveRevisionID *string         `json:"active_revision_id,omitempty"`
-	Metadata         json.RawMessage `json:"metadata,omitempty"`
-	CreatedAt        time.Time       `json:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at"`
+	ID               string  `json:"id"`
+	AccountID        string  `json:"account_id"`
+	UserID           *string `json:"user_id,omitempty"`
+	KeyID            *string `json:"key_id,omitempty"`
+	Name             string  `json:"name"`
+	Type             string  `json:"type"`
+	RepositoryURL    string  `json:"repository_url"`
+	PackagePath      string  `json:"package_path"`
+	Domain           string  `json:"domain,omitempty"`
+	DefaultRef       string  `json:"default_ref"`
+	SyncMode         string  `json:"sync_mode"`
+	Status           string  `json:"status"`
+	ActiveRevisionID *string `json:"active_revision_id,omitempty"`
+	// ActiveBuildID is the compiled wiki currently serving for this source. It is
+	// separate from ActiveRevisionID because raw and wiki advance independently:
+	// a new sync does not invalidate the existing wiki, and a rollback moves this
+	// pointer without touching the raw layer.
+	ActiveBuildID *string         `json:"active_build_id,omitempty"`
+	Metadata      json.RawMessage `json:"metadata,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
 }
 
 type KnowledgeSourceRevision struct {

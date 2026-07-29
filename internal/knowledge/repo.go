@@ -19,7 +19,7 @@ func NewRepo(pool *pgxpool.Pool) *Repo {
 	return &Repo{pool: pool}
 }
 
-const sourceColumns = `id, account_id, user_id, key_id, name, type, repository_url, package_path, domain, default_ref, sync_mode, status, active_revision_id, metadata, created_at, updated_at`
+const sourceColumns = `id, account_id, user_id, key_id, name, type, repository_url, package_path, domain, default_ref, sync_mode, status, active_revision_id, active_build_id, metadata, created_at, updated_at`
 const revisionColumns = `id, account_id, source_id, revision_key, commit_sha, local_snapshot_id, tree_hash, package_hash, manifest, status, error, created_at`
 const documentSummaryColumns = `id, source_id, revision_id, path, sha256, size_bytes, mime_type, indexable, created_at`
 
@@ -682,6 +682,7 @@ func scanSource(source *KnowledgeSource) []any {
 		&source.SyncMode,
 		&source.Status,
 		&source.ActiveRevisionID,
+		&source.ActiveBuildID,
 		&source.Metadata,
 		&source.CreatedAt,
 		&source.UpdatedAt,

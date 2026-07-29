@@ -21,6 +21,16 @@ var toolScopes = map[string]string{
 	"knowledge_search":         "knowledge:r",
 	"knowledge_index_active":   "knowledge:rw",
 	"knowledge_document_links": "knowledge:r",
+
+	// K3 wiki layer.
+	"knowledge_compile":        "knowledge:rw",
+	"knowledge_builds_list":    "knowledge:r",
+	"knowledge_build_get":      "knowledge:r",
+	"knowledge_build_pages":    "knowledge:r",
+	"knowledge_page_get":       "knowledge:r",
+	"knowledge_build_diff":     "knowledge:r",
+	"knowledge_build_events":   "knowledge:r",
+	"knowledge_build_activate": "knowledge:rw",
 }
 
 func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
@@ -211,6 +221,8 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 		}
 		return mcpauth.JSONResult(response)
 	})
+
+	registerWikiTools(s, svc)
 
 	return server.NewStreamableHTTPServer(s, server.WithHTTPContextFunc(mcpauth.HTTPContextFunc(authSvc)))
 }

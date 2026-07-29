@@ -1,0 +1,122 @@
+package knowledge
+
+import (
+	"errors"
+	"io"
+	"net/http"
+	"strings"
+
+	"github.com/gin-gonic/gin"
+	"github.com/wellxie/agentmate/internal/auth"
+)
+
+// ─── K3: wiki compilation ───
+
+func (h *Handler) Compile(c *gin.Context) {
+	var req CompileRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.Compile(c.Request.Context(), owner, req)
+	if err != nil {
+		// An unconfigured compiler is an operator problem, not a bad request, and
+		// not a server fault either: 501 says "this deployment cannot do that".
+		if errors.Is(err, ErrCompilerUnavailable) {
+			c.JSON(http.StatusNotImplemented, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) ListBuilds(c *gin.Context) {
+	limit, offset, err := strictPagination(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, listErr := h.svc.ListBuilds(c.Request.Context(), owner.Account(), c.Query("source_id"), limit, offset)
+	if listErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": listErr.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) GetBuild(c *gin.Context) {
+	owner := auth.OwnerFromContext(c)
+	build, err := h.svc.GetBuild(c.Request.Context(), owner.Account(), c.Param("build_id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.JSON(http.StatusOK, build)
+}
+
+func (h *Handler) ListBuildPages(c *gin.Context) {
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.ListPages(c.Request.Context(), owner.Account(), c.Param("build_id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) GetBuildPage(c *gin.Context) {
+	owner := auth.OwnerFromContext(c)
+	// Wildcard params arrive with a leading slash; page paths are stored without
+	// one, so the route shape must not leak into the stored identity.
+	path := strings.TrimPrefix(c.Param("path"), "/")
+	page, err := h.svc.GetPage(c.Request.Context(), owner.Account(), c.Param("build_id"), path)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	// Page bodies are tenant content.
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusOK, page)
+}
+
+func (h *Handler) DiffBuilds(c *gin.Context) {
+	owner := auth.OwnerFromContext(c)
+	diff, err := h.svc.DiffBuilds(c.Request.Context(), owner.Account(), c.Query("from"), c.Param("build_id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, diff)
+}
+
+// ActivateBuild is also the rollback endpoint: activating an older build reverts
+// the wiki, so there is no separate rollback route to keep in sync.
+func (h *Handler) ActivateBuild(c *gin.Context) {
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.ActivateBuild(c.Request.Context(), owner, c.Param("build_id"))
+	if err != nil {
+		if errors.Is(err, ErrBuildNotActivatable) {
+			// 409: the build exists and the request is well-formed, but its state
+			// forbids the transition.
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) ListBuildEvents(c *gin.Context) {
+	owner := auth.OwnerFromContext(c)
+	events, err := h.svc.ListBuildEvents(c.Request.Context(), owner.Account(), c.Param("build_id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"build_id": c.Param("build_id"), "items": events, "total": len(events)})
+}

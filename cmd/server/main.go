@@ -18,6 +18,7 @@ import (
 	"github.com/wellxie/agentmate/internal/db"
 	"github.com/wellxie/agentmate/internal/expenses"
 	"github.com/wellxie/agentmate/internal/knowledge"
+	"github.com/wellxie/agentmate/internal/llm"
 	"github.com/wellxie/agentmate/internal/memory"
 	"github.com/wellxie/agentmate/internal/middleware"
 	"github.com/wellxie/agentmate/internal/notes"
@@ -81,6 +82,17 @@ func main() {
 
 	knowledgeRepo := knowledge.NewRepo(pool)
 	knowledgeSvc := knowledge.NewService(knowledgeRepo, retrievalSvc)
+	// The wiki compiler and its reviewer are configured independently so review
+	// can run on a different vendor. Whether it actually does is recorded on every
+	// build via Independence rather than assumed here.
+	llmCfg := llm.ConfigFromEnv()
+	knowledgeSvc.WithLLM(
+		llm.NewHTTPClient(llm.RoleCompiler, llmCfg.Compiler),
+		llm.NewHTTPClient(llm.RoleReviewer, llmCfg.Reviewer),
+		llmCfg.Independence(),
+	)
+	log.Printf("wiki compiler model=%s reviewer=%s independence=%s",
+		llmCfg.Compiler.Model, llmCfg.Reviewer.Model, llmCfg.Independence())
 	knowledgeHandler := knowledge.NewHandler(knowledgeSvc)
 
 	// Context Pack aggregates the three planes plus live app facts. It owns no
@@ -228,11 +240,24 @@ func main() {
 	protected.GET("/knowledge/catalog", auth.RequireScope("knowledge:r"), knowledgeHandler.ListCatalog)
 	protected.GET("/knowledge/documents/:doc_id/links", auth.RequireScope("knowledge:r"), knowledgeHandler.ListDocumentLinks)
 	protected.POST("/knowledge/search", auth.RequireScope("knowledge:r"), knowledgeHandler.Search)
+
+	// K3 wiki reads. Builds are immutable, so these are all safe to cache-bust
+	// on id alone.
+	protected.GET("/knowledge/builds", auth.RequireScope("knowledge:r"), knowledgeHandler.ListBuilds)
+	protected.GET("/knowledge/builds/:build_id", auth.RequireScope("knowledge:r"), knowledgeHandler.GetBuild)
+	protected.GET("/knowledge/builds/:build_id/pages", auth.RequireScope("knowledge:r"), knowledgeHandler.ListBuildPages)
+	protected.GET("/knowledge/builds/:build_id/pages/*path", auth.RequireScope("knowledge:r"), knowledgeHandler.GetBuildPage)
+	protected.GET("/knowledge/builds/:build_id/diff", auth.RequireScope("knowledge:r"), knowledgeHandler.DiffBuilds)
+	protected.GET("/knowledge/builds/:build_id/events", auth.RequireScope("knowledge:r"), knowledgeHandler.ListBuildEvents)
 	// Knowledge - write
 	protected.POST("/knowledge/sources", auth.RequireScope("knowledge:rw"), knowledgeHandler.CreateSource)
 	protected.POST("/knowledge/sources/:id/snapshots", auth.RequireScope("knowledge:rw"), knowledgeHandler.SubmitSnapshot)
 	protected.POST("/knowledge/sources/:id/sync", auth.RequireScope("knowledge:rw"), knowledgeHandler.SyncGitSource)
 	protected.POST("/knowledge/index", auth.RequireScope("knowledge:rw"), knowledgeHandler.IndexActiveRevisions)
+	// Compilation writes a new build and moves the active pointer, so it needs
+	// write scope even though it only reads the raw layer.
+	protected.POST("/knowledge/compile", auth.RequireScope("knowledge:rw"), knowledgeHandler.Compile)
+	protected.POST("/knowledge/builds/:build_id/activate", auth.RequireScope("knowledge:rw"), knowledgeHandler.ActivateBuild)
 
 	// Admin
 	adminHandler := admin.NewHandler(pool, retrievalRepo)

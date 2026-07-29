@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/wellxie/agentmate/internal/gitfetch"
+	"github.com/wellxie/agentmate/internal/llm"
 	"github.com/wellxie/agentmate/internal/ownership"
 	"github.com/wellxie/agentmate/internal/pkgpath"
 	"github.com/wellxie/agentmate/internal/retrieval"
@@ -30,15 +31,41 @@ type Service struct {
 	repo      *Repo
 	retrieval *retrieval.Service
 	gitClient *gitfetch.Client
+
+	// compiler writes wiki pages; reviewer judges their faithfulness. Both are
+	// optional: every K1/K2 path works without a model, and Compile reports
+	// ErrCompilerUnavailable rather than failing a build when none is configured.
+	compiler             llm.Client
+	reviewer             llm.Client
+	reviewerIndependence string
 }
 
 // NewService keeps the retrieval dependency optional (mirroring the skills
 // constructor): catalog/index/search require it, K1 ingest paths do not.
 func NewService(repo *Repo, retrievalSvc ...*retrieval.Service) *Service {
-	s := &Service{repo: repo, gitClient: gitfetch.NewClient(nil)}
+	s := &Service{
+		repo:      repo,
+		gitClient: gitfetch.NewClient(nil),
+		// Absent configuration, independence is "unavailable" rather than empty,
+		// so a build never records a blank claim about how it was reviewed.
+		reviewerIndependence: llm.IndependenceUnavailable,
+	}
 	if len(retrievalSvc) > 0 {
 		s.retrieval = retrievalSvc[0]
 	}
+	return s
+}
+
+// WithLLM attaches the two model roles. It is a separate setter rather than
+// constructor arguments so that the many existing call sites — tests included —
+// keep compiling and keep meaning "no compiler configured".
+func (s *Service) WithLLM(compiler, reviewer llm.Client, independence string) *Service {
+	s.compiler = compiler
+	s.reviewer = reviewer
+	if independence == "" {
+		independence = llm.IndependenceUnavailable
+	}
+	s.reviewerIndependence = independence
 	return s
 }
 

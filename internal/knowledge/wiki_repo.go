@@ -130,7 +130,7 @@ func (r *Repo) CreateBuild(ctx context.Context, owner ownership.Owner, in create
 		   (account_id, user_id, key_id, source_id, source_revision_id, raw_package_hash, profile_version_id,
 		    compiler_version, model, prompt_version, reviewer_model, reviewer_prompt_version,
 		    reviewer_independence, parent_build_id, mode, status, started_at)
-		 VALUES ($1, $2, $3, $4::uuid, $5::uuid, $6, $7::uuid, $8, $9, $10, $11, $12, $13, $14, $15, 'running', NOW())
+		 VALUES ($1, $2, $3, $4::uuid, $5::uuid, $6, $7::uuid, $8, $9, $10, $11, $12, $13, $14::uuid, $15, 'running', NOW())
 		 RETURNING `+buildColumns,
 		owner.Account(), nullableString(owner.UserID), owner.KeyID, in.SourceID, in.SourceRevisionID,
 		in.RawPackageHash, in.ProfileVersionID, CompilerVersion, in.Model, PromptVersion,
