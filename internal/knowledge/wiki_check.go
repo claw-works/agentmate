@@ -33,6 +33,10 @@ const (
 	ruleIndexCoverage      = "index_coverage"
 	rulePathUnique         = "path_unique"
 	ruleContentNonEmpty    = "content_non_empty"
+	// ruleIncrementalCoverage fails a build that left a scheduled page untouched.
+	ruleIncrementalCoverage = "incremental_coverage"
+	// ruleIncrementalScope fails a build that changed a page outside its plan.
+	ruleIncrementalScope = "incremental_scope"
 )
 
 // checkInput is everything the invariants need. Passing a value rather than
@@ -48,6 +52,11 @@ type checkInput struct {
 	// drift rule rather than comparing against nothing.
 	ParentPageCount int
 	TotalTokens     int
+
+	// Incremental is nil for a full build. When set, check additionally verifies that
+	// the build did what its plan said: every scheduled page was rewritten or deleted,
+	// and nothing outside the plan was touched.
+	Incremental *IncrementalPlan
 }
 
 // runChecks returns the violated invariants, in a stable order so two runs over
@@ -182,6 +191,8 @@ func runChecks(in checkInput) []CheckFailure {
 		}
 	}
 
+	failures = append(failures, checkIncrementalPlan(in)...)
+
 	// The index is how an agent navigates before drilling in, so a page missing
 	// from it is effectively invisible.
 	if hasIndex {
@@ -202,6 +213,73 @@ func runChecks(in checkInput) []CheckFailure {
 		}
 	}
 
+	return failures
+}
+
+// checkIncrementalPlan verifies an incremental build against its own plan.
+//
+// Both rules exist because the structural checks cannot see what they are about. A
+// page whose sources moved but whose text was not rewritten still cites a path that
+// exists, so every structural rule passes while the page asserts something its source
+// no longer says — and an agent reading it cannot tell. That is the same reasoning that
+// makes a half-written wiki worse than none, applied to a half-updated one.
+//
+// The scope rule is the other half. The compiler is handed every page path so it can
+// link freely, which also means it can return a page nobody asked it to touch. Nothing
+// structural would notice: an overwritten page outside the plan is still a valid page.
+// Enforcing the plan here keeps the audit record true — ScheduledPaths is supposed to
+// state what this build was allowed to change, and a record that does not bind is not
+// a record.
+func checkIncrementalPlan(in checkInput) []CheckFailure {
+	if in.Incremental == nil {
+		return nil
+	}
+	plan := in.Incremental
+	failures := make([]CheckFailure, 0)
+
+	scheduled := toSet(plan.ScheduledPaths)
+	recompiled := toSet(plan.RecompiledPaths)
+	deleted := toSet(plan.DeletedPaths)
+
+	missing := make([]string, 0)
+	for _, path := range plan.ScheduledPaths {
+		if _, rewritten := recompiled[path]; rewritten {
+			continue
+		}
+		if _, removed := deleted[path]; removed {
+			continue
+		}
+		missing = append(missing, path)
+	}
+	sort.Strings(missing)
+	for _, path := range missing {
+		failures = append(failures, CheckFailure{
+			Rule: ruleIncrementalCoverage, PagePath: path,
+			Detail: "page was scheduled for rewrite because its sources changed, but the compiler " +
+				"neither rewrote nor deleted it; keeping the old text would leave a claim its source no longer supports",
+		})
+	}
+
+	// RejectedPaths is where the orchestrator recorded every attempt to change a page
+	// outside the plan. The attempt was already dropped, so the wiki is intact — but a
+	// compiler ignoring its scope is a defect worth surfacing rather than papering over,
+	// and the plan would otherwise no longer describe what this build was allowed to do.
+	outOfScope := append([]string{}, plan.RejectedPaths...)
+	// Belt and braces: a deletion that reached the plan without being scheduled means the
+	// enforcement above was bypassed.
+	for _, path := range plan.DeletedPaths {
+		if _, allowed := scheduled[path]; !allowed {
+			outOfScope = append(outOfScope, path)
+		}
+	}
+	sort.Strings(outOfScope)
+	for _, path := range outOfScope {
+		failures = append(failures, CheckFailure{
+			Rule: ruleIncrementalScope, PagePath: path,
+			Detail: "page was changed or deleted without being in the plan; the build modified part of " +
+				"the wiki its source diff did not touch",
+		})
+	}
 	return failures
 }
 

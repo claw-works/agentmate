@@ -393,17 +393,29 @@ type IncrementalPlan struct {
 	ScheduledPaths []string `json:"scheduled_paths"`
 	// RecompiledPaths are the pages the compiler actually returned.
 	RecompiledPaths []string `json:"recompiled_paths"`
-	// ReusedPaths are the pages carried over from the parent, including any that were
-	// scheduled but came back missing. Disjoint from RecompiledPaths.
+	// ReusedPaths are the pages carried over from the parent unchanged.
 	ReusedPaths []string `json:"reused_paths"`
 	// DeletedPaths are the pages the compiler declared unsupported by their sources.
 	DeletedPaths []string `json:"deleted_paths"`
+	// RejectedPaths are pages the compiler tried to change or delete without them being
+	// in the plan. They are kept separate rather than folded into RecompiledPaths: those
+	// pages are still carried over untouched, so recording them as recompiled would put
+	// the same path in two outcome lists and reintroduce exactly the contradiction this
+	// split exists to remove.
+	RejectedPaths []string `json:"rejected_paths"`
 }
 
 // ErrNoParentBuild means there is nothing to be incremental against. Reported rather
 // than quietly compiling everything, because a caller that asked for incremental and
 // silently got a full build believes it saved cost it did not save.
 var ErrNoParentBuild = errors.New("no parent build to compile incrementally against")
+
+// ErrIncompatibleParent means the parent build was produced by a different compiler
+// identity — model, prompt, compiler version or profile. Such a build cannot be
+// incrementally updated: the raw diff would be empty while every page still needs
+// rewriting, and carrying pages forward would stamp this build's provenance onto text
+// the recorded model never produced.
+var ErrIncompatibleParent = errors.New("parent build has a different compiler identity")
 
 // ErrBuildNotActivatable means a build cannot become the active wiki: it did not
 // succeed, or it did not pass check. check is the only gate, so this is where

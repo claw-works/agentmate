@@ -80,7 +80,7 @@ Reply with a single JSON object and nothing else:
 // incremental build that referenced the untouched part of the wiki.
 func buildIncrementalPrompt(
 	profile ProfileVersion, manifest Manifest,
-	diff RevisionDiff, changedDocuments []KnowledgeDocument,
+	diff RevisionDiff, changedDocuments, contextDocuments []KnowledgeDocument,
 	affectedPages []WikiPage, allPagePaths []string, perDocumentChars int,
 ) string {
 	var builder strings.Builder
@@ -125,6 +125,23 @@ func buildIncrementalPrompt(
 		}
 	}
 
+	if len(contextDocuments) > 0 {
+		// The affected pages also rest on documents that did not change. Without them the
+		// compiler cannot tell which claims came from where and drops the ones it cannot
+		// see: a page citing changed A and unchanged B silently loses B.
+		builder.WriteString("\n## Unchanged documents the affected pages still rely on\n")
+		for _, document := range contextDocuments {
+			content := document.ContentSnapshot
+			if perDocumentChars > 0 && utf8.RuneCountInString(content) > perDocumentChars {
+				content = string([]rune(content)[:perDocumentChars])
+				fmt.Fprintf(&builder, "\n--- path: %s ---\n%s\n[document truncated at %d characters]\n",
+					document.Path, content, perDocumentChars)
+				continue
+			}
+			fmt.Fprintf(&builder, "\n--- path: %s ---\n%s\n", document.Path, content)
+		}
+	}
+
 	builder.WriteString("\n## Pages you must rewrite\n")
 	if len(affectedPages) == 0 {
 		builder.WriteString("\nNone. Only add pages for the new material above.\n")
@@ -132,6 +149,32 @@ func buildIncrementalPrompt(
 	for _, page := range affectedPages {
 		fmt.Fprintf(&builder, "\n--- page: %s (kind: %s, title: %s) ---\n%s\n",
 			page.Path, page.Kind, page.Title, page.Content)
+		// The page's current citations and links, so a rewrite can preserve the ones that
+		// are still valid. Without them the compiler has to guess which claims were
+		// sourced where, and its only safe move is to drop what it cannot account for.
+		if len(page.Citations) > 0 {
+			builder.WriteString("\nIts current citations:\n")
+			for _, citation := range page.Citations {
+				fmt.Fprintf(&builder, "- %s", citation.DocumentPath)
+				if citation.HeadingPath != "" {
+					fmt.Fprintf(&builder, " (%s)", citation.HeadingPath)
+				}
+				if citation.Claim != "" {
+					fmt.Fprintf(&builder, " — %s", citation.Claim)
+				}
+				builder.WriteString("\n")
+			}
+		}
+		if len(page.Links) > 0 {
+			builder.WriteString("\nIts current links:\n")
+			for _, link := range page.Links {
+				fmt.Fprintf(&builder, "- %s -> %s", link.LinkType, link.TargetPath)
+				if link.Note != "" {
+					fmt.Fprintf(&builder, " (%s)", link.Note)
+				}
+				builder.WriteString("\n")
+			}
+		}
 	}
 
 	// Every path, including the ones being rewritten, so the model can link freely
@@ -146,10 +189,10 @@ func buildIncrementalPrompt(
 // compileIncrementalWithModel runs one incremental call.
 func (s *Service) compileIncrementalWithModel(
 	ctx context.Context, profile ProfileVersion, manifest Manifest,
-	diff RevisionDiff, changedDocuments []KnowledgeDocument,
+	diff RevisionDiff, changedDocuments, contextDocuments []KnowledgeDocument,
 	affectedPages []WikiPage, allPagePaths []string, currentDocumentIDs map[string]string,
 ) (written []WikiPage, deleted []string, rejected []string, usage llm.Usage, err error) {
-	prompt := buildIncrementalPrompt(profile, manifest, diff, changedDocuments,
+	prompt := buildIncrementalPrompt(profile, manifest, diff, changedDocuments, contextDocuments,
 		affectedPages, allPagePaths, s.compilePerDocumentChars())
 
 	completion, err := s.compiler.Complete(ctx, []llm.Message{
@@ -350,15 +393,37 @@ func (s *Service) runIncremental(
 		shortID(parentID), len(diff.Added), len(diff.Changed), len(diff.Removed), diff.Unchanged,
 		len(impacted), len(carried)))
 
+	// A parent built by a different compiler, prompt, model or profile is not something
+	// this build can be an increment of. The raw diff would be empty while every page
+	// still needs rewriting, and reusing them would stamp this build's provenance onto
+	// text that model never produced — which is exactly what happened before this check
+	// existed: a build recorded model=qwen while every page came from a deepseek run.
+	// Refused rather than silently widened to a full rebuild.
+	if parent.Model != build.Model || parent.CompilerVersion != build.CompilerVersion ||
+		parent.PromptVersion != build.PromptVersion || parent.ProfileVersionID != build.ProfileVersionID {
+		return nil, nil, llm.Usage{}, 0, plan, fmt.Errorf(
+			"%w: parent build %s was produced by a different compiler identity "+
+				"(model %q/%q, prompt %q/%q, compiler %q/%q, profile %q/%q); compile with mode=full",
+			ErrIncompatibleParent, shortID(parentID),
+			parent.Model, build.Model, parent.PromptVersion, build.PromptVersion,
+			parent.CompilerVersion, build.CompilerVersion, parent.ProfileVersionID, build.ProfileVersionID)
+	}
+
 	// Nothing changed in the sources. Every page is carried over and the model is
 	// never called — the cheapest correct outcome, and worth stating rather than
 	// hiding, because a build that cost nothing looks suspicious otherwise.
+	currentDocumentIDs := make(map[string]string, len(documents))
+	for _, document := range documents {
+		currentDocumentIDs[document.Path] = document.ID
+	}
+
 	if diff.IsEmpty() {
 		plan.ReusedPaths = carriedPaths
 		for _, page := range carried {
 			addEvent(BuildEventPageReused, page.Path, "sources unchanged")
 		}
-		reused := prepareReusedPages(ReuseInput{Pages: carried, ParentBuildID: parentID})
+		reused := prepareReusedPages(ReuseInput{
+			Pages: carried, ParentBuildID: parentID, CurrentDocumentIDs: currentDocumentIDs})
 		return reused, nil, llm.Usage{}, len(reused), plan, nil
 	}
 
@@ -378,19 +443,55 @@ func (s *Service) runIncremental(
 	// the wiki does not cover yet.
 	changedPaths := pagePathSet(append(append([]string{}, diff.Added...), diff.Changed...))
 	changedDocuments := make([]KnowledgeDocument, 0, len(changedPaths))
-	currentDocumentIDs := make(map[string]string, len(documents))
 	for _, document := range documents {
-		currentDocumentIDs[document.Path] = document.ID
 		if _, hit := changedPaths[document.Path]; hit {
 			changedDocuments = append(changedDocuments, document)
 		}
 	}
+	// The affected pages also rest on documents that did not change. Rewriting a page
+	// without them means the compiler cannot tell which of its claims came from where,
+	// so it silently drops the ones it cannot see — a page citing changed A and
+	// unchanged B loses B.
+	contextDocuments := collectCitedContext(affected, changedPaths, documents)
 
 	compiled, deleted, rejected, usage, err := s.compileIncrementalWithModel(
-		ctx, profile, manifest, *diff, changedDocuments, affected, carriedPaths, currentDocumentIDs)
+		ctx, profile, manifest, *diff, changedDocuments, contextDocuments,
+		affected, carriedPaths, currentDocumentIDs)
 	if err != nil {
 		return nil, nil, usage, 0, plan, err
 	}
+
+	// The compiler is handed every page path so it can link freely, which also lets it
+	// return a page nobody asked about. Out-of-plan writes are dropped here rather than
+	// left for check, so the wiki keeps the page the plan promised to keep; check still
+	// fails the build, because a compiler ignoring its scope is a defect worth surfacing
+	// rather than papering over.
+	inScope := pagePathSet(impacted)
+	existing := pagePathSet(carriedPaths)
+	kept := make([]WikiPage, 0, len(compiled))
+	for _, page := range compiled {
+		_, scheduled := inScope[page.Path]
+		_, existed := existing[page.Path]
+		if !scheduled && existed {
+			plan.RejectedPaths = append(plan.RejectedPaths, page.Path)
+			addEvent(BuildEventPageRejected, page.Path,
+				"rewritten without being in the plan; the source diff did not touch it")
+			continue
+		}
+		kept = append(kept, page)
+	}
+	compiled = kept
+	keptDeletions := make([]string, 0, len(deleted))
+	for _, path := range deleted {
+		if _, scheduled := inScope[path]; !scheduled {
+			plan.RejectedPaths = append(plan.RejectedPaths, path)
+			addEvent(BuildEventPageRejected, path,
+				"deletion requested without being in the plan; the source diff did not touch it")
+			continue
+		}
+		keptDeletions = append(keptDeletions, path)
+	}
+	deleted = keptDeletions
 
 	for _, page := range compiled {
 		plan.RecompiledPaths = append(plan.RecompiledPaths, page.Path)
@@ -405,39 +506,52 @@ func (s *Service) runIncremental(
 		addEvent(BuildEventPageReused, page.Path, "not impacted by the source diff")
 	}
 
-	reusedPrepared := prepareReusedPages(ReuseInput{Pages: reusable, ParentBuildID: parentID})
+	reusedPrepared := prepareReusedPages(ReuseInput{
+		Pages: reusable, ParentBuildID: parentID, CurrentDocumentIDs: currentDocumentIDs})
 	merged, reusedCount := mergeIncremental(reusedPrepared, compiled, deleted)
-	// A page the model was asked to rewrite but did not return is neither reused nor
-	// recompiled — it would simply vanish. Reinstating it as carried-over is the safe
-	// reading: unchanged text is better than a hole, and the diff already recorded
-	// that its sources moved.
-	present := make(map[string]struct{}, len(merged))
-	for _, page := range merged {
-		present[page.Path] = struct{}{}
-	}
-	deletedSet := pagePathSet(deleted)
-	missing := make([]WikiPage, 0)
-	for _, page := range affected {
-		if _, gone := deletedSet[page.Path]; gone {
-			continue
-		}
-		if _, ok := present[page.Path]; !ok {
-			missing = append(missing, page)
-		}
-	}
-	if len(missing) > 0 {
-		reinstated := prepareReusedPages(ReuseInput{Pages: missing, ParentBuildID: parentID})
-		for _, page := range reinstated {
-			addEvent(BuildEventPageReused, page.Path,
-				"was scheduled for rewrite but the compiler did not return it; kept unchanged")
-			plan.ReusedPaths = append(plan.ReusedPaths, page.Path)
-		}
-		merged, reusedCount = mergeIncremental(append(reusedPrepared, reinstated...), compiled, deleted)
-	}
+	// A scheduled page the compiler neither rewrote nor deleted is deliberately NOT
+	// reinstated from the parent. Keeping its old text would leave a claim standing that
+	// its source no longer supports, and no structural rule can see that: the citation
+	// path still exists, so every check passes while the page is quietly wrong. check's
+	// incremental_coverage rule fails the build instead. Failing loudly is the same
+	// choice made for a half-written wiki, applied to a half-updated one.
+
 	sort.Strings(plan.ReusedPaths)
 	sort.Strings(plan.RecompiledPaths)
 	sort.Strings(plan.DeletedPaths)
+	sort.Strings(plan.RejectedPaths)
 	return merged, rejected, usage, reusedCount, plan, nil
+}
+
+// collectCitedContext gathers the unchanged documents that the affected pages cite.
+//
+// Bounded by the impact set rather than the corpus: only documents actually cited by a
+// page being rewritten are included, so this does not reintroduce the full-corpus prompt
+// that incremental compilation exists to avoid.
+func collectCitedContext(
+	affected []WikiPage, changedPaths map[string]struct{}, documents []KnowledgeDocument,
+) []KnowledgeDocument {
+	needed := make(map[string]struct{})
+	for _, page := range affected {
+		for _, citation := range page.Citations {
+			if _, alsoChanged := changedPaths[citation.DocumentPath]; alsoChanged {
+				// Already supplied in full under "what changed".
+				continue
+			}
+			needed[citation.DocumentPath] = struct{}{}
+		}
+	}
+	if len(needed) == 0 {
+		return nil
+	}
+	context := make([]KnowledgeDocument, 0, len(needed))
+	for _, document := range documents {
+		if _, hit := needed[document.Path]; hit {
+			context = append(context, document)
+		}
+	}
+	sort.Slice(context, func(i, j int) bool { return context[i].Path < context[j].Path })
+	return context
 }
 
 func shortID(id string) string {

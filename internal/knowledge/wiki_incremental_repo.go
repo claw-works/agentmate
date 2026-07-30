@@ -212,6 +212,12 @@ func (r *Repo) LoadBuildPages(ctx context.Context, accountID, buildID string) ([
 type ReuseInput struct {
 	Pages         []WikiPage
 	ParentBuildID string
+	// CurrentDocumentIDs maps document path to its row ID in the revision being
+	// compiled. Documents are stored per revision, so a copied citation's document ID
+	// belongs to the parent's revision and has to be re-resolved: otherwise the build
+	// declares one source revision while its citations point into another, and the
+	// structural check cannot see it because only the path is verified.
+	CurrentDocumentIDs map[string]string
 }
 
 // prepareReusedPages stamps copied pages with their origin and clears identifiers
@@ -231,6 +237,16 @@ func prepareReusedPages(in ReuseInput) []WikiPage {
 			page.Citations[index].ID = ""
 			page.Citations[index].BuildID = ""
 			page.Citations[index].PageID = ""
+			// Re-resolve against the revision being compiled. A path that no longer
+			// exists leaves this nil, and check's citation_resolvable rule reports it —
+			// which is correct: a reused page citing a vanished document is exactly the
+			// case reuse must not hide.
+			if id, ok := in.CurrentDocumentIDs[page.Citations[index].DocumentPath]; ok {
+				resolved := id
+				page.Citations[index].DocumentID = &resolved
+			} else {
+				page.Citations[index].DocumentID = nil
+			}
 		}
 		for index := range page.Links {
 			page.Links[index].ID = ""

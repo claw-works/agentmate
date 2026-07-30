@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/claw-works/agentmate/internal/llm"
 	"github.com/claw-works/agentmate/internal/ownership"
 )
 
@@ -149,12 +150,18 @@ func TestIncrementalRecompilesOnlyImpactedPages(t *testing.T) {
 	if !containsString(plan.ReusedPaths, "wiki/glossary.md") {
 		t.Fatalf("the untouched page must be reused, got %v", plan.ReusedPaths)
 	}
-	// The two outcome lists must partition the pages. A path in both would make the
-	// record self-contradictory, and it is the record that says which text this model
+	// The outcome lists must partition the pages. A path in two of them makes the record
+	// self-contradictory about the one thing it exists to answer: which text this model
 	// run actually produced.
 	for _, path := range plan.RecompiledPaths {
-		if containsString(plan.ReusedPaths, path) {
-			t.Fatalf("%s is recorded as both recompiled and reused: %+v", path, plan)
+		if containsString(plan.ReusedPaths, path) || containsString(plan.DeletedPaths, path) ||
+			containsString(plan.RejectedPaths, path) {
+			t.Fatalf("%s appears in more than one outcome list: %+v", path, plan)
+		}
+	}
+	for _, path := range plan.ReusedPaths {
+		if containsString(plan.DeletedPaths, path) || containsString(plan.RejectedPaths, path) {
+			t.Fatalf("%s appears in more than one outcome list: %+v", path, plan)
 		}
 	}
 
@@ -325,68 +332,6 @@ func TestIncrementalDeletesPageWhenSourceRemoved(t *testing.T) {
 	}
 	if strings.Contains(index.Content, "wiki/glossary.md") {
 		t.Fatalf("the regenerated index still lists the deleted page:\n%s", index.Content)
-	}
-}
-
-// TestIncrementalKeepsPageTheCompilerDidNotReturn pins the omission rule. A page
-// scheduled for rewrite that comes back missing is kept unchanged rather than
-// dropped: stale text is recoverable, a hole in the graph is not, and the model
-// declining to answer is not evidence that the page should not exist.
-func TestIncrementalKeepsPageTheCompilerDidNotReturn(t *testing.T) {
-	ctx := context.Background()
-	// retention was scheduled for rewrite; the compiler answers about overview only.
-	partial := wikiReply(
-		wikiPage("wiki/overview.md", PageKindOverview, "Overview", "Only the overview came back.",
-			[]string{"raw/overview.md"},
-			[]map[string]any{{"target_path": "wiki/retention.md", "link_type": LinkElaborates}}),
-	)
-	client := &scriptedClient{replies: []string{baseWikiReply(), partial}}
-	service, worker := newWikiService(t, ctx, client)
-	pool := integrationPool(t, ctx)
-	owner, cleanup := createKnowledgeIntegrationOwner(t, ctx, pool, "incr-partial")
-	defer cleanup()
-
-	source := seedIncrementalSource(t, ctx, service, owner, "incr-partial-kb")
-	if parent := compileNow(t, ctx, service, worker, owner, CompileRequest{SourceID: source.ID}); parent.Status != BuildStatusSucceeded {
-		t.Fatalf("parent build failed: %s", parent.Error)
-	}
-	if _, err := service.SubmitSnapshot(ctx, owner, source.ID,
-		incrementalSnapshot("Original overview.\n", "Retention is 90 days.\n", "Terms.\n")); err != nil {
-		t.Fatalf("submit changed snapshot: %v", err)
-	}
-
-	build := compileNow(t, ctx, service, worker, owner,
-		CompileRequest{SourceID: source.ID, Mode: BuildModeIncremental})
-	if build.Status != BuildStatusSucceeded {
-		t.Fatalf("expected success, got %s: %s / %s", build.Status, build.Error, build.CheckFailures)
-	}
-	retention, err := service.GetPage(ctx, owner.Account(), build.ID, "wiki/retention.md")
-	if err != nil {
-		t.Fatalf("the omitted page must survive: %v", err)
-	}
-	if retention.DerivedFromBuildID == nil {
-		t.Fatal("the omitted page must be recorded as carried over, not as freshly compiled")
-	}
-	// The plan must say the same thing the page says: scheduled, but reused rather than
-	// recompiled. Crediting the model with a page it never returned is the specific
-	// dishonesty this separation exists to prevent.
-	events, err := service.ListBuildEvents(ctx, owner.Account(), build.ID)
-	if err != nil {
-		t.Fatalf("list events: %v", err)
-	}
-	plan := planFromEvents(t, events)
-	if !containsString(plan.ScheduledPaths, "wiki/retention.md") {
-		t.Fatalf("expected it scheduled, got %v", plan.ScheduledPaths)
-	}
-	if containsString(plan.RecompiledPaths, "wiki/retention.md") {
-		t.Fatalf("a page the compiler never returned must not be recorded as recompiled, got %v", plan.RecompiledPaths)
-	}
-	if !containsString(plan.ReusedPaths, "wiki/retention.md") {
-		t.Fatalf("expected it reused, got %v", plan.ReusedPaths)
-	}
-	// And the link into it still closes, which is why keeping it matters.
-	if build.CheckStatus != CheckStatusPassed {
-		t.Fatalf("check must pass, got %s: %s", build.CheckStatus, build.CheckFailures)
 	}
 }
 
@@ -595,3 +540,240 @@ func TestMergeIncrementalResolvesConflictsTowardRemoval(t *testing.T) {
 		}
 	}
 }
+
+// The four tests below cover findings from a design review of the incremental path.
+// Each one is a case where every structural rule passes while the wiki is quietly
+// wrong, which is precisely the class of defect reuse can introduce.
+
+// TestIncrementalFailsWhenScheduledPageIsNotRewritten replaces earlier behaviour that
+// silently reinstated the parent's text.
+//
+// Keeping the old page looks harmless — the citation path still exists, so every
+// structural rule passes — but the page then asserts something its source no longer
+// says, and an agent reading it cannot tell. Failing loudly is the same choice already
+// made for a half-written wiki, applied to a half-updated one.
+func TestIncrementalFailsWhenScheduledPageIsNotRewritten(t *testing.T) {
+	ctx := context.Background()
+	// retention was scheduled; the compiler answers about overview only.
+	partial := wikiReply(
+		wikiPage("wiki/overview.md", PageKindOverview, "Overview", "Only the overview came back.",
+			[]string{"raw/overview.md"},
+			[]map[string]any{{"target_path": "wiki/retention.md", "link_type": LinkElaborates}}),
+	)
+	client := &scriptedClient{replies: []string{baseWikiReply(), partial}}
+	service, worker := newWikiService(t, ctx, client)
+	pool := integrationPool(t, ctx)
+	owner, cleanup := createKnowledgeIntegrationOwner(t, ctx, pool, "incr-coverage")
+	defer cleanup()
+
+	source := seedIncrementalSource(t, ctx, service, owner, "incr-coverage-kb")
+	if parent := compileNow(t, ctx, service, worker, owner, CompileRequest{SourceID: source.ID}); parent.Status != BuildStatusSucceeded {
+		t.Fatalf("parent build failed: %s", parent.Error)
+	}
+	if _, err := service.SubmitSnapshot(ctx, owner, source.ID,
+		incrementalSnapshot("Original overview.\n", "Retention is 90 days.\n", "Terms.\n")); err != nil {
+		t.Fatalf("submit changed snapshot: %v", err)
+	}
+
+	build := compileNow(t, ctx, service, worker, owner,
+		CompileRequest{SourceID: source.ID, Mode: BuildModeIncremental})
+	if build.Status != BuildStatusFailed || build.CheckStatus != CheckStatusFailed {
+		t.Fatalf("expected failed/failed, got %s/%s", build.Status, build.CheckStatus)
+	}
+	var failures []CheckFailure
+	if err := json.Unmarshal(build.CheckFailures, &failures); err != nil {
+		t.Fatalf("decode failures: %v", err)
+	}
+	found := false
+	for _, failure := range failures {
+		if failure.Rule == ruleIncrementalCoverage && failure.PagePath == "wiki/retention.md" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected an %s failure for wiki/retention.md, got %+v", ruleIncrementalCoverage, failures)
+	}
+	// Nothing is written, so the previous build stays active and the stale page is never
+	// served as if it were current.
+	pages, err := service.ListPages(ctx, owner.Account(), build.ID)
+	if err != nil {
+		t.Fatalf("list pages: %v", err)
+	}
+	if len(pages.Items) != 0 {
+		t.Fatalf("a failed build must write nothing, got %d pages", len(pages.Items))
+	}
+}
+
+// TestIncrementalRejectsOutOfPlanChanges covers the scope gap. The compiler is handed
+// every page path so it can link freely, which also lets it rewrite or delete a page
+// nobody asked about — and nothing structural would notice, because an overwritten page
+// is still a valid page.
+func TestIncrementalRejectsOutOfPlanChanges(t *testing.T) {
+	ctx := context.Background()
+	// glossary rests on an untouched document and is not in the plan. The compiler
+	// rewrites it anyway.
+	overreaching := wikiReply(
+		wikiPage("wiki/retention.md", PageKindConcept, "Retention", "Retention is now 90 days.",
+			[]string{"raw/retention.md"}, nil),
+		wikiPage("wiki/overview.md", PageKindOverview, "Overview", "Updated overview.",
+			[]string{"raw/overview.md"},
+			[]map[string]any{{"target_path": "wiki/retention.md", "link_type": LinkElaborates}}),
+		wikiPage("wiki/glossary.md", PageKindEntity, "Glossary", "Rewritten without being asked.",
+			[]string{"raw/glossary.md"}, nil),
+	)
+	client := &scriptedClient{replies: []string{baseWikiReply(), overreaching}}
+	service, worker := newWikiService(t, ctx, client)
+	pool := integrationPool(t, ctx)
+	owner, cleanup := createKnowledgeIntegrationOwner(t, ctx, pool, "incr-scope")
+	defer cleanup()
+
+	source := seedIncrementalSource(t, ctx, service, owner, "incr-scope-kb")
+	if parent := compileNow(t, ctx, service, worker, owner, CompileRequest{SourceID: source.ID}); parent.Status != BuildStatusSucceeded {
+		t.Fatalf("parent build failed: %s", parent.Error)
+	}
+	if _, err := service.SubmitSnapshot(ctx, owner, source.ID,
+		incrementalSnapshot("Original overview.\n", "Retention is 90 days.\n", "Terms.\n")); err != nil {
+		t.Fatalf("submit changed snapshot: %v", err)
+	}
+
+	build := compileNow(t, ctx, service, worker, owner,
+		CompileRequest{SourceID: source.ID, Mode: BuildModeIncremental})
+	if build.Status != BuildStatusFailed || build.CheckStatus != CheckStatusFailed {
+		t.Fatalf("expected the out-of-scope rewrite to fail the build, got %s/%s",
+			build.Status, build.CheckStatus)
+	}
+	var failures []CheckFailure
+	if err := json.Unmarshal(build.CheckFailures, &failures); err != nil {
+		t.Fatalf("decode failures: %v", err)
+	}
+	found := false
+	for _, failure := range failures {
+		if failure.Rule == ruleIncrementalScope && failure.PagePath == "wiki/glossary.md" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected an %s failure for wiki/glossary.md, got %+v", ruleIncrementalScope, failures)
+	}
+	// The out-of-plan write must not be recorded as a recompile: the page was dropped and
+	// is still carried over, so calling it recompiled would put it in two outcome lists.
+	for _, failure := range failures {
+		if failure.Rule == ruleIncrementalCoverage {
+			t.Fatalf("the in-plan pages were all rewritten; unexpected coverage failure: %+v", failure)
+		}
+	}
+	// The overreach is also recorded as a rejection, so an operator can see the compiler
+	// ignored its scope rather than only that the build failed.
+	events, err := service.ListBuildEvents(ctx, owner.Account(), build.ID)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("a failed build commits no events, got %d", len(events))
+	}
+}
+
+// TestIncrementalReuseRepointsCitationsAtCurrentRevision covers a provenance defect that
+// no structural rule can see: documents are stored per revision, so a copied citation's
+// document ID belongs to the parent's revision. The build would declare one source
+// revision while its citations pointed into another, and check only verifies the path.
+func TestIncrementalReuseRepointsCitationsAtCurrentRevision(t *testing.T) {
+	ctx := context.Background()
+	updated := wikiReply(
+		wikiPage("wiki/retention.md", PageKindConcept, "Retention", "Retention is now 90 days.",
+			[]string{"raw/retention.md"}, nil),
+		wikiPage("wiki/overview.md", PageKindOverview, "Overview", "Updated overview.",
+			[]string{"raw/overview.md"},
+			[]map[string]any{{"target_path": "wiki/retention.md", "link_type": LinkElaborates}}),
+	)
+	client := &scriptedClient{replies: []string{baseWikiReply(), updated}}
+	service, worker := newWikiService(t, ctx, client)
+	pool := integrationPool(t, ctx)
+	owner, cleanup := createKnowledgeIntegrationOwner(t, ctx, pool, "incr-provenance")
+	defer cleanup()
+
+	source := seedIncrementalSource(t, ctx, service, owner, "incr-provenance-kb")
+	parent := compileNow(t, ctx, service, worker, owner, CompileRequest{SourceID: source.ID})
+	parentGlossary, err := service.GetPage(ctx, owner.Account(), parent.ID, "wiki/glossary.md")
+	if err != nil {
+		t.Fatalf("get parent glossary: %v", err)
+	}
+	if len(parentGlossary.Citations) == 0 || parentGlossary.Citations[0].DocumentID == nil {
+		t.Fatalf("parent citation should be resolved, got %+v", parentGlossary.Citations)
+	}
+	parentDocumentID := *parentGlossary.Citations[0].DocumentID
+
+	if _, err := service.SubmitSnapshot(ctx, owner, source.ID,
+		incrementalSnapshot("Original overview.\n", "Retention is 90 days.\n", "Terms.\n")); err != nil {
+		t.Fatalf("submit changed snapshot: %v", err)
+	}
+	build := compileNow(t, ctx, service, worker, owner,
+		CompileRequest{SourceID: source.ID, Mode: BuildModeIncremental})
+	if build.Status != BuildStatusSucceeded {
+		t.Fatalf("expected success, got %s: %s / %s", build.Status, build.Error, build.CheckFailures)
+	}
+
+	glossary, err := service.GetPage(ctx, owner.Account(), build.ID, "wiki/glossary.md")
+	if err != nil {
+		t.Fatalf("get reused glossary: %v", err)
+	}
+	if len(glossary.Citations) == 0 || glossary.Citations[0].DocumentID == nil {
+		t.Fatalf("a reused citation must stay resolved, got %+v", glossary.Citations)
+	}
+	if *glossary.Citations[0].DocumentID == parentDocumentID {
+		t.Fatal("the reused citation still points at the parent revision's document row; " +
+			"the build would claim one source revision while citing another")
+	}
+	// And it points at the row belonging to this build's revision.
+	documents, err := service.ListRevisionDocuments(ctx, owner.Account(), build.SourceRevisionID,
+		DocumentListParams{Limit: 100})
+	if err != nil {
+		t.Fatalf("list revision documents: %v", err)
+	}
+	current := make(map[string]string)
+	for _, document := range documents.Items {
+		current[document.Path] = document.ID
+	}
+	if want := current["raw/glossary.md"]; *glossary.Citations[0].DocumentID != want {
+		t.Fatalf("expected the current revision's document row %s, got %s",
+			want, *glossary.Citations[0].DocumentID)
+	}
+}
+
+// TestIncrementalRefusesParentFromAnotherCompiler covers a case observed in the real
+// deployment: a build recorded model=qwen while every page had been produced by a
+// deepseek run, because the raw diff was empty and reuse asked no further questions.
+// An empty diff against an incompatible parent means every page needs rewriting, not
+// that nothing does.
+func TestIncrementalRefusesParentFromAnotherCompiler(t *testing.T) {
+	ctx := context.Background()
+	pool := integrationPool(t, ctx)
+	owner, cleanup := createKnowledgeIntegrationOwner(t, ctx, pool, "incr-crossmodel")
+	defer cleanup()
+
+	first := &scriptedClient{replies: []string{baseWikiReply()}}
+	service, worker := newWikiService(t, ctx, first)
+	source := seedIncrementalSource(t, ctx, service, owner, "incr-crossmodel-kb")
+	if parent := compileNow(t, ctx, service, worker, owner, CompileRequest{SourceID: source.ID}); parent.Status != BuildStatusSucceeded {
+		t.Fatalf("parent build failed: %s", parent.Error)
+	}
+
+	// Same service, different compiler model.
+	service.WithLLM(LLMSetup{
+		Compiler:     &renamedClient{scriptedClient: &scriptedClient{replies: []string{baseWikiReply()}}, model: "other-compiler"},
+		Independence: llm.IndependenceCrossProvider,
+	})
+	_, err := service.EnqueueCompile(ctx, owner, CompileRequest{SourceID: source.ID, Mode: BuildModeIncremental})
+	if !errors.Is(err, ErrIncompatibleParent) {
+		t.Fatalf("expected ErrIncompatibleParent, got %v", err)
+	}
+}
+
+// renamedClient reports a different model while behaving identically, which is how the
+// cross-compiler case is expressed without a second provider.
+type renamedClient struct {
+	*scriptedClient
+	model string
+}
+
+func (c *renamedClient) Model() string { return c.model }

@@ -1,7 +1,7 @@
 # Knowledge Wiki Compiler（K3）设计 v0.1
 
-**状态**：K3.1 + K3.2 + K3.3 已实现并在真实环境验证（migration 000027/000028，`internal/llm`、
-`internal/knowledge/wiki_*.go`）。K3.4–K3.9 仍是 DESIGN。
+**状态**：K3.1 / K3.2 / K3.3 / K3.4 / K3.5 已实现并在真实环境验证（migration 000027/000028，
+`internal/llm`、`internal/knowledge/wiki_*.go`）。K3.6–K3.9 仍是 DESIGN。
 **前置**：K1（source/revision/document）、K2（catalog/chunk/link/hybrid 检索）均已实现
 **上层背景**：`skill-knowledge-architecture-v0.1.md` §13–§15 与其中的 K3 里程碑清单
 **实现状态明细**：见 §13
@@ -509,7 +509,7 @@ K3.1  ✅ profile 版本化 + build/page/citation/link 数据模型 + 全量编�
 K3.2  ✅ check（机械不变量，唯一门禁）+ 自动激活 + build diff/回滚
 K3.3  ✅ 异步 job（租约 + 心跳 + 有界重试 + 成本记账）
 K3.5  ✅ index / log 生成 —— 与 K3.2 一同落地，见下
-K3.4  ⬜ 增量编译（raw diff → 影响面 → 复用）
+K3.4  ✅ 增量编译（raw diff → 影响面 → 复用）
 K3.6  ⬜ wiki page 进检索（新 namespace）+ 两级 query
 K3.7  ⬜ lint
 K3.8  ⬜ review（异构模型忠实性审阅，只标记）
@@ -560,13 +560,15 @@ K3.3（带租约的异步 job、有界重试、成本记账）见 §14，位置�
 K3.5（index / log 生成）也已实现，位置在 `wiki_compile.go` 的 `buildIndexPage`/
 `buildLogPage`，由 `RunBuild` 在 check 之前追加并随 wiki 一起提交。原因见 §12。
 
-未实现：K3.4（增量）、K3.6（wiki 进检索）、K3.7（lint）、K3.8（review 实际调用）、
+K3.4（增量编译）见 §15，位置在 `internal/knowledge/wiki_incremental.go` 与
+`wiki_incremental_repo.go`，check 新增 `incremental_coverage` 与 `incremental_scope` 两条不变量。
+
+未实现：K3.6（wiki 进检索）、K3.7（lint）、K3.8（review 实际调用）、
 K3.9（validation 与 proposal）。
 
 需要说清楚哪些是"字段在但路径不通"，否则很容易把已声明的类型误读成已实现的功能：
 `review_status` 恒为 `skipped`，`RunBuild` 从不调用 `s.reviewer`，`reviewer_model` 与
-`reviewer_independence` 只记配置不记判定；`pages_reused` 与 `derived_from_build_id`
-永远为 0/NULL，因为没有增量编排路径写它们；`knowledge_page_links` 的悬空链接与孤立页
+`reviewer_independence` 只记配置不记判定；`knowledge_page_links` 的悬空链接与孤立页
 是 lint 所需的数据，但没有 lint。
 
 ### 13.2 真实环境验证（本地 Docker + DashScope qwen3.7-plus + GitHub demo repo）
@@ -743,3 +745,117 @@ mode 合法、输入身份复用），因为此时调用方还在，能被告知
 - **provider 侧幂等**：重试会重新发起完整调用。若上一次其实已经生成完但连接在返回途中断开，
   这一次是重复付费。要真正解决需要 provider 支持幂等键。
 - **优先级 / 公平性**：单一 FIFO 队列。一个账号排入 50 个 build 会让其他账号排在后面。
+
+
+## 15. K3.4：增量编译
+
+### 15.1 为什么它不是优化
+
+全量编译把整个 wiki 塞进一次模型回复。输出预算从 4096 抬到 16384 再到 32768，撞过两次
+天花板，没有下一档可调。**增量是语料继续增长的唯一出路，不是省钱手段。**
+
+### 15.2 影响面由数据库算，不问模型
+
+```
+raw diff（path + sha256）
+  → touched = changed ∪ removed        （added 不算：没有页引用过不存在的文档）
+  → 直接影响 = citation 指向 touched 的页
+  → +一跳 = 链接到上述页的页
+  → 减去平台生成页（index/log 每次都重生成）
+  = ScheduledPaths
+```
+
+模型不参与这个计算。低估会让 wiki 留下引用已变更文档的过期断言，而下游没有任何东西能发现它。
+
+**一跳的理由与直接影响不同**：入链者本身不过期，但重编可能删掉或改名它的目标，而复用页指向
+不存在的页就是悬空链、会被 check 拒。把入链者拉进来，等于让删页的那次编译同时负责修好指向
+它的人。
+
+**刻意不做传递闭包**：任何连接良好的知识库上，全闭包都会收敛到整个 wiki —— 那是披着增量
+外衣的全量重建。代价是二跳之外的语义依赖（A 引用了 B 的结论而 B 被重写）不会被发现，
+这个缺口只能由 K3.7 lint 从另一侧发现。
+
+### 15.3 幂等：短路必须在 enqueue，不能靠输入身份
+
+**每次增量 build 都会成为下一次的 parent**，所以输入身份六元组永远不重复。一个空闲的调用方
+反复请求"把 wiki 更新到最新"，会铸出一条无穷长的 build 链，每一条都复用全部页、编译零页。
+
+因此 enqueue 层直接判断：parent 已经编译过这个 revision（revision 不可变，所以同 ID 即同内容）
+且 profile / model / compiler / prompt 全部一致 → 没有事可做，把已有 build 交回去并说明原因。
+`force` 是操作者怀疑既有产物而非源时的逃生口。
+
+### 15.4 删除必须显式声明
+
+模型省略一个页，和它认为这个页没问题，在协议上完全无法区分。所以约定：**省略即未改动，
+删除必须带 `"delete": true`**。
+
+反过来，**排进重写却没返回的页不会被静默恢复**。原先的实现会把 parent 的旧文本原样保留，
+理由写的是"过期文本好过图上有洞"——这条不成立：citation 路径仍然存在，所以每条结构规则都过，
+而页面断言的正是它的源已经不再支持的东西，agent 读了分辨不出来。现在由 check 的
+`incremental_coverage` 判失败。这是"半个 wiki 比没有更糟"的同一逻辑，套用在"半更新的 wiki"上。
+
+### 15.5 计划是约束，不只是记录
+
+模型拿到全部页路径（为了能链接到看不见的复用页），因此它可以返回一个没人要求它碰的页。
+结构上一个被覆盖的页仍然是合法页，check 不会发现越权。
+
+现在越权写入/删除被就地丢弃并记 `page_rejected`，同时 check 的 `incremental_scope` 判失败。
+两者都要：丢弃保住了计划承诺保住的页，判失败是因为编译器无视范围本身是值得暴露的缺陷。
+**不约束的记录不算记录** —— `ScheduledPaths` 声称的是"本次 build 被允许改动的范围"。
+
+### 15.6 plan 分三段，因为"计划"与"发生"会分叉
+
+| 字段 | 含义 |
+|---|---|
+| `scheduled_paths` | 影响面闭包（已剔除平台生成页） |
+| `recompiled_paths` | 模型实际返回的页 |
+| `reused_paths` | 从 parent 拷过来的页 |
+| `deleted_paths` | 模型声明其源已不支持的页 |
+| `rejected_paths` | 模型试图改动但不在计划内、已被丢弃的页 |
+
+**后四者互斥**。第一版只有两段，结果一个页可以同时出现在"重编"和"复用"里 —— 审计记录在它唯一
+需要回答的问题上自相矛盾：**这次模型运行到底产出了哪些文本**。
+
+`rejected_paths` 单独一段也是同一个理由：越权页被丢弃后仍然是复用页，把它记进 `recompiled`
+会让同一个路径再次出现在两个清单里。
+
+### 15.7 跨编译器身份的 parent 不能做增量
+
+parent 由另一个模型 / prompt / compiler / profile 产出时，raw diff 是空的，而每一页其实都需要
+重写。原逻辑复用全部页、零模型调用，然后把本次 build 的 provenance 盖在那个模型从未产出过
+的文本上。
+
+**真实环境里就发生过**：build `a90d6393` 记录 `model=qwen3.7-plus`，而 5 个内容页全部来自
+deepseek 的 build。现在返回 `ErrIncompatibleParent`（enqueue 与 worker 两处），并明说该用 full ——
+拒绝，不静默扩大为全量。
+
+### 15.8 复用页的 citation 必须按当前 revision 重解析
+
+`knowledge_documents` 是**按 revision 存**的，所以拷贝 citation 时 `document_id` 属于 parent 的
+revision。不重解析的话，build 声称基于新 revision 而 citation 落在旧 revision，而 check 只校验
+path，看不见这条。现在按 path 重解析；解析不到就置空，由 `citation_resolvable` 报出来 ——
+复用页引用了消失的文档，正是复用绝不能藏住的情况。
+
+### 15.9 模型需要的上下文比"变更文档"多
+
+一个同时引用变更 A 与未变更 B 的页，被要求整体重写时，模型无法知道哪些 claim 来自 B，
+唯一安全动作就是丢掉它交代不了的部分 —— 有效事实与图边静默丢失。
+
+因此 prompt 额外给出：受影响页**现有的 citation 与 typed link**，以及它们仍引用的**未变更文档
+正文**。后者按影响面收集而非按语料收集，不会把增量存在的理由抵消掉。
+
+### 15.10 实测
+
+`platform/retrieval`，4 篇文档改 1 篇：
+
+| | 输出 token | 输入 token | 复用 |
+|---|---|---|---|
+| full | 8707 | 2618 | 0 |
+| incremental | 4841 | 2712 | 5 页中 3 页 |
+
+输出降 **44%**。**输入没动** —— 4 篇文档的语料下，"变更文档 + 受影响页正文 + 全部页路径清单"
+跟"直接发全部文档"体量相当。输入的节省随语料规模才显现，这个规模下确实是 0。这没问题：
+增量存在的理由是输出天花板，而那个数字动了。
+
+过程中 provider 返回一次 500（`Inference engine abort`），被判可重试、退避 30 秒后第二次成功 ——
+K3.3 的重试机制在真实故障上生效，而不只是在测试里。

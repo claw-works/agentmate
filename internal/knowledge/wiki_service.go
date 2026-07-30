@@ -101,6 +101,16 @@ func (s *Service) EnqueueCompile(ctx context.Context, owner ownership.Owner, req
 		}
 		input.ParentBuildID = &parent.ID
 
+		// A parent from a different compiler identity cannot be incrementally updated:
+		// the raw diff would be empty while every page still needs rewriting. Caught here
+		// as well as in the worker, so the caller learns immediately instead of after a
+		// build has been queued and failed.
+		if parent.Model != input.Model || parent.CompilerVersion != CompilerVersion ||
+			parent.PromptVersion != PromptVersion || parent.ProfileVersionID != input.ProfileVersionID {
+			return nil, fmt.Errorf("%w: build %s used model %q, prompt %q, compiler %q; compile with mode=full",
+				ErrIncompatibleParent, shortID(parent.ID), parent.Model, parent.PromptVersion, parent.CompilerVersion)
+		}
+
 		// Nothing to do: the parent already compiled this exact revision under the
 		// same profile, compiler and prompt, and revisions are immutable, so the raw
 		// sources cannot have moved.
@@ -221,7 +231,7 @@ func (s *Service) RunBuild(ctx context.Context, build *BuildRevision) error {
 	if build.Mode == BuildModeIncremental {
 		pages, rejected, usage, reusedCount, plan, err = s.runIncremental(
 			ctx, owner.Account(), build, *profile, manifest, documents, addEvent)
-		if errors.Is(err, ErrNoParentBuild) {
+		if errors.Is(err, ErrNoParentBuild) || errors.Is(err, ErrIncompatibleParent) {
 			// Terminal, and not a downgrade to full: a caller that asked for
 			// incremental and silently got a full rebuild believes it saved cost it
 			// did not save.
@@ -301,6 +311,9 @@ func (s *Service) RunBuild(ctx context.Context, build *BuildRevision) error {
 		KnownDocumentPaths: knownPaths,
 		ParentPageCount:    parentPageCount,
 		TotalTokens:        usage.TotalTokens,
+		// Only set for an incremental build, where check additionally verifies that the
+		// build honoured its own plan.
+		Incremental: plan,
 	})
 
 	if len(failures) > 0 {

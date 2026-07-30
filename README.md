@@ -335,11 +335,11 @@ Knowledge Registry K1: knowledge sources with immutable revisions and document
 snapshots. K1 covers source registration, Git/local ingest, canonical package
 identity, and account-scoped document reads. K2 adds the K0 catalog,
 deterministic Markdown chunking, a document link graph, and account-scoped
-hybrid retrieval. K3.1–K3.3 add the wiki compiler: profile versioning, immutable
+hybrid retrieval. K3.1–K3.5 add the wiki compiler: profile versioning, immutable
 wiki builds, deterministic checks as the only activation gate, build diff and
-rollback, and a leased compile queue with bounded retries and cost accounting.
-Still planned: incremental builds, wiki-page retrieval, lint, LLM review and
-validation signals (see
+rollback, a leased compile queue with bounded retries and cost accounting, and
+incremental compilation that recompiles only the pages a source change touches.
+Still planned: wiki-page retrieval, lint, LLM review and validation signals (see
 `docs/knowledge-wiki-compiler-k3-v0.1.md` §13 for exactly what is and is not
 implemented).
 
@@ -399,7 +399,7 @@ If the model wrote the index, check's coverage rule would be testing the model's
 diligence instead of the build's completeness. Those two paths are reserved; a
 model page landing there is dropped and recorded as a `page_rejected` event.
 
-- `POST /api/knowledge/compile` — **Queue** a compilation of the source's active raw revision. Returns `202` with a `queued` build; nothing has been compiled when it returns. Body `source_id` (required), `mode` (`full`; `incremental` is rejected rather than silently downgraded), `force` (recompile despite a matching input identity), `activate` (default true, carried on the job because the caller is long gone when a worker runs). Returns `200` instead when an existing build already matched the input identity, in which case nothing was queued. Warnings include a standing one when reviewer independence is not `cross_provider`. Returns 501 when no compiler model is configured, which is an operator gap rather than a failed build (scope: `knowledge:rw`)
+- `POST /api/knowledge/compile` — **Queue** a compilation of the source's active raw revision. Returns `202` with a `queued` build; nothing has been compiled when it returns. Body `source_id` (required), `mode` (`full` or `incremental`), `force` (recompile despite a matching input identity), `activate` (default true, carried on the job because the caller is long gone when a worker runs). Returns `200` instead when an existing build already matched the input identity, in which case nothing was queued. Warnings include a standing one when reviewer independence is not `cross_provider`. Returns 501 when no compiler model is configured, which is an operator gap rather than a failed build (scope: `knowledge:rw`)
 - `GET /api/knowledge/queue` — Compile queue for this account: builds waiting, running, waiting on a retry backoff, and the age of the oldest waiting build. Without this, queue wait and a stuck worker look identical from outside (scope: `knowledge:r`)
 - `GET /api/knowledge/builds?source_id=&limit=&offset=` — Build history, newest first, with `is_active` derived from the source pointer (scope: `knowledge:r`)
 - `GET /api/knowledge/builds/:build_id` — One build with full provenance, check verdict and failures, and token spend (scope: `knowledge:r`)
@@ -408,6 +408,40 @@ model page landing there is dropped and recorded as a `page_rejected` event.
 - `GET /api/knowledge/builds/:build_id/diff?from=` — Compare two builds by page path and content hash; `from` defaults to the previous succeeded build of the same source (scope: `knowledge:r`)
 - `GET /api/knowledge/builds/:build_id/events` — The ordered build log, rendered as `wiki/log.md` on succeeded builds (scope: `knowledge:r`)
 - `POST /api/knowledge/builds/:build_id/activate` — Point the source's wiki at this build. This is also the rollback operation; the response carries `previous_build_id` so a rollback can be undone. Returns 409 for a build that did not succeed or did not pass check (scope: `knowledge:rw`)
+
+`mode=incremental` diffs the raw sources against the previous succeeded build,
+recompiles only the pages those changes touch, and carries the rest over. It exists
+because full compilation emits the whole wiki in one model reply, which caps corpus
+size hard — the output budget has already been raised from 4096 to 16384 to 32768 and
+there is no further headroom. It is the way past that ceiling, not a cost optimisation.
+
+The impact set is computed from the database, never asked of the model: a page is
+recompiled when it cites a document that changed or disappeared, plus one hop of pages
+linking to those. The second hop is not about staleness — the recompile may drop or
+rename its target, and a carried-over page pointing at a page that no longer exists is
+a dangling link that check refuses. Closure stops at one hop on purpose, because full
+transitive closure converges on the whole wiki for any well-connected knowledge base.
+
+Two check rules apply only to incremental builds. `incremental_coverage` fails a build
+that left a scheduled page neither rewritten nor deleted: keeping the old text would
+leave a claim its source no longer supports, and no structural rule can see that
+because the citation path still resolves. `incremental_scope` fails a build that
+changed a page outside its plan — the compiler is handed every page path so it can
+link freely, which also lets it rewrite something nobody asked about.
+
+Incremental is refused, not downgraded, in two cases: when there is no previous build
+to diff against, and when the previous build came from a different model, prompt,
+compiler or profile. In the second case the raw diff would be empty while every page
+still needed rewriting, and carrying pages forward would stamp this build's provenance
+onto text the recorded model never produced. Repeating the request when the sources have
+not moved hands back the existing build rather than queueing a no-op, because every
+incremental build becomes the parent of the next one and identity would otherwise never
+repeat.
+
+Measured on a four-document knowledge base with one document changed: output tokens fell
+from 8707 to 4841, with three of five pages carried over. Input tokens did not move —
+at that size the incremental prompt carries about as much as simply sending everything.
+Input savings scale with corpus size; the output ceiling is what incremental is for.
 
 Compilation runs in a **leased queue**, not in the request: a compile takes 200-400
 seconds against a reasoning model, past any sane client default timeout, and a
