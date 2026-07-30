@@ -129,17 +129,33 @@ func TestIncrementalRecompilesOnlyImpactedPages(t *testing.T) {
 	}
 	// The impact closure: the page citing the changed document, plus the one page
 	// linking to it. glossary rests on an untouched document and must stay out.
-	if !containsString(plan.RecompiledPaths, "wiki/retention.md") {
-		t.Fatalf("the page citing the changed document must be recompiled, got %v", plan.RecompiledPaths)
+	if !containsString(plan.ScheduledPaths, "wiki/retention.md") {
+		t.Fatalf("the page citing the changed document must be scheduled, got %v", plan.ScheduledPaths)
 	}
-	if !containsString(plan.RecompiledPaths, "wiki/overview.md") {
-		t.Fatalf("the page linking to an impacted page must be pulled in, got %v", plan.RecompiledPaths)
+	if !containsString(plan.ScheduledPaths, "wiki/overview.md") {
+		t.Fatalf("the page linking to an impacted page must be pulled in, got %v", plan.ScheduledPaths)
 	}
-	if containsString(plan.RecompiledPaths, "wiki/glossary.md") {
-		t.Fatalf("a page resting on untouched sources must not be recompiled, got %v", plan.RecompiledPaths)
+	if containsString(plan.ScheduledPaths, "wiki/glossary.md") {
+		t.Fatalf("a page resting on untouched sources must not be scheduled, got %v", plan.ScheduledPaths)
+	}
+	// index links to every content page, so the one-hop rule reaches it. It is
+	// regenerated on every build regardless, and the compiler is forbidden from writing
+	// it, so scheduling it would record a request that was never made.
+	for _, reserved := range []string{"wiki/index.md", "wiki/log.md"} {
+		if containsString(plan.ScheduledPaths, reserved) {
+			t.Fatalf("%s is platform-generated and must never be scheduled, got %v", reserved, plan.ScheduledPaths)
+		}
 	}
 	if !containsString(plan.ReusedPaths, "wiki/glossary.md") {
 		t.Fatalf("the untouched page must be reused, got %v", plan.ReusedPaths)
+	}
+	// The two outcome lists must partition the pages. A path in both would make the
+	// record self-contradictory, and it is the record that says which text this model
+	// run actually produced.
+	for _, path := range plan.RecompiledPaths {
+		if containsString(plan.ReusedPaths, path) {
+			t.Fatalf("%s is recorded as both recompiled and reused: %+v", path, plan)
+		}
 	}
 
 	if build.PagesReused != 1 {
@@ -286,6 +302,9 @@ func TestIncrementalDeletesPageWhenSourceRemoved(t *testing.T) {
 	if !deleted {
 		t.Fatal("a deleted page must leave an event; a silent disappearance is unauditable")
 	}
+	if !containsString(plan.DeletedPaths, "wiki/glossary.md") {
+		t.Fatalf("the plan must record the deletion, got %v", plan.DeletedPaths)
+	}
 
 	pages, err := service.ListPages(ctx, owner.Account(), build.ID)
 	if err != nil {
@@ -347,6 +366,23 @@ func TestIncrementalKeepsPageTheCompilerDidNotReturn(t *testing.T) {
 	}
 	if retention.DerivedFromBuildID == nil {
 		t.Fatal("the omitted page must be recorded as carried over, not as freshly compiled")
+	}
+	// The plan must say the same thing the page says: scheduled, but reused rather than
+	// recompiled. Crediting the model with a page it never returned is the specific
+	// dishonesty this separation exists to prevent.
+	events, err := service.ListBuildEvents(ctx, owner.Account(), build.ID)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	plan := planFromEvents(t, events)
+	if !containsString(plan.ScheduledPaths, "wiki/retention.md") {
+		t.Fatalf("expected it scheduled, got %v", plan.ScheduledPaths)
+	}
+	if containsString(plan.RecompiledPaths, "wiki/retention.md") {
+		t.Fatalf("a page the compiler never returned must not be recorded as recompiled, got %v", plan.RecompiledPaths)
+	}
+	if !containsString(plan.ReusedPaths, "wiki/retention.md") {
+		t.Fatalf("expected it reused, got %v", plan.ReusedPaths)
 	}
 	// And the link into it still closes, which is why keeping it matters.
 	if build.CheckStatus != CheckStatusPassed {

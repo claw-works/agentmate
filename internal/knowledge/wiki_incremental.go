@@ -322,13 +322,27 @@ func (s *Service) runIncremental(
 	}
 	sort.Strings(carriedPaths)
 
-	impacted, err := s.repo.ImpactedPagePaths(ctx, accountID, parentID, diff.Touched())
+	rawImpacted, err := s.repo.ImpactedPagePaths(ctx, accountID, parentID, diff.Touched())
 	if err != nil {
 		return nil, nil, llm.Usage{}, 0, nil, err
 	}
+	// The index links to every content page, so the one-hop rule drags it in whenever
+	// anything is impacted. Platform-generated pages are regenerated on every build
+	// regardless, so scheduling them is meaningless — and recording them as scheduled
+	// would claim the compiler was asked for a page it is forbidden to write.
+	impacted := make([]string, 0, len(rawImpacted))
+	for _, path := range rawImpacted {
+		if _, reserved := reservedPagePaths[path]; reserved {
+			continue
+		}
+		impacted = append(impacted, path)
+	}
 	plan := &IncrementalPlan{
 		ParentBuildID: parentID, RevisionDiff: *diff,
-		RecompiledPaths: impacted, ReusedPaths: make([]string, 0, len(carriedPaths)),
+		ScheduledPaths:  impacted,
+		RecompiledPaths: make([]string, 0, len(impacted)),
+		ReusedPaths:     make([]string, 0, len(carriedPaths)),
+		DeletedPaths:    make([]string, 0),
 	}
 
 	addEvent(BuildEventPlanned, "", fmt.Sprintf(
@@ -379,9 +393,11 @@ func (s *Service) runIncremental(
 	}
 
 	for _, page := range compiled {
+		plan.RecompiledPaths = append(plan.RecompiledPaths, page.Path)
 		addEvent(BuildEventPageWritten, page.Path, fmt.Sprintf("%s, %d citations, %d links",
 			page.Kind, len(page.Citations), len(page.Links)))
 	}
+	plan.DeletedPaths = append(plan.DeletedPaths, deleted...)
 	for _, path := range deleted {
 		addEvent(BuildEventPageDeleted, path, "sources no longer support this page")
 	}
@@ -419,6 +435,8 @@ func (s *Service) runIncremental(
 		merged, reusedCount = mergeIncremental(append(reusedPrepared, reinstated...), compiled, deleted)
 	}
 	sort.Strings(plan.ReusedPaths)
+	sort.Strings(plan.RecompiledPaths)
+	sort.Strings(plan.DeletedPaths)
 	return merged, rejected, usage, reusedCount, plan, nil
 }
 

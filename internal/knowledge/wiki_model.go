@@ -379,13 +379,25 @@ func (d RevisionDiff) IsEmpty() bool {
 // IncrementalPlan is what an incremental build decided to do, recorded so the
 // decision can be audited after the fact. A compile that reused the wrong pages is
 // invisible unless the plan is kept.
+//
+// Three lists rather than two, because "planned" and "happened" diverge and a record
+// that conflates them is worse than none. A page can be scheduled for rewrite and
+// still come back unchanged — the compiler may simply not return it — and reporting
+// it as recompiled would credit the model with text it never produced.
 type IncrementalPlan struct {
 	ParentBuildID string       `json:"parent_build_id"`
 	RevisionDiff  RevisionDiff `json:"revision_diff"`
-	// RecompiledPaths is the impact closure: pages citing a touched document, plus
-	// one hop of pages linking to those.
+	// ScheduledPaths is the impact closure: pages citing a touched document, plus one
+	// hop of pages linking to those. Platform-generated pages are excluded — index and
+	// log are regenerated on every build, so scheduling them would be meaningless.
+	ScheduledPaths []string `json:"scheduled_paths"`
+	// RecompiledPaths are the pages the compiler actually returned.
 	RecompiledPaths []string `json:"recompiled_paths"`
-	ReusedPaths     []string `json:"reused_paths"`
+	// ReusedPaths are the pages carried over from the parent, including any that were
+	// scheduled but came back missing. Disjoint from RecompiledPaths.
+	ReusedPaths []string `json:"reused_paths"`
+	// DeletedPaths are the pages the compiler declared unsupported by their sources.
+	DeletedPaths []string `json:"deleted_paths"`
 }
 
 // ErrNoParentBuild means there is nothing to be incremental against. Reported rather
