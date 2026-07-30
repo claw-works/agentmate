@@ -1,6 +1,6 @@
 # Knowledge Wiki Compiler（K3）设计 v0.1
 
-**状态**：K3.1 / K3.2 / K3.3 / K3.4 / K3.5 已实现并在真实环境验证（migration 000027/000028，
+**状态**：K3.1 / K3.2 / K3.3 / K3.4 / K3.5 / K3.6 已实现并在真实环境验证（migration 000027–000029，
 `internal/llm`、`internal/knowledge/wiki_*.go`）。K3.6–K3.9 仍是 DESIGN。
 **前置**：K1（source/revision/document）、K2（catalog/chunk/link/hybrid 检索）均已实现
 **上层背景**：`skill-knowledge-architecture-v0.1.md` §13–§15 与其中的 K3 里程碑清单
@@ -510,7 +510,7 @@ K3.2  ✅ check（机械不变量，唯一门禁）+ 自动激活 + build diff/�
 K3.3  ✅ 异步 job（租约 + 心跳 + 有界重试 + 成本记账）
 K3.5  ✅ index / log 生成 —— 与 K3.2 一同落地，见下
 K3.4  ✅ 增量编译（raw diff → 影响面 → 复用）
-K3.6  ⬜ wiki page 进检索（新 namespace）+ 两级 query
+K3.6  ✅ wiki page 进检索（新 namespace）+ 两级 query
 K3.7  ⬜ lint
 K3.8  ⬜ review（异构模型忠实性审阅，只标记）
 K3.9  ⬜ validation 信号上报 + 归因 + proposal 生成与处置
@@ -563,8 +563,10 @@ K3.5（index / log 生成）也已实现，位置在 `wiki_compile.go` 的 `buil
 K3.4（增量编译）见 §15，位置在 `internal/knowledge/wiki_incremental.go` 与
 `wiki_incremental_repo.go`，check 新增 `incremental_coverage` 与 `incremental_scope` 两条不变量。
 
-未实现：K3.6（wiki 进检索）、K3.7（lint）、K3.8（review 实际调用）、
-K3.9（validation 与 proposal）。
+K3.6（wiki 进检索）见 §16，位置在 `internal/knowledge/wiki_search.go`，
+migration `000029` 增加 `indexed_build_id`。
+
+未实现：K3.7（lint）、K3.8（review 实际调用）、K3.9（validation 与 proposal）。
 
 需要说清楚哪些是"字段在但路径不通"，否则很容易把已声明的类型误读成已实现的功能：
 `review_status` 恒为 `skipped`，`RunBuild` 从不调用 `s.reviewer`，`reviewer_model` 与
@@ -859,3 +861,69 @@ path，看不见这条。现在按 path 重解析；解析不到就置空，由 
 
 过程中 provider 返回一次 500（`Inference engine abort`），被判可重试、退避 30 秒后第二次成功 ——
 K3.3 的重试机制在真实故障上生效，而不只是在测试里。
+
+## 16. K3.6：wiki 进检索与两级 query
+
+### 16.1 为什么必须是新 namespace
+
+wiki page 用 `knowledge_wiki`，raw chunk 的 `knowledge` 保持不动。
+
+**不能合并**：综合页与它的来源文档放进同一个排序里，综合页通常赢，而它所依据的证据就从结果里
+消失了。raw chunk 是引用溯源的终点，必须独立可检索。
+
+这同时修掉了架构文档里记下的"加速层装在 raw 层上"——在此之前 wiki 编译出来了却检索不到，
+K3 的价值有一半没交付。
+
+### 16.2 检索必须跟着 active 指针，不能信任索引
+
+build 不可变且全部保留。索引若覆盖多于 active build 的内容，回滚之后检索会服务那个被回滚掉的
+wiki，而所有读接口服务的是恢复后的那个 —— **两个地方对同一个问题给出不同答案**。
+
+所以 `SearchWiki` 从 `active_build_id` 解析允许的 build 集合，再按 `build_id` 过滤命中。
+后果是：索引落后时检索**少给结果而不是给错结果**。
+
+索引落后是允许的（embedding 往返按 chunk 计秒，不能塞进指针移动，否则 provider 抖一下就会让
+激活失败）。**不允许的是它不可见**：`indexed_build_id` 与 `active_build_id` 的差距通过
+`GET /api/knowledge/wiki/index` 报出来 —— 落后的索引看起来跟"这个 wiki 没什么可说的"完全一样，
+这个读接口就是用来区分两者的。
+
+### 16.3 命中按页收敛，不按 chunk
+
+页要切块才能 embedding，所以一个长页会占据好几个头部位置。按 chunk 报会让一个页看起来像好几个
+答案，把别的答案挤出去。命中收敛到页，取最高分 chunk 的分数与片段，另记 `matched_chunks`。
+
+### 16.4 citation 随命中返回，这就是第二级
+
+wiki page 是模型写的。一个不带 citation 的命中，是一段看着合理、无从核对的文字 ——
+正是生成式 wiki 最容易招致的失败。所以每个命中带上该页的 citation 与 typed link，
+且**从数据库读而不是从索引读**：它们是通往证据的路径，必须反映存储的页而非检索投影。
+
+页若是增量编译拷过来的，命中会带 `derived_from_build_id`，读者能知道究竟哪次模型运行写了这段
+文字。
+
+### 16.5 log 页不进索引，index 页进
+
+`wiki/log.md` 是编译过程的转录，不是关于领域的知识。把它索引进去，agent 就能把
+"page_written wiki/x.md" 当成一条领域事实来引用。
+
+`wiki/index.md` 进索引 —— 从它开始导航正是两级 query 描述的第一步（§5.2）。它没有 citation
+（check 对 index/log 豁免引用要求），命中它时 `kind=index` 让调用方能分辨。
+
+### 16.6 实测
+
+三个 demo KB：索引 129 chunk、零失败、三个 log 页各自跳过。
+
+| 查询 | top-1 | 分数 |
+|---|---|---|
+| 中文检索 bigram 投影 | `wiki/cjk-lexical.md` | 1.0000 |
+| 包身份为什么不用 commit | `wiki/package-identity.md` | 0.9919 |
+| 分块上限 硬切 边界不可信 | `wiki/chunking.md` | 1.0000 |
+
+两级下钻实测可用：命中 `wiki/cjk-lexical.md` → 4 条 citation 全部 resolved →
+按 `document_id` 取到 `raw/cjk-lexical.md` 原文。
+
+指针跟随实测：切换 active build 后，该 source 的检索**立即降到 0 命中**（而不是返回旧 wiki），
+状态报 `stale=true`；重新索引清掉旧 build 的 28 行、写入新 build 的 35 行，随后能查到只有新
+build 才有的内容，且命中标注 `derived_from_build_id`（该页是增量从更早 build 拷来的）。
+
+namespace 隔离实测：同一查询在 raw 检索只返回 `raw/*`，在 wiki 检索只返回 `wiki/*`。

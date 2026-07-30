@@ -335,11 +335,12 @@ Knowledge Registry K1: knowledge sources with immutable revisions and document
 snapshots. K1 covers source registration, Git/local ingest, canonical package
 identity, and account-scoped document reads. K2 adds the K0 catalog,
 deterministic Markdown chunking, a document link graph, and account-scoped
-hybrid retrieval. K3.1–K3.5 add the wiki compiler: profile versioning, immutable
+hybrid retrieval. K3.1–K3.6 add the wiki compiler: profile versioning, immutable
 wiki builds, deterministic checks as the only activation gate, build diff and
 rollback, a leased compile queue with bounded retries and cost accounting, and
-incremental compilation that recompiles only the pages a source change touches.
-Still planned: wiki-page retrieval, lint, LLM review and validation signals (see
+incremental compilation that recompiles only the pages a source change touches, and wiki
+pages in their own retrieval namespace as the entry layer above raw documents.
+Still planned: lint, LLM review and validation signals (see
 `docs/knowledge-wiki-compiler-k3-v0.1.md` §13 for exactly what is and is not
 implemented).
 
@@ -368,6 +369,36 @@ explicit distinct `name`.
 - `POST /api/knowledge/index` — Chunk-index active revisions (body `source_id` optional; empty indexes every active source) into the account-scoped `knowledge` retrieval namespace and rebuild the document link graph (scope: `knowledge:rw`)
 - `POST /api/knowledge/search` — Hybrid lexical + semantic search over indexed chunks (body `query`/`top_k`/`domain`/`source_ids`/`include_content`; `domain` resolves to that domain's sources and intersects with `source_ids`, so it can only narrow the search); hits carry document/source/revision provenance, heading path, score, snippet, and 1-hop link neighbors (metadata only, capped at 16); the snippet is the first 240 runes of the chunk body (a chunk shorter than that is fully visible in its snippet), and the full chunk body is returned only with `include_content=true`; served `Cache-Control: private, no-store` (scope: `knowledge:r`)
 - `GET /api/knowledge/documents/:doc_id/links?limit=&offset=` — Both directions of one document's package-internal links: outgoing links keep the target path (with a NULL document ID when dangling), incoming links carry the linking document's path (scope: `knowledge:r`)
+
+#### Wiki retrieval (K3.6)
+
+Wiki pages live in their own retrieval namespace, `knowledge_wiki`, and are the first level
+of a two-level query: find the synthesised page, then follow its citations down to the raw
+documents for evidence. The namespace is separate rather than replacing the raw one,
+because a synthesis and the documents it was synthesised from must not compete in a single
+ranking — the synthesis usually wins and the evidence it rests on disappears.
+
+Search filters on each source's **active build**, not on whatever the index happens to
+hold. Builds are immutable and retained, so a broader index would serve pages from a wiki
+that was rolled back while every read API served the restored one. A stale index therefore
+returns fewer hits rather than wrong ones, and the gap between `active_build_id` and
+`indexed_build_id` is reported — a lagging index otherwise looks exactly like a wiki with
+nothing to say.
+
+Hits collapse to one page each with a `matched_chunks` count, since a long page occupies
+several top slots once chunked. Citations and typed links travel with every hit, read from
+the database rather than the index: the page is model-generated, so a claim is only
+checkable by following it. Pages carried over by an incremental build report
+`derived_from_build_id`, so a reader can tell which model run wrote the text.
+
+`wiki/log.md` is deliberately not indexed — it is a transcript of compiling, not knowledge
+about the domain, and indexing it would let an agent cite `page_written wiki/x.md` as a
+fact. `wiki/index.md` is indexed, since navigating from it is the first move of the
+two-level query.
+
+- `POST /api/knowledge/wiki/search` — Hybrid search over compiled wiki pages (body `query`/`top_k`/`domain`/`source_ids`/`include_content`); served `Cache-Control: private, no-store` (scope: `knowledge:r`)
+- `GET /api/knowledge/wiki/index?source_id=` — Per source, which build is active and which one the index reflects, plus a `stale` count (scope: `knowledge:r`)
+- `POST /api/knowledge/wiki/index` — Index the active build of one source (body `source_id`) or of every source with an active build; removes rows from earlier builds (scope: `knowledge:rw`)
 
 #### Wiki compiler (K3)
 
@@ -602,7 +633,7 @@ integration opt into only the modules it needs.
 | `POST /mcp/memory` | `memory_record`, `memory_store`, `memory_search`, `memory_get`, `memory_timeline`, `memory_attribution`, `memory_supersede`, `memory_feedback`, `memory_feedback_list`, `memory_checkpoint_save`, `memory_resume` |
 | `POST /mcp/skills` | `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_source_sync`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active`, `skill_catalog_list`, `skill_compile`, `skill_version_instructions`, `skill_version_resources`, `skill_resource_get`, `skill_quality_run`, `skill_quality_get` |
 | `POST /mcp/context` | `context_pack` |
-| `POST /mcp/knowledge` | `knowledge_sources_list`, `knowledge_source_sync`, `knowledge_documents_list`, `knowledge_document_get`, `knowledge_catalog_list`, `knowledge_search`, `knowledge_index_active`, `knowledge_document_links`, `knowledge_compile`, `knowledge_builds_list`, `knowledge_build_get`, `knowledge_build_pages`, `knowledge_page_get`, `knowledge_build_diff`, `knowledge_build_events`, `knowledge_build_activate`, `knowledge_queue_stats` |
+| `POST /mcp/knowledge` | `knowledge_sources_list`, `knowledge_source_sync`, `knowledge_documents_list`, `knowledge_document_get`, `knowledge_catalog_list`, `knowledge_search`, `knowledge_index_active`, `knowledge_document_links`, `knowledge_compile`, `knowledge_builds_list`, `knowledge_build_get`, `knowledge_build_pages`, `knowledge_page_get`, `knowledge_build_diff`, `knowledge_build_events`, `knowledge_build_activate`, `knowledge_queue_stats`, `knowledge_wiki_search`, `knowledge_wiki_index`, `knowledge_wiki_status` |
 
 Authenticate with a valid API key via `X-Api-Key` header, `Authorization: Bearer ak_xxx`,
 or `?api_key=ak_xxx` query param. MCP tool calls enforce the same API key scopes as REST
