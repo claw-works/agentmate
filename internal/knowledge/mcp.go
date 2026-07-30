@@ -35,6 +35,12 @@ var toolScopes = map[string]string{
 	"knowledge_wiki_search":    "knowledge:r",
 	"knowledge_wiki_index":     "knowledge:rw",
 	"knowledge_wiki_status":    "knowledge:r",
+
+	// K3.7 lint. The lint run is write scope because it records a run row, not because
+	// it changes a wiki: it cannot.
+	"knowledge_wiki_lint":         "knowledge:rw",
+	"knowledge_wiki_lint_runs":    "knowledge:r",
+	"knowledge_wiki_lint_run_get": "knowledge:r",
 }
 
 func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
@@ -228,6 +234,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 
 	registerWikiTools(s, svc)
 	registerWikiRetrievalTools(s, svc)
+	registerWikiLintTools(s, svc)
 
 	return server.NewStreamableHTTPServer(s, server.WithHTTPContextFunc(mcpauth.HTTPContextFunc(authSvc)))
 }

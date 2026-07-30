@@ -38,6 +38,9 @@ demo 仓库已改为 **领域 / 主题两级**并重推：
 - [x] 检索：3 个中文长句查询与 1 个标识符查询均 top-1 精准，融合分 0.99–1.00；`domain=platform` 与 `domain=product` 各自只返回本领域命中。
 - [x] exclude 隔离：`raw/drafts/**` 未进入 documents，草稿里的独特词串在 chunk 正文与 lexical 投影中均为 0 命中。
 - [x] 孤立页面：`platform/registry/raw/domain-layout.md` 出链入链均为 0，可用于验证 lint。
+      **K3.7 实测已推翻此预期**：当前激活 build 里 `wiki/domain-layout.md` 有 4 条内容页入链，
+      lint 正确地没有报它；是预埋点基于更早 build 写的、已过期。真正报出的是同一 KB 里另外
+      8 个孤立页（详见 K3 设计 §17.6）。
 - [x] skills 检索：`kb-lint` 与 `release-notes` 在各自查询上 top-1。
 - [x] 最终状态：3 个 KB source / 15 文档 / 25 链接 / 73 chunk 全部 indexed，投影 100% 覆盖；`/knowledge` 与 `/skills` 均 200。
 
@@ -84,7 +87,7 @@ demo 仓库已改为 **领域 / 主题两级**并重推：
 
 - wiki 是**不可重现的生成物**，不是派生缓存。与 skill compiled catalog 不同（后者 offline deterministic，可随时丢弃重建），LLM 编译同一份 raw 两次结果不同。因此 `KnowledgeBuildRevision` 必须记全出处：raw `package_hash` + compiler version + model + prompt version + 输出快照；wiki 快照须 immutable、可 diff、可导出，按客户数据对待而非缓存。
 - 编译是**有状态增量**：Karpathy 的 ingest 是"一个源触及 10–15 个 wiki 页"，即在已有 wiki 上增量更新，而非全量重生成。这比 skill 的无状态 compile 复杂一个量级，需要异步 job 与成本控制。
-- 还需实现 `index.md`（内容目录，query 时先读它再下钻）、`log.md`（append-only 时间线）与 lint 操作（矛盾、过期声明、orphan 页、缺失 cross-reference）。
+- `index.md`（内容目录）、`log.md`（append-only 时间线）已随 K3.2/K3.5 落地；lint（矛盾、过期声明、orphan 页、未被引用文档等七条规则）已随 K3.7 落地，只读且不阻塞。
 
 ## 待议：knowledge 域的检索粒度不对称
 
@@ -361,7 +364,7 @@ reused 2 页，保留页未混入、三个清单互斥）；跨编译器身份�
 是哪个模型；provider 偶发 500（`Inference engine abort`）被判可重试，退避 30 秒后第二次成功——
 K3.3 的重试在真实故障上生效。
 
-- [ ] 仍未做：`ImpactedPagePaths` 的闭包只有一跳。二跳之外的语义依赖（A 引用 B 的结论而 B 被
-      重写）不会被发现，这是刻意的取舍（全闭包=全量），但代价没有度量手段——需要 K3.7 lint
-      从另一侧发现它。
+- [x] 已补：`ImpactedPagePaths` 的闭包只有一跳，二跳之外的语义依赖（A 引用 B 的结论而 B 被
+      重写）增量发现不了——这是刻意取舍（全闭包=全量）。K3.7 lint 的 `stale_cascade` 从另一侧
+      给了它度量手段：递归上溯入链者（上界 4 跳），报出"站在过期结论上"的页。
 - [ ] 仍未做：增量的输入节省在小语料上为 0，需要更大的真实语料才能验证它随规模显现。

@@ -257,3 +257,66 @@ func registerWikiRetrievalTools(s *server.MCPServer, svc *Service) {
 		return mcpauth.JSONResult(map[string]any{"items": statuses, "total": len(statuses)})
 	})
 }
+
+// ─── K3.7: lint ───
+//
+// The tool descriptions say plainly that lint blocks nothing. An agent that mistakes
+// findings for failures will refuse to use a wiki that is serving perfectly well, and an
+// agent that never learns a page is stale will quote it as current. Both errors come from
+// the same missing sentence.
+func registerWikiLintTools(s *server.MCPServer, svc *Service) {
+	// knowledge_wiki_lint
+	s.AddTool(mcp.NewTool("knowledge_wiki_lint",
+		mcp.WithDescription("Lint the active wiki of a source and return findings. This is advisory and read-only: it never changes a page and never stops a wiki from serving — unlike the compile check, which gates activation. Findings say what deserves attention: pages nothing links to, citations whose source document was removed or rewritten since the build, pages resting on those, recorded contradictions, superseded pages with no pointer to their replacement, mentions_entity links aimed at pages that are not entities, and documents no page cites. A stale_citation finding is the signal to recompile; until then, treat the affected page as possibly out of date."),
+		mcp.WithString("source_id", mcp.Required(), mcp.Description("Source whose active wiki build should be linted")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		response, err := svc.LintActiveWiki(ctx, owner, mcpauth.StrArg(req.GetArguments(), "source_id"))
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	// knowledge_wiki_lint_runs
+	s.AddTool(mcp.NewTool("knowledge_wiki_lint_runs",
+		mcp.WithDescription("List past lint runs with their finding counts. Lint keeps no per-finding status, so comparing runs is how to tell a problem that persists from one that cleared: a finding present before and after a sync is worth acting on, one that disappeared fixed itself."),
+		mcp.WithString("source_id", mcp.Description("Optional source ID filter")),
+		mcp.WithNumber("limit", mcp.Description("Page size (default 20, max 100)")),
+		mcp.WithNumber("offset", mcp.Description("Non-negative page offset")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		limit, offset, paginationErr := strictMCPPagination(args)
+		if paginationErr != nil {
+			return mcpauth.ErrResult(paginationErr.Error()), nil
+		}
+		response, err := svc.ListLintRuns(ctx, owner.Account(), mcpauth.StrArg(args, "source_id"), limit, offset)
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	// knowledge_wiki_lint_run_get
+	s.AddTool(mcp.NewTool("knowledge_wiki_lint_run_get",
+		mcp.WithDescription("Fetch one lint run with all of its findings. The run records both the build that was linted and the source revision it was compared against, because staleness is a relation between the two: the same build legitimately yields different findings before and after a sync."),
+		mcp.WithString("run_id", mcp.Required(), mcp.Description("Lint run ID")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		response, err := svc.GetLintRun(ctx, owner.Account(), mcpauth.StrArg(req.GetArguments(), "run_id"))
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+}

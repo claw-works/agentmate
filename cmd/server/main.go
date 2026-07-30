@@ -267,6 +267,11 @@ func main() {
 	protected.POST("/knowledge/wiki/search", auth.RequireScope("knowledge:r"), knowledgeHandler.SearchWiki)
 	protected.GET("/knowledge/wiki/index", auth.RequireScope("knowledge:r"), knowledgeHandler.WikiIndexStatus)
 	protected.POST("/knowledge/wiki/index", auth.RequireScope("knowledge:rw"), knowledgeHandler.IndexActiveWikiBuilds)
+	// K3.7 lint. Write scope because it records a run, but it changes no wiki content
+	// and blocks nothing: findings describe a wiki that is already serving.
+	protected.POST("/knowledge/wiki/lint", auth.RequireScope("knowledge:rw"), knowledgeHandler.LintWiki)
+	protected.GET("/knowledge/wiki/lint/runs", auth.RequireScope("knowledge:r"), knowledgeHandler.ListLintRuns)
+	protected.GET("/knowledge/wiki/lint/runs/:run_id", auth.RequireScope("knowledge:r"), knowledgeHandler.GetLintRun)
 	protected.POST("/knowledge/builds/:build_id/activate", auth.RequireScope("knowledge:rw"), knowledgeHandler.ActivateBuild)
 
 	// Admin

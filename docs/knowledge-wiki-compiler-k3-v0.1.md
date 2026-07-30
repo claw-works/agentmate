@@ -1,7 +1,7 @@
 # Knowledge Wiki Compiler（K3）设计 v0.1
 
-**状态**：K3.1 / K3.2 / K3.3 / K3.4 / K3.5 / K3.6 已实现并在真实环境验证（migration 000027–000029，
-`internal/llm`、`internal/knowledge/wiki_*.go`）。K3.6–K3.9 仍是 DESIGN。
+**状态**：K3.1 / K3.2 / K3.3 / K3.4 / K3.5 / K3.6 / K3.7 已实现并在真实环境验证
+（migration 000027–000030，`internal/llm`、`internal/knowledge/wiki_*.go`）。K3.8–K3.9 仍是 DESIGN。
 **前置**：K1（source/revision/document）、K2（catalog/chunk/link/hybrid 检索）均已实现
 **上层背景**：`skill-knowledge-architecture-v0.1.md` §13–§15 与其中的 K3 里程碑清单
 **实现状态明细**：见 §13
@@ -240,6 +240,9 @@ wiki page 同样走 CJK bigram lexical 投影（`000023`）。entity page 的页
 
 这些全部是 PostgreSQL 能表达的查询。架构文档 §14 拒绝引入 Graph DB 的依据正是
 "只有 KB lint 是真图查询，recursive CTE 足够"——K3 是这个判断的兑现，也是它的检验。
+
+**已实现，实际规则集与本表有三处偏离（孤立页排除入口页种类、stale citation 同时覆盖改写、
+新增 `uncovered_document`），理由见 §17.3。**
 
 ### 5.4 Query 结果回填
 
@@ -511,7 +514,7 @@ K3.3  ✅ 异步 job（租约 + 心跳 + 有界重试 + 成本记账）
 K3.5  ✅ index / log 生成 —— 与 K3.2 一同落地，见下
 K3.4  ✅ 增量编译（raw diff → 影响面 → 复用）
 K3.6  ✅ wiki page 进检索（新 namespace）+ 两级 query
-K3.7  ⬜ lint
+K3.7  ✅ lint（只读、不阻塞；七条规则全走 PostgreSQL，cascade 用 recursive CTE）
 K3.8  ⬜ review（异构模型忠实性审阅，只标记）
 K3.9  ⬜ validation 信号上报 + 归因 + proposal 生成与处置
 ```
@@ -566,12 +569,14 @@ K3.4（增量编译）见 §15，位置在 `internal/knowledge/wiki_incremental.
 K3.6（wiki 进检索）见 §16，位置在 `internal/knowledge/wiki_search.go`，
 migration `000029` 增加 `indexed_build_id`。
 
-未实现：K3.7（lint）、K3.8（review 实际调用）、K3.9（validation 与 proposal）。
+K3.7（lint）见 §17，位置在 `internal/knowledge/wiki_lint.go` 与 `wiki_lint_repo.go`，
+migration `000030` 建两张表。
+
+未实现：K3.8（review 实际调用）、K3.9（validation 与 proposal）。
 
 需要说清楚哪些是"字段在但路径不通"，否则很容易把已声明的类型误读成已实现的功能：
 `review_status` 恒为 `skipped`，`RunBuild` 从不调用 `s.reviewer`，`reviewer_model` 与
-`reviewer_independence` 只记配置不记判定；`knowledge_page_links` 的悬空链接与孤立页
-是 lint 所需的数据，但没有 lint。
+`reviewer_independence` 只记配置不记判定。
 
 ### 13.2 真实环境验证（本地 Docker + DashScope qwen3.7-plus + GitHub demo repo）
 
@@ -775,7 +780,7 @@ raw diff（path + sha256）
 
 **刻意不做传递闭包**：任何连接良好的知识库上，全闭包都会收敛到整个 wiki —— 那是披着增量
 外衣的全量重建。代价是二跳之外的语义依赖（A 引用了 B 的结论而 B 被重写）不会被发现，
-这个缺口只能由 K3.7 lint 从另一侧发现。
+这个缺口由 K3.7 lint 的 `stale_cascade` 从另一侧发现（§17.4）。
 
 ### 15.3 幂等：短路必须在 enqueue，不能靠输入身份
 
@@ -927,3 +932,124 @@ wiki page 是模型写的。一个不带 citation 的命中，是一段看着合
 build 才有的内容，且命中标注 `derived_from_build_id`（该页是增量从更早 build 拷来的）。
 
 namespace 隔离实测：同一查询在 raw 检索只返回 `raw/*`，在 wiki 检索只返回 `wiki/*`。
+
+
+## 17. K3.7：lint
+
+位置：`internal/knowledge/wiki_lint.go`（service）、`wiki_lint_repo.go`（七条规则的 SQL）、
+`wiki_lint_model.go`，migration `000030` 建 `knowledge_lint_runs` + `knowledge_lint_findings`。
+
+### 17.1 lint 不是第二个 check
+
+这条界线是整个 K3.7 的设计本身。
+
+| | check | lint |
+|---|---|---|
+| 跑在什么上 | 没人见过的新 build | 已经在服务的 wiki |
+| 判定性质 | 不变量 | 值得有人看一眼的观察 |
+| 后果 | 失败则永不可见 | 什么都不阻塞 |
+| severity | 只有通过/失败 | 只有 `warning` / `info`，**没有 error** |
+
+**没有 error 级别是刻意的**：一条能让 wiki 停止服务的规则，它的位置在 check 而不在 lint。
+所以每条 lint 规则都必须能说清"check 为什么覆盖不到它"——说不清的那条，是 check 漏了，
+不是 lint 该管。
+
+反过来也拒绝：不把 lint 做成阻塞项，也不把 check 稀释成建议。两者一旦混同，要么把建议变成
+激活失败，要么把门禁变成一份没人读的清单。
+
+### 17.2 七条规则，以及 check 为什么各自覆盖不到
+
+| 规则 | severity | check 为什么覆盖不到 |
+|---|---|---|
+| `orphan_page` | warning | check 要求 index 链接每一页，所以按它的规则每页都有入链，孤立页永不存在 |
+| `stale_citation` | warning | check 只对着 build 编译时的那个 revision 校验 citation，永远通过。过期是旧 build 与**当下**原文之间的关系，编译期不存在 |
+| `stale_cascade` | info | 同上，且它连自己引用的文档都没动——它只是站在动了的结论上 |
+| `recorded_contradiction` | warning | check 只验边的类型合法、目标可解析，这不说明有人看过这个分歧 |
+| `unlabelled_supersede` | warning | 两页都合法、边也能解析，check 没有理由反对 |
+| `entity_link_kind` | info | 闭包成立，check 满意；错的是这条边对目标的**声明** |
+| `uncovered_document` | info | 一个只覆盖了一半原文的 wiki，不违反任何不变量 |
+
+### 17.3 与设计清单的三处偏离
+
+**一、`orphan_page` 排除入口页种类（`overview`）。** 实现时第一版把 overview 页也报了出来。
+overview 是设计上的入口，读者本来就从 index 进入——报它等于每个 wiki 每次运行都必然产出一条
+finding。**一条永远会响的规则，教会的是忽略整份报告**，代价比规则本身的价值大。因此入口页
+种类（`index`/`log`/`overview`）不参与孤立判定，但它们仍算有效的**入链者**。
+
+**二、`stale_citation` 同时覆盖"文档被删"与"文档被改写"。** 设计清单只写了"指向已被删除的
+raw document"。但字节在断言底下移动，比文档消失常见得多，错得也不轻。判定用 citation 当初
+指向的 document 行的 `sha256` 与当前 revision 同路径文档的 `sha256` 比对，detail 区分
+`removed` / `changed`。
+
+**三、`uncovered_document` 是清单外新增。** 理由：它回答知识库拥有者真正会问的问题——
+"我的素材有没有被忽略"，而这件事没有别的东西会报。
+
+### 17.4 recursive CTE：架构 §14 那个判断的兑现
+
+架构文档 §14 拒绝引入 Graph DB 的依据是"只有 KB lint 是真图查询，recursive CTE 足够"。
+K3.7 是这句话的兑现，也是它的检验。结论：**成立**。七条规则全部是 PostgreSQL 查询，
+唯一需要递归的是 `stale_cascade`，一个 `WITH RECURSIVE` 就够。
+
+实测：16–20 页的 wiki 上，一次完整 lint（七条规则 + 记账）在**几十毫秒**内跑完。
+`knowledge_lint_runs` 记 `started_at`/`finished_at` 正是为了让这个判断可被后续数据推翻——
+一个不报时长的 run 既不能支持也不能反驳它。
+
+**cascade 深度上界 4，不是性能护栏而是语义护栏。** 连接良好的 wiki 的传递闭包会收敛到整个
+wiki，无界 cascade 会把每一页都报成"受影响"，等于什么都没说。这与 §15.2 增量影响面刻意
+停在两跳是同一个理由。§15.2 记的那个缺口（A 引用了 B 的结论而 B 被重写，增量发现不了），
+现在正是由 `stale_cascade` 从另一侧发现的。
+
+### 17.5 findings 不带状态，靠比较两次 run
+
+`knowledge_lint_findings` 没有 `resolved` 字段。lint 在两次运行之间是无状态的：**一条 sync
+前后都在的 finding 才值得动手，消失的那条自己好了**。给 finding 加就地确认状态，会让一个
+过期的"已知晓"看起来像一个干净的 wiki。所以 run 累加而不覆盖，`knowledge_wiki_lint_runs`
+就是用来做这个比较的。
+
+run 同时记 `build_id` 与 `revision_id`，因为过期本身是这两者之间的关系：同一个 build 在
+sync 前后 lint，产出不同的 findings 是正确行为，只记 build 的 run 解释不了这件事。
+
+### 17.6 实测
+
+三个真实 demo KB（都刚编译过，raw 层未前进）：
+
+| source | 页数 | findings | 内容 |
+|---|---|---|---|
+| platform-registry | 16 | 8 warning | 全部是 `orphan_page` |
+| platform-retrieval | 7 | 1 info | `uncovered_document`：`raw/hybrid-search.md` 没有任何页引用 |
+| product-support | 20 | 0 | 干净 |
+
+**platform-registry 的 8 条孤立页是真信号，不是规则噪音。** 这个 build 里有 31 条非 index
+链接（concept 11、summary 12、entity 4、overview 4），说明编译器确实在交叉引用；即便如此
+15 个内容页里仍有 8 个没有任何内容页指向它。这是关于**编译器 prompt** 的发现：它写了页，
+但没把页连起来。与 17.3 第一条的区别在于：overview 永远没有入链是结构决定的，而这 8 页
+本来可以、也应该被链上。
+
+**未触发的四条规则，原因都是数据里确实没有**，不是路径不通：三个 wiki 都是从当前 revision
+编译的（无 stale）；唯一一条 `contradicts` 边在一个**非激活** build 里（lint 只看在服务的
+wiki，这是设计）；没有 supersedes 边。这四条由集成测试在真实 PostgreSQL 上覆盖，
+包括两跳 cascade 必须命中、直接过期的页不得重复计入自己的 cascade。
+
+**一个被推翻的预埋检验点，值得记下来。** K3.7 开工前预期
+"`platform/registry/raw/domain-layout.md` 对应的 wiki 页出入链均 0，应报 orphan"。实测
+`wiki/domain-layout.md` 在当前激活 build 里有 4 条内容页入链，lint 正确地**没有**报它。
+预埋点是基于更早的 build 写的，已经过期——是检验点错了，不是规则错了。
+
+`product/support` 那条跨 package 的过期声明按设计**没有**被报成矛盾：跨 package 是 K5 的事。
+
+### 17.7 接口
+
+| | 路径 | scope |
+|---|---|---|
+| REST | `POST /api/knowledge/wiki/lint` | `knowledge:rw` |
+| | `GET /api/knowledge/wiki/lint/runs` | `knowledge:r` |
+| | `GET /api/knowledge/wiki/lint/runs/:run_id` | `knowledge:r` |
+| MCP | `knowledge_wiki_lint` | `knowledge:rw` |
+| | `knowledge_wiki_lint_runs` | `knowledge:r` |
+| | `knowledge_wiki_lint_run_get` | `knowledge:r` |
+
+**写 scope 是因为它记了一条 run，不是因为它能改 wiki——它不能。** 返回 200 而非 202：
+run 结束时活儿已经干完了，没有队列。
+
+MCP 工具描述里明说"这不阻塞任何东西"。把 findings 当失败读的 agent 会拒绝使用一个运行良好的
+wiki；永远不知道页面已过期的 agent 会把它当现状引用。两种错来自同一句缺失的话。

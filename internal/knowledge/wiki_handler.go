@@ -8,6 +8,7 @@ import (
 
 	"github.com/claw-works/agentmate/internal/auth"
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 )
 
 // ─── K3: wiki compilation ───
@@ -192,4 +193,68 @@ func (h *Handler) WikiIndexStatus(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"items": statuses, "total": len(statuses), "stale": stale})
+}
+
+// ─── K3.7: lint ───
+
+// LintWiki runs every lint rule against a source's active build.
+//
+// Write scope, and 200 rather than 202: it records a run and its findings, but it changes
+// no wiki content and blocks nothing. Findings are observations about a wiki that is
+// already serving — a rule that could stop a wiki from serving belongs in check.
+func (h *Handler) LintWiki(c *gin.Context) {
+	var req struct {
+		SourceID string `json:"source_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.SourceID) == "" {
+		req.SourceID = c.Query("source_id")
+	}
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.LintActiveWiki(c.Request.Context(), owner, req.SourceID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Findings carry page paths, document paths and the compiler's notes: tenant content.
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) ListLintRuns(c *gin.Context) {
+	limit, offset, err := strictPagination(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, listErr := h.svc.ListLintRuns(c.Request.Context(), owner.Account(), c.Query("source_id"), limit, offset)
+	if listErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": listErr.Error()})
+		return
+	}
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) GetLintRun(c *gin.Context) {
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.GetLintRun(c.Request.Context(), owner.Account(), c.Param("run_id"))
+	if err != nil {
+		// Only an absent row is a 404. Reporting a database failure as "not found" would
+		// tell the caller the run never existed, which is a different problem with a
+		// different response — and it would retry against a wall.
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "lint run lookup failed"})
+		return
+	}
+	// Page paths, document paths and the compiler's contradiction notes are tenant content.
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusOK, response)
 }

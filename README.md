@@ -335,12 +335,15 @@ Knowledge Registry K1: knowledge sources with immutable revisions and document
 snapshots. K1 covers source registration, Git/local ingest, canonical package
 identity, and account-scoped document reads. K2 adds the K0 catalog,
 deterministic Markdown chunking, a document link graph, and account-scoped
-hybrid retrieval. K3.1–K3.6 add the wiki compiler: profile versioning, immutable
+hybrid retrieval. K3.1–K3.7 add the wiki compiler: profile versioning, immutable
 wiki builds, deterministic checks as the only activation gate, build diff and
-rollback, a leased compile queue with bounded retries and cost accounting, and
-incremental compilation that recompiles only the pages a source change touches, and wiki
-pages in their own retrieval namespace as the entry layer above raw documents.
-Still planned: lint, LLM review and validation signals (see
+rollback, a leased compile queue with bounded retries and cost accounting,
+incremental compilation that recompiles only the pages a source change touches, wiki
+pages in their own retrieval namespace as the entry layer above raw documents, and
+advisory lint over a serving wiki — orphan pages, citations whose source was removed or
+rewritten, the pages resting on those, recorded contradictions, and uncited documents.
+Lint blocks nothing: a rule that could stop a wiki from serving belongs in the check gate.
+Still planned: LLM review and validation signals (see
 `docs/knowledge-wiki-compiler-k3-v0.1.md` §13 for exactly what is and is not
 implemented).
 
