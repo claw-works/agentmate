@@ -241,8 +241,16 @@ wiki page 同样走 CJK bigram lexical 投影（`000023`）。entity page 的页
 这些全部是 PostgreSQL 能表达的查询。架构文档 §14 拒绝引入 Graph DB 的依据正是
 "只有 KB lint 是真图查询，recursive CTE 足够"——K3 是这个判断的兑现，也是它的检验。
 
-**已实现，实际规则集与本表有三处偏离（孤立页排除入口页种类、stale citation 同时覆盖改写、
-新增 `uncovered_document`），理由见 §17.3。**
+**已实现，实际规则集与本表有偏离，权威清单见 §17.2，偏离理由见 §17.3。** 三处刻意偏离：
+孤立页排除入口页种类、stale citation 同时覆盖"文档被改写"、新增 `uncovered_document`。
+另有两处本表写得比实现宽，此处更正：
+
+- "矛盾"本表写成"`contradicts` 边，**或同一命题的两处 citation 结论不相容**"。实现只报
+  `contradicts` 边（规则名 `recorded_contradiction`）。后半句要判断两处 citation 的结论是否
+  相容，那是语义判断、需要模型——它属于 K3.8 review，不属于只读的确定性 lint。
+- "缺失页面"本表写成"`mentions_entity` 指向**不存在的** entity page"。指向不存在的页在
+  check 的 `link_closed` 那里就被拦下了，激活后的 wiki 里不可能出现。实现改判真正的残余
+  情形：目标存在但**不是** entity 页（规则名 `entity_link_kind`）。
 
 ### 5.4 Query 结果回填
 
@@ -1003,8 +1011,8 @@ wiki，无界 cascade 会把每一页都报成"受影响"，等于什么都没�
 
 `knowledge_lint_findings` 没有 `resolved` 字段。lint 在两次运行之间是无状态的：**一条 sync
 前后都在的 finding 才值得动手，消失的那条自己好了**。给 finding 加就地确认状态，会让一个
-过期的"已知晓"看起来像一个干净的 wiki。所以 run 累加而不覆盖，`knowledge_wiki_lint_runs`
-就是用来做这个比较的。
+过期的"已知晓"看起来像一个干净的 wiki。所以 run 累加而不覆盖，`knowledge_lint_runs` 就是
+用来做这个比较的（`knowledge_wiki_lint_runs` 是 MCP 工具名，不是表名）。
 
 run 同时记 `build_id` 与 `revision_id`，因为过期本身是这两者之间的关系：同一个 build 在
 sync 前后 lint，产出不同的 findings 是正确行为，只记 build 的 run 解释不了这件事。
@@ -1013,22 +1021,33 @@ sync 前后 lint，产出不同的 findings 是正确行为，只记 build 的 r
 
 三个真实 demo KB（都刚编译过，raw 层未前进）：
 
-| source | 页数 | findings | 内容 |
+| source | `pages_examined` | findings | 内容 |
 |---|---|---|---|
 | platform-registry | 16 | 8 warning | 全部是 `orphan_page` |
 | platform-retrieval | 7 | 1 info | `uncovered_document`：`raw/hybrid-search.md` 没有任何页引用 |
 | product-support | 20 | 0 | 干净 |
 
-**platform-registry 的 8 条孤立页是真信号，不是规则噪音。** 这个 build 里有 31 条非 index
-链接（concept 11、summary 12、entity 4、overview 4），说明编译器确实在交叉引用；即便如此
-15 个内容页里仍有 8 个没有任何内容页指向它。这是关于**编译器 prompt** 的发现：它写了页，
-但没把页连起来。与 17.3 第一条的区别在于：overview 永远没有入链是结构决定的，而这 8 页
-本来可以、也应该被链上。
+`pages_examined` 数的是 build 里的全部页，含平台生成的 `index.md` 与 `log.md`。
+platform-registry 那 16 页是 concept 7 + summary 4 + entity 2 + overview 1 + index 1 + log 1，
+所以参与孤立判定的（排除 index/log/overview）是 **13 页，其中 8 页被报**。
 
-**未触发的四条规则，原因都是数据里确实没有**，不是路径不通：三个 wiki 都是从当前 revision
-编译的（无 stale）；唯一一条 `contradicts` 边在一个**非激活** build 里（lint 只看在服务的
-wiki，这是设计）；没有 supersedes 边。这四条由集成测试在真实 PostgreSQL 上覆盖，
-包括两跳 cascade 必须命中、直接过期的页不得重复计入自己的 cascade。
+**这 8 条是真信号，不是规则噪音。** 这个 build 里有 31 条非 index 链接（concept 11、
+summary 12、entity 4、overview 4），说明编译器确实在交叉引用；即便如此 13 个候选页里仍有
+8 个没有任何内容页指向它。这是关于**编译器 prompt** 的发现：它写了页，但没把页连起来。
+与 §17.3 第一条的区别在于：overview 永远没有入链是结构决定的，而这 8 页本来可以、也应该
+被链上。
+
+**七条规则里两条报出、一条跑过真实数据后正确地什么都没报、四条数据里确实不存在。**
+
+- `entity_link_kind`：三个激活 build 里共有 **25 条 `mentions_entity` 边**，规则全跑过，
+  一条都没报——因为它们确实都指向 entity 页。这比"没有数据"是强得多的证据。
+- `stale_citation` / `stale_cascade`：三个 wiki 都是从当前 revision 编译的，没有落后。
+- `recorded_contradiction`：全库唯一一条 `contradicts` 边在一个**非激活** build 里。
+  lint 只看在服务的 wiki，这是设计而非缺口。
+- `unlabelled_supersede`：激活 build 里 `supersedes` 边为 0。
+
+这四条由集成测试在真实 PostgreSQL 上覆盖，包括两跳 cascade 必须命中、直接过期的页不得重复
+计入自己的 cascade、以及 staleness 不得沿 `contradicts`/`supersedes` 边传播。
 
 **一个被推翻的预埋检验点，值得记下来。** K3.7 开工前预期
 "`platform/registry/raw/domain-layout.md` 对应的 wiki 页出入链均 0，应报 orphan"。实测
