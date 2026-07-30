@@ -143,3 +143,53 @@ func (h *Handler) ListBuildEvents(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"build_id": c.Param("build_id"), "items": events, "total": len(events)})
 }
+
+// ─── K3.6: wiki retrieval ───
+
+func (h *Handler) IndexActiveWikiBuilds(c *gin.Context) {
+	var req IndexWikiRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.IndexActiveWikiBuilds(c.Request.Context(), owner, req.SourceID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) SearchWiki(c *gin.Context) {
+	var req SearchWikiRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.SearchWiki(c.Request.Context(), owner, req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Snippets, page bodies and citation excerpts are all tenant content.
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) WikiIndexStatus(c *gin.Context) {
+	owner := auth.OwnerFromContext(c)
+	statuses, err := h.svc.WikiIndexStatuses(c.Request.Context(), owner.Account(), c.Query("source_id"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	stale := 0
+	for _, status := range statuses {
+		if status.Stale {
+			stale++
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"items": statuses, "total": len(statuses), "stale": stale})
+}

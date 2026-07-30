@@ -260,3 +260,76 @@ func prepareReusedPages(in ReuseInput) []WikiPage {
 	}
 	return prepared
 }
+
+// ─── K3.6: wiki retrieval bookkeeping ───
+
+// ListSourcesWithActiveBuild returns sources whose wiki has been activated.
+//
+// The active pointer is the authority on what is searchable, which is why search resolves
+// it here instead of trusting the index: an index left behind by a rollback would
+// otherwise serve the wiki that was rolled back while the read API served the restored
+// one.
+func (r *Repo) ListSourcesWithActiveBuild(ctx context.Context, accountID, sourceID string) ([]KnowledgeSource, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT `+sourceColumns+` FROM knowledge_sources
+		  WHERE account_id = $1
+		    AND active_build_id IS NOT NULL
+		    AND ($2 = '' OR id::text = $2)
+		  ORDER BY name`,
+		accountID, sourceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	sources := make([]KnowledgeSource, 0)
+	for rows.Next() {
+		var source KnowledgeSource
+		if err := rows.Scan(scanSource(&source)...); err != nil {
+			return nil, err
+		}
+		sources = append(sources, source)
+	}
+	return sources, rows.Err()
+}
+
+// MarkWikiIndexed records which build the retrieval index now reflects.
+func (r *Repo) MarkWikiIndexed(ctx context.Context, accountID, sourceID, buildID string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE knowledge_sources
+		    SET indexed_build_id = $3::uuid, wiki_indexed_at = NOW(), updated_at = NOW()
+		  WHERE account_id = $1 AND id = $2::uuid`,
+		accountID, sourceID, buildID,
+	)
+	return err
+}
+
+// WikiIndexStatuses reports, per source, whether the searchable wiki is the active one.
+func (r *Repo) WikiIndexStatuses(ctx context.Context, accountID, sourceID string) ([]WikiIndexStatus, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT id::text, name, active_build_id::text, indexed_build_id::text,
+		        COALESCE(to_char(wiki_indexed_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), '')
+		   FROM knowledge_sources
+		  WHERE account_id = $1 AND ($2 = '' OR id::text = $2)
+		  ORDER BY name`,
+		accountID, sourceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	statuses := make([]WikiIndexStatus, 0)
+	for rows.Next() {
+		var status WikiIndexStatus
+		if err := rows.Scan(&status.ID, &status.Name, &status.ActiveBuildID,
+			&status.IndexedBuildID, &status.WikiIndexedAt); err != nil {
+			return nil, err
+		}
+		// Stale means there is an active wiki the index does not cover. A source with no
+		// active build is not stale — there is simply nothing to search yet.
+		status.Stale = status.ActiveBuildID != nil &&
+			(status.IndexedBuildID == nil || *status.IndexedBuildID != *status.ActiveBuildID)
+		statuses = append(statuses, status)
+	}
+	return statuses, rows.Err()
+}

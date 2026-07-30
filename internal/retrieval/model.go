@@ -9,6 +9,12 @@ const (
 	NamespaceSkills    = "skills"
 	NamespaceMemory    = "memory"
 	NamespaceKnowledge = "knowledge"
+	// NamespaceKnowledgeWiki holds compiled wiki pages. It is separate from
+	// NamespaceKnowledge rather than replacing it: raw chunks are where a citation
+	// terminates and must stay searchable as evidence, while wiki pages are a new entry
+	// layer above them. Collapsing the two would put a synthesis and its own source in
+	// one ranking, where the synthesis usually wins and the evidence disappears.
+	NamespaceKnowledgeWiki = "knowledge_wiki"
 
 	StatusPending = "pending"
 	StatusIndexed = "indexed"

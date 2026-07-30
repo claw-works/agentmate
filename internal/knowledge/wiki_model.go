@@ -454,3 +454,99 @@ type EnqueueCompileResponse struct {
 	Queue     *QueueStats `json:"queue,omitempty"`
 	Warnings  []string    `json:"warnings,omitempty"`
 }
+
+// ─── K3.6: wiki retrieval ───
+
+// wikiSearchOverFetch multiplies TopK before per-build filtering and per-page collapsing.
+// Without it a single long page occupying the top chunks would crowd out every other
+// answer, and hits from non-active builds would silently eat the result budget.
+const wikiSearchOverFetch = 4
+
+type IndexWikiRequest struct {
+	// SourceID is optional; empty indexes every source that has an active wiki build.
+	SourceID string `json:"source_id"`
+}
+
+type IndexedWikiBuild struct {
+	SourceID string `json:"source_id"`
+	Name     string `json:"name"`
+	BuildID  string `json:"build_id"`
+	Pages    int    `json:"pages"`
+	// PagesSkipped counts pages deliberately left out of the index — the build log, which
+	// is a transcript of the compile rather than knowledge about the domain.
+	PagesSkipped    int   `json:"pages_skipped"`
+	ChunksIndexed   int   `json:"chunks_indexed"`
+	ChunksFailed    int   `json:"chunks_failed"`
+	TruncatedChunks int   `json:"truncated_chunks"`
+	StaleDeleted    int64 `json:"stale_deleted"`
+}
+
+type IndexWikiResponse struct {
+	Indexed []IndexedWikiBuild    `json:"indexed"`
+	Errors  []KnowledgeIndexError `json:"errors"`
+}
+
+type SearchWikiRequest struct {
+	Query     string   `json:"query"`
+	TopK      int      `json:"top_k"`
+	Domain    string   `json:"domain"`
+	SourceIDs []string `json:"source_ids"`
+	// IncludeContent returns full page bodies. Off by default: a wiki page is long
+	// enough that returning several of them in full defeats the point of retrieving.
+	IncludeContent bool `json:"include_content"`
+}
+
+// WikiSearchHit is one page, not one chunk.
+//
+// Citations travel with the hit because they are the second level of the query: the page
+// is generated text, so a claim is only checkable by following it to the document it came
+// from. A hit without them would be a plausible paragraph with no way to verify it, which
+// is exactly the failure a generated wiki invites.
+type WikiSearchHit struct {
+	PageID        string  `json:"page_id"`
+	SourceID      string  `json:"source_id"`
+	BuildID       string  `json:"build_id"`
+	KnowledgeBase string  `json:"knowledge_base,omitempty"`
+	Path          string  `json:"path"`
+	Kind          string  `json:"kind"`
+	Title         string  `json:"title,omitempty"`
+	HeadingPath   string  `json:"heading_path,omitempty"`
+	Snippet       string  `json:"snippet,omitempty"`
+	Content       string  `json:"content,omitempty"`
+	Score         float64 `json:"score"`
+	// MatchedChunks is how many chunks of this page matched. Several matches make a page
+	// more relevant, but reporting it several times would make one page look like several
+	// answers.
+	MatchedChunks int `json:"matched_chunks"`
+	// DerivedFromBuildID is set when the page was carried over unchanged by an incremental
+	// build, so a reader can tell which model run actually wrote the text.
+	DerivedFromBuildID string         `json:"derived_from_build_id,omitempty"`
+	Citations          []PageCitation `json:"citations,omitempty"`
+	Links              []PageLink     `json:"links,omitempty"`
+}
+
+type SearchWikiResponse struct {
+	Query string          `json:"query"`
+	TopK  int             `json:"top_k"`
+	Items []WikiSearchHit `json:"items"`
+	// Note explains an empty result that is a normal state rather than a fault — most
+	// often that nothing has been compiled yet.
+	Note string `json:"note,omitempty"`
+}
+
+// WikiIndexStatus reports the gap between what is active and what is searchable.
+//
+// The two are allowed to differ: indexing costs embedding round trips and cannot run
+// inside a pointer move. What must not happen is the difference being invisible, so it is
+// reported rather than assumed away.
+type WikiIndexStatus struct {
+	ID             string  `json:"source_id"`
+	Name           string  `json:"name"`
+	ActiveBuildID  *string `json:"active_build_id,omitempty"`
+	IndexedBuildID *string `json:"indexed_build_id,omitempty"`
+	// Stale is true when an active wiki exists that the index does not cover. Search
+	// filters on the active build, so a stale index yields fewer hits rather than pages
+	// from a build that is no longer current.
+	Stale         bool   `json:"stale"`
+	WikiIndexedAt string `json:"wiki_indexed_at,omitempty"`
+}

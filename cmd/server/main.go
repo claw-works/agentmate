@@ -263,6 +263,10 @@ func main() {
 	// write scope even though it only reads the raw layer.
 	protected.POST("/knowledge/compile", auth.RequireScope("knowledge:rw"), knowledgeHandler.Compile)
 	protected.GET("/knowledge/queue", auth.RequireScope("knowledge:r"), knowledgeHandler.QueueStats)
+	// K3.6 wiki retrieval. Search is a read; indexing writes retrieval rows.
+	protected.POST("/knowledge/wiki/search", auth.RequireScope("knowledge:r"), knowledgeHandler.SearchWiki)
+	protected.GET("/knowledge/wiki/index", auth.RequireScope("knowledge:r"), knowledgeHandler.WikiIndexStatus)
+	protected.POST("/knowledge/wiki/index", auth.RequireScope("knowledge:rw"), knowledgeHandler.IndexActiveWikiBuilds)
 	protected.POST("/knowledge/builds/:build_id/activate", auth.RequireScope("knowledge:rw"), knowledgeHandler.ActivateBuild)
 
 	// Admin

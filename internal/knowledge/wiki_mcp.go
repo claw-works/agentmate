@@ -189,3 +189,71 @@ func registerWikiTools(s *server.MCPServer, svc *Service) {
 		return mcpauth.JSONResult(response)
 	})
 }
+
+// registerWikiRetrievalTools exposes the K3.6 entry layer.
+//
+// The descriptions insist on the second level of the query. A wiki page is model-written
+// synthesis, so an agent that quotes it without following a citation is quoting a
+// paraphrase of unknown fidelity — and it has no way to know that unless told.
+func registerWikiRetrievalTools(s *server.MCPServer, svc *Service) {
+	// knowledge_wiki_search
+	s.AddTool(mcp.NewTool("knowledge_wiki_search",
+		mcp.WithDescription("Search compiled wiki pages — the synthesised, cross-referenced layer above raw documents. Start here rather than with knowledge_search: a wiki page already combines what several documents say and records where each claim came from. Each hit carries the page's citations and typed links. The page text is model-generated, so treat only the cited source documents as authoritative: follow a citation with knowledge_document_get to verify a claim, and check contradicts links before relying on one. Only the currently active wiki build of each source is searchable."),
+		mcp.WithString("query", mcp.Required(), mcp.Description("Natural-language query; Chinese and identifier queries both work")),
+		mcp.WithNumber("top_k", mcp.Description("Number of pages to return (default 10, max 50)")),
+		mcp.WithString("domain", mcp.Description("Optional owning domain filter, for example \"platform\"")),
+		mcp.WithBoolean("include_content", mcp.Description("Return full page bodies instead of snippets; off by default because pages are long")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		topK, err := strictMCPInteger(args, "top_k", 0, 1, maxSearchTopK)
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		response, searchErr := svc.SearchWiki(ctx, owner, SearchWikiRequest{
+			Query:          mcpauth.StrArg(args, "query"),
+			TopK:           topK,
+			Domain:         mcpauth.StrArg(args, "domain"),
+			IncludeContent: mcpauth.BoolArg(args, "include_content"),
+		})
+		if searchErr != nil {
+			return mcpauth.ErrResult(searchErr.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	// knowledge_wiki_index
+	s.AddTool(mcp.NewTool("knowledge_wiki_index",
+		mcp.WithDescription("Index the active wiki build of a source, or of every source with an active build, into the knowledge_wiki retrieval namespace. Needed after a compile or a rollback: search filters on the active build, so an unindexed wiki returns no hits rather than stale ones. Rows from earlier builds of the same source are removed."),
+		mcp.WithString("source_id", mcp.Description("Optional; empty indexes every source with an active wiki build")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		response, err := svc.IndexActiveWikiBuilds(ctx, owner, mcpauth.StrArg(req.GetArguments(), "source_id"))
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	// knowledge_wiki_status
+	s.AddTool(mcp.NewTool("knowledge_wiki_status",
+		mcp.WithDescription("Report, per source, which wiki build is active and which one the search index reflects. A stale entry means the active wiki is not searchable yet, which looks identical to a wiki with nothing to say — this is how to tell the two apart."),
+		mcp.WithString("source_id", mcp.Description("Optional source ID filter")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		statuses, err := svc.WikiIndexStatuses(ctx, owner.Account(), mcpauth.StrArg(req.GetArguments(), "source_id"))
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(map[string]any{"items": statuses, "total": len(statuses)})
+	})
+}

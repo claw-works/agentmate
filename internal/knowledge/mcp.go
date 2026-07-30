@@ -32,6 +32,9 @@ var toolScopes = map[string]string{
 	"knowledge_build_events":   "knowledge:r",
 	"knowledge_build_activate": "knowledge:rw",
 	"knowledge_queue_stats":    "knowledge:r",
+	"knowledge_wiki_search":    "knowledge:r",
+	"knowledge_wiki_index":     "knowledge:rw",
+	"knowledge_wiki_status":    "knowledge:r",
 }
 
 func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
@@ -224,6 +227,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 	})
 
 	registerWikiTools(s, svc)
+	registerWikiRetrievalTools(s, svc)
 
 	return server.NewStreamableHTTPServer(s, server.WithHTTPContextFunc(mcpauth.HTTPContextFunc(authSvc)))
 }
