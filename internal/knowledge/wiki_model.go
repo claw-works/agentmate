@@ -253,20 +253,29 @@ const (
 	// BuildEventPageRejected records a model page the platform refused, so a
 	// dropped page is auditable rather than invisible.
 	BuildEventPageRejected = "page_rejected"
-	BuildEventCheckFailed  = "check_failed"
-	BuildEventCheckPassed  = "check_passed"
-	BuildEventActivated    = "activated"
-	BuildEventFailed       = "failed"
-	BuildEventFinished     = "finished"
+	// BuildEventPageDeleted records a page the compiler declared unsupported by its
+	// sources. A page it merely omits is treated as unchanged, so removal has to be
+	// stated explicitly — the two are otherwise indistinguishable.
+	BuildEventPageDeleted = "page_deleted"
+	// BuildEventPlanned records the incremental plan: what the raw diff was and how
+	// much of the wiki it touched. Without it, a build that reused the wrong pages
+	// leaves no trace of the decision that produced it.
+	BuildEventPlanned     = "planned"
+	BuildEventCheckFailed = "check_failed"
+	BuildEventCheckPassed = "check_passed"
+	BuildEventActivated   = "activated"
+	BuildEventFailed      = "failed"
+	BuildEventFinished    = "finished"
 )
 
 // ─── requests and responses ───
 
 type CompileRequest struct {
 	SourceID string `json:"source_id"`
-	// Mode is full or incremental. Incremental compilation lands in K3.4; until
-	// then a request for it is rejected rather than silently downgraded, so a
-	// caller does not believe it saved cost it did not save.
+	// Mode is full or incremental. Incremental needs a previous succeeded build to
+	// diff against, and is refused rather than silently downgraded to full when
+	// there is none: a caller that asked for incremental and got a full rebuild
+	// would believe it saved cost it did not save.
 	Mode string `json:"mode"`
 	// Force recompiles even when a succeeded build already exists for the same
 	// input identity. Used when an operator suspects the previous output was poor.
@@ -334,6 +343,55 @@ type ActivateBuildResponse struct {
 	// again.
 	PreviousBuildID *string `json:"previous_build_id,omitempty"`
 }
+
+// RevisionDiff compares the raw documents of two source revisions. It is the input
+// to incremental compilation: what changed in the sources decides what has to be
+// recompiled.
+//
+// Unlike BuildDiff, content hashes are load-bearing here. Raw documents are authored
+// by people, so identical bytes really do mean identical content — the reasoning
+// that disqualifies hashes for build identity does not apply.
+type RevisionDiff struct {
+	FromRevisionID string   `json:"from_revision_id"`
+	ToRevisionID   string   `json:"to_revision_id"`
+	Added          []string `json:"added"`
+	Removed        []string `json:"removed"`
+	Changed        []string `json:"changed"`
+	Unchanged      int      `json:"unchanged"`
+}
+
+// Touched returns the documents whose content the wiki can no longer rely on.
+//
+// Added documents are excluded on purpose: nothing cites a document that did not
+// exist, so no existing page is stale because of it. New material reaches the model
+// as input to write new pages, not as a reason to rewrite old ones.
+func (d RevisionDiff) Touched() []string {
+	touched := make([]string, 0, len(d.Changed)+len(d.Removed))
+	touched = append(touched, d.Changed...)
+	touched = append(touched, d.Removed...)
+	return touched
+}
+
+func (d RevisionDiff) IsEmpty() bool {
+	return len(d.Added) == 0 && len(d.Removed) == 0 && len(d.Changed) == 0
+}
+
+// IncrementalPlan is what an incremental build decided to do, recorded so the
+// decision can be audited after the fact. A compile that reused the wrong pages is
+// invisible unless the plan is kept.
+type IncrementalPlan struct {
+	ParentBuildID string       `json:"parent_build_id"`
+	RevisionDiff  RevisionDiff `json:"revision_diff"`
+	// RecompiledPaths is the impact closure: pages citing a touched document, plus
+	// one hop of pages linking to those.
+	RecompiledPaths []string `json:"recompiled_paths"`
+	ReusedPaths     []string `json:"reused_paths"`
+}
+
+// ErrNoParentBuild means there is nothing to be incremental against. Reported rather
+// than quietly compiling everything, because a caller that asked for incremental and
+// silently got a full build believes it saved cost it did not save.
+var ErrNoParentBuild = errors.New("no parent build to compile incrementally against")
 
 // ErrBuildNotActivatable means a build cannot become the active wiki: it did not
 // succeed, or it did not pass check. check is the only gate, so this is where

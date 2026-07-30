@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wellxie/agentmate/internal/ownership"
+	"github.com/claw-works/agentmate/internal/ownership"
 )
 
 type Service struct {

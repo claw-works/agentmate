@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wellxie/agentmate/internal/gitfetch"
+	"github.com/claw-works/agentmate/internal/gitfetch"
 )
 
 const manifestAllContent = "name: test-kb\n"

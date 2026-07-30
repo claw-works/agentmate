@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/claw-works/agentmate/internal/auth"
+	"github.com/claw-works/agentmate/internal/ownership"
+	"github.com/claw-works/agentmate/internal/retrieval"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/wellxie/agentmate/internal/auth"
-	"github.com/wellxie/agentmate/internal/ownership"
-	"github.com/wellxie/agentmate/internal/retrieval"
 )
 
 func TestCompiledCatalogIntegration(t *testing.T) {

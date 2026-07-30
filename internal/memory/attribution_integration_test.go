@@ -8,7 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/wellxie/agentmate/internal/ownership"
+	"github.com/claw-works/agentmate/internal/ownership"
 )
 
 func attributionPool(t *testing.T, ctx context.Context) *pgxpool.Pool {

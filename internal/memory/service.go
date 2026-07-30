@@ -12,9 +12,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/claw-works/agentmate/internal/ownership"
+	"github.com/claw-works/agentmate/internal/retrieval"
 	"github.com/jackc/pgx/v5"
-	"github.com/wellxie/agentmate/internal/ownership"
-	"github.com/wellxie/agentmate/internal/retrieval"
 )
 
 // memoryEntrySourceType is the retrieval source_type for durable memories.

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/wellxie/agentmate/internal/llm"
+	"github.com/claw-works/agentmate/internal/llm"
 )
 
 // The compiler turns raw sources into a persistent wiki.
@@ -70,10 +70,15 @@ Reply with a single JSON object and nothing else:
 // tolerant of extra fields and strict about the ones that matter.
 type compilerOutput struct {
 	Pages []struct {
-		Path      string `json:"path"`
-		Kind      string `json:"kind"`
-		Title     string `json:"title"`
-		Content   string `json:"content"`
+		Path    string `json:"path"`
+		Kind    string `json:"kind"`
+		Title   string `json:"title"`
+		Content string `json:"content"`
+		// Delete is only meaningful for incremental compilation. A page the model
+		// simply omits is treated as unchanged, so removal has to be stated: the two
+		// cases are indistinguishable otherwise, and guessing wrong either drops a
+		// live page or keeps an unsupported one.
+		Delete    bool `json:"delete"`
 		Citations []struct {
 			DocumentPath string `json:"document_path"`
 			HeadingPath  string `json:"heading_path"`

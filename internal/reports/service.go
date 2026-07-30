@@ -3,7 +3,7 @@ package reports
 import (
 	"context"
 
-	"github.com/wellxie/agentmate/internal/ownership"
+	"github.com/claw-works/agentmate/internal/ownership"
 )
 
 type Service struct {

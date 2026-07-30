@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wellxie/agentmate/internal/ownership"
-	"github.com/wellxie/agentmate/internal/pkgpath"
-	"github.com/wellxie/agentmate/internal/retrieval"
+	"github.com/claw-works/agentmate/internal/ownership"
+	"github.com/claw-works/agentmate/internal/pkgpath"
+	"github.com/claw-works/agentmate/internal/retrieval"
 )
 
 type Service struct {

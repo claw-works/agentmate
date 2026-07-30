@@ -8,7 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/wellxie/agentmate/internal/retrieval"
+	"github.com/claw-works/agentmate/internal/retrieval"
 )
 
 type Handler struct {

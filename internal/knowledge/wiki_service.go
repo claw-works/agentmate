@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wellxie/agentmate/internal/llm"
-	"github.com/wellxie/agentmate/internal/ownership"
+	"github.com/claw-works/agentmate/internal/llm"
+	"github.com/claw-works/agentmate/internal/ownership"
 )
 
 // ErrCompilerUnavailable separates "the operator has not configured a model" from
@@ -39,12 +39,7 @@ func (s *Service) EnqueueCompile(ctx context.Context, owner ownership.Owner, req
 	if req.Mode == "" {
 		req.Mode = BuildModeFull
 	}
-	if req.Mode == BuildModeIncremental {
-		// Rejected rather than silently downgraded to a full build: a caller that
-		// asked for incremental would otherwise believe it saved cost it did not.
-		return nil, fmt.Errorf("incremental compilation is not implemented yet; use mode=full")
-	}
-	if req.Mode != BuildModeFull {
+	if req.Mode != BuildModeFull && req.Mode != BuildModeIncremental {
 		return nil, fmt.Errorf("mode must be full or incremental")
 	}
 
@@ -76,6 +71,8 @@ func (s *Service) EnqueueCompile(ctx context.Context, owner ownership.Owner, req
 		return nil, fmt.Errorf("revision has no indexable documents to compile")
 	}
 
+	response := &EnqueueCompileResponse{Warnings: s.reviewWarnings()}
+
 	input := createBuildInput{
 		SourceID:             source.ID,
 		SourceRevisionID:     revisionID,
@@ -88,7 +85,43 @@ func (s *Service) EnqueueCompile(ctx context.Context, owner ownership.Owner, req
 		ActivateOnSuccess:    req.Activate == nil || *req.Activate,
 	}
 
-	response := &EnqueueCompileResponse{Warnings: s.reviewWarnings()}
+	if req.Mode == BuildModeIncremental {
+		// The parent is a genuine input here, not lineage decoration: what gets
+		// recompiled is defined relative to it, so two incremental builds off
+		// different parents are different builds and must not share an identity.
+		parent, err := s.repo.PreviousSucceededBuild(ctx, owner.Account(), source.ID, "")
+		if err != nil {
+			return nil, err
+		}
+		if parent == nil {
+			// Refused rather than downgraded. A caller that asked for incremental and
+			// silently received a full rebuild believes it saved cost it did not save,
+			// and would draw the wrong conclusion about what incremental costs.
+			return nil, fmt.Errorf("%w: compile with mode=full first", ErrNoParentBuild)
+		}
+		input.ParentBuildID = &parent.ID
+
+		// Nothing to do: the parent already compiled this exact revision under the
+		// same profile, compiler and prompt, and revisions are immutable, so the raw
+		// sources cannot have moved.
+		//
+		// This has to be caught here rather than left to the generic identity lookup.
+		// Each incremental build becomes the parent of the next one, so identity never
+		// repeats and an idle caller polling "bring the wiki up to date" would mint an
+		// unbounded chain of builds that each reused everything and compiled nothing.
+		if !req.Force && s.parentAlreadyCoversRevision(parent, input) {
+			activated, activateErr := s.maybeActivate(ctx, owner, parent, req.Activate)
+			response.Build = parent
+			response.Reused = true
+			response.Activated = activated
+			response.Warnings = append(response.Warnings,
+				"sources have not changed since build "+shortID(parent.ID)+" compiled them; nothing to update")
+			if activateErr != nil {
+				response.Warnings = append(response.Warnings, "activation failed: "+activateErr.Error())
+			}
+			return response, nil
+		}
+	}
 
 	// Input identity, not content identity: LLM output is not reproducible, so a
 	// content hash can neither confirm nor deny that a rebuild is needed.
@@ -171,14 +204,34 @@ func (s *Service) RunBuild(ctx context.Context, build *BuildRevision) error {
 			Detail: detail, OccurredAt: time.Now().UTC(),
 		})
 	}
-	started := fmt.Sprintf("full compile of revision %s with %s", revision.RevisionKey, build.Model)
+	started := fmt.Sprintf("%s compile of revision %s with %s", build.Mode, revision.RevisionKey, build.Model)
 	if build.Attempt > 1 {
 		started += fmt.Sprintf(" (attempt %d of %d)", build.Attempt, build.MaxAttempts)
 	}
 	addEvent(BuildEventStarted, "", started)
 	addEvent(BuildEventSourceRead, "", fmt.Sprintf("%d indexable documents", len(documents)))
 
-	pages, rejected, usage, err := s.compileWithModel(ctx, *profile, manifest, documents)
+	var (
+		pages       []WikiPage
+		rejected    []string
+		usage       llm.Usage
+		reusedCount int
+		plan        *IncrementalPlan
+	)
+	if build.Mode == BuildModeIncremental {
+		pages, rejected, usage, reusedCount, plan, err = s.runIncremental(
+			ctx, owner.Account(), build, *profile, manifest, documents, addEvent)
+		if errors.Is(err, ErrNoParentBuild) {
+			// Terminal, and not a downgrade to full: a caller that asked for
+			// incremental and silently got a full rebuild believes it saved cost it
+			// did not save.
+			_, finishErr := s.finishBuild(ctx, owner.Account(), build.ID,
+				BuildStatusFailed, CheckStatusPending, nil, err.Error())
+			return finishErr
+		}
+	} else {
+		pages, rejected, usage, err = s.compileWithModel(ctx, *profile, manifest, documents)
+	}
 	if err != nil {
 		// Handed back to the worker to classify as retryable or terminal. Cost
 		// already incurred is recorded either way: a failed attempt still spent
@@ -192,16 +245,37 @@ func (s *Service) RunBuild(ctx context.Context, build *BuildRevision) error {
 	for _, path := range rejected {
 		addEvent(BuildEventPageRejected, path, "path is reserved for a platform-generated page")
 	}
-	for _, page := range pages {
-		addEvent(BuildEventPageWritten, page.Path, fmt.Sprintf("%s, %d citations, %d links",
-			page.Kind, len(page.Citations), len(page.Links)))
+	if build.Mode == BuildModeIncremental {
+		// runIncremental already emitted per-page events, distinguishing written from
+		// reused from deleted. Re-emitting page_written here would claim the compiler
+		// produced pages it merely copied.
+		if plan != nil {
+			if encoded, marshalErr := json.Marshal(plan); marshalErr == nil {
+				for index := range events {
+					if events[index].EventType == BuildEventPlanned {
+						events[index].Payload = encoded
+					}
+				}
+			}
+		}
+	} else {
+		for _, page := range pages {
+			addEvent(BuildEventPageWritten, page.Path, fmt.Sprintf("%s, %d citations, %d links",
+				page.Kind, len(page.Citations), len(page.Links)))
+		}
 	}
 
 	// index must come after every content page exists, since it links all of them.
 	contentPageCount := len(pages)
 	pages = append(pages, buildIndexPage(manifest, pages))
-	addEvent(BuildEventFinished, "", fmt.Sprintf(
-		"%d content pages, plus the generated index and this log", contentPageCount))
+	if build.Mode == BuildModeIncremental {
+		addEvent(BuildEventFinished, "", fmt.Sprintf(
+			"%d content pages (%d reused from the parent build), plus the generated index and this log",
+			contentPageCount, reusedCount))
+	} else {
+		addEvent(BuildEventFinished, "", fmt.Sprintf(
+			"%d content pages, plus the generated index and this log", contentPageCount))
+	}
 	// log is generated last and describes everything before it, so it cannot
 	// describe its own writing.
 	pages = append(pages, buildLogPage(events))
@@ -242,6 +316,7 @@ func (s *Service) RunBuild(ctx context.Context, build *BuildRevision) error {
 
 	succeeded, err := s.repo.CommitBuild(ctx, owner, build.ID, pages, events, buildUsage{
 		PagesWritten: len(pages),
+		PagesReused:  reusedCount,
 		InputTokens:  usage.PromptTokens,
 		OutputTokens: usage.CompletionTokens,
 		CostMicros:   s.costMicros(usage),
@@ -304,6 +379,21 @@ func (s *Service) reviewWarnings() []string {
 				"; once review runs, its verdicts will share the compiler's blind spots")
 	}
 	return warnings
+}
+
+// parentAlreadyCoversRevision reports whether a parent build already produced the
+// wiki for exactly these inputs, making an incremental update a no-op.
+//
+// Source revisions are immutable, so an identical revision ID means identical
+// documents — there is no diff to compute. The compiler and prompt versions are part
+// of the comparison because changing either changes the output even from unchanged
+// sources, and a caller asking for an update after a compiler upgrade should get one.
+func (s *Service) parentAlreadyCoversRevision(parent *BuildRevision, in createBuildInput) bool {
+	return parent.SourceRevisionID == in.SourceRevisionID &&
+		parent.ProfileVersionID == in.ProfileVersionID &&
+		parent.Model == in.Model &&
+		parent.CompilerVersion == CompilerVersion &&
+		parent.PromptVersion == PromptVersion
 }
 
 // maybeActivate moves the active pointer unless the caller opted out.

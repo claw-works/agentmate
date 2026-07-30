@@ -7,8 +7,8 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/wellxie/agentmate/internal/auth"
-	"github.com/wellxie/agentmate/internal/mcpauth"
+	"github.com/claw-works/agentmate/internal/auth"
+	"github.com/claw-works/agentmate/internal/mcpauth"
 )
 
 // context_pack spans five domains, so no single scope can gate it. The tool is

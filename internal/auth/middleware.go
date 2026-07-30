@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/claw-works/agentmate/internal/ownership"
 	"github.com/gin-gonic/gin"
-	"github.com/wellxie/agentmate/internal/ownership"
 )
 
 const (

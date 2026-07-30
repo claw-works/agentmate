@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wellxie/agentmate/internal/llm"
+	"github.com/claw-works/agentmate/internal/llm"
 )
 
 // The compile worker.

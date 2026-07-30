@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
+	"github.com/claw-works/agentmate/internal/mcpauth"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/wellxie/agentmate/internal/mcpauth"
 )
 
 // registerWikiTools exposes the K3 wiki layer over MCP.
@@ -19,7 +19,7 @@ func registerWikiTools(s *server.MCPServer, svc *Service) {
 	s.AddTool(mcp.NewTool("knowledge_compile",
 		mcp.WithDescription("Queue a wiki compilation for a knowledge source's active raw revision. Returns immediately with a queued build — compilation takes minutes, so poll knowledge_build_get until status leaves queued/running. On success the build is activated automatically if checks pass; a build that fails checks writes no pages."),
 		mcp.WithString("source_id", mcp.Required(), mcp.Description("Registered knowledge source ID; it must already have an active synced revision")),
-		mcp.WithString("mode", mcp.Description("full (default). incremental is not implemented yet and is rejected rather than downgraded")),
+		mcp.WithString("mode", mcp.Description("full (default) recompiles the whole wiki. incremental diffs the raw sources against the previous succeeded build, recompiles only the pages those changes touch, and carries the rest over. incremental requires an existing succeeded build and is refused rather than downgraded to full if there is none.")),
 		mcp.WithBoolean("force", mcp.Description("Recompile even when a succeeded build already exists for the same inputs")),
 		mcp.WithBoolean("activate", mcp.Description("Move the active wiki pointer to this build when checks pass (default true)")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

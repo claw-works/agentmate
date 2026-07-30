@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wellxie/agentmate/internal/ownership"
-	"github.com/wellxie/agentmate/internal/retrieval"
+	"github.com/claw-works/agentmate/internal/ownership"
+	"github.com/claw-works/agentmate/internal/retrieval"
 )
 
 // ─── in-memory retrieval doubles (mirroring the skills catalog test) ───

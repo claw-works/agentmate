@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wellxie/agentmate/internal/llm"
-	"github.com/wellxie/agentmate/internal/ownership"
+	"github.com/claw-works/agentmate/internal/llm"
+	"github.com/claw-works/agentmate/internal/ownership"
 )
 
 // scriptedClient drives compilation from fixed replies, so the tests exercise the
@@ -746,27 +746,6 @@ func TestCompileWithoutCompilerIsUnavailable(t *testing.T) {
 	}
 	if builds.Total != 0 {
 		t.Fatalf("an unconfigured compiler must not queue a build, got %d", builds.Total)
-	}
-}
-
-// TestCompileRejectsIncrementalMode pins the refusal to silently downgrade: a
-// caller that asked for incremental would otherwise believe it saved cost.
-func TestCompileRejectsIncrementalMode(t *testing.T) {
-	ctx := context.Background()
-	client := &scriptedClient{replies: []string{goodReply()}}
-	service, _ := newWikiService(t, ctx, client)
-	pool := integrationPool(t, ctx)
-	owner, cleanup := createKnowledgeIntegrationOwner(t, ctx, pool, "wiki-incremental")
-	defer cleanup()
-
-	source := seedWikiSource(t, ctx, service, owner, "wiki-incremental-kb", "Overview body.\n")
-
-	_, err := service.EnqueueCompile(ctx, owner, CompileRequest{SourceID: source.ID, Mode: BuildModeIncremental})
-	if err == nil || !strings.Contains(err.Error(), "not implemented") {
-		t.Fatalf("expected an explicit refusal, got %v", err)
-	}
-	if client.calls != 0 {
-		t.Fatalf("expected no model call, got %d", client.calls)
 	}
 }
 

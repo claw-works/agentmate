@@ -3,12 +3,12 @@ package contextpack
 import (
 	"context"
 
-	"github.com/wellxie/agentmate/internal/knowledge"
-	"github.com/wellxie/agentmate/internal/memory"
-	"github.com/wellxie/agentmate/internal/notes"
-	"github.com/wellxie/agentmate/internal/ownership"
-	"github.com/wellxie/agentmate/internal/skills"
-	"github.com/wellxie/agentmate/internal/todo"
+	"github.com/claw-works/agentmate/internal/knowledge"
+	"github.com/claw-works/agentmate/internal/memory"
+	"github.com/claw-works/agentmate/internal/notes"
+	"github.com/claw-works/agentmate/internal/ownership"
+	"github.com/claw-works/agentmate/internal/skills"
+	"github.com/claw-works/agentmate/internal/todo"
 )
 
 // The interfaces below are declared here, by the consumer, rather than exported

@@ -4,10 +4,10 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/claw-works/agentmate/internal/auth"
+	"github.com/claw-works/agentmate/internal/mcpauth"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/wellxie/agentmate/internal/auth"
-	"github.com/wellxie/agentmate/internal/mcpauth"
 )
 
 var toolScopes = map[string]string{

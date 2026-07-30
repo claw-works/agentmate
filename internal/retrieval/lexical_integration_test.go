@@ -7,7 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/wellxie/agentmate/internal/ownership"
+	"github.com/claw-works/agentmate/internal/ownership"
 )
 
 func lexicalIntegrationPool(t *testing.T, ctx context.Context) *pgxpool.Pool {

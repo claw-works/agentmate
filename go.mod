@@ -1,4 +1,4 @@
-module github.com/wellxie/agentmate
+module github.com/claw-works/agentmate
 
 go 1.25.5
 

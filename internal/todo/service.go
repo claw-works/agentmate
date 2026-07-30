@@ -2,7 +2,7 @@ package todo
 
 import "context"
 
-import "github.com/wellxie/agentmate/internal/ownership"
+import "github.com/claw-works/agentmate/internal/ownership"
 
 type Service struct {
 	repo *Repo

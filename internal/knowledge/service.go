@@ -12,11 +12,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/wellxie/agentmate/internal/gitfetch"
-	"github.com/wellxie/agentmate/internal/llm"
-	"github.com/wellxie/agentmate/internal/ownership"
-	"github.com/wellxie/agentmate/internal/pkgpath"
-	"github.com/wellxie/agentmate/internal/retrieval"
+	"github.com/claw-works/agentmate/internal/gitfetch"
+	"github.com/claw-works/agentmate/internal/llm"
+	"github.com/claw-works/agentmate/internal/ownership"
+	"github.com/claw-works/agentmate/internal/pkgpath"
+	"github.com/claw-works/agentmate/internal/retrieval"
 )
 
 const (

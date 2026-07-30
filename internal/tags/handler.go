@@ -3,9 +3,9 @@ package tags
 import (
 	"net/http"
 
+	"github.com/claw-works/agentmate/internal/auth"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/wellxie/agentmate/internal/auth"
 )
 
 type TagCount struct {

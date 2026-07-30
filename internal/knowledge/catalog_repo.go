@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/wellxie/agentmate/internal/retrieval"
+	"github.com/claw-works/agentmate/internal/retrieval"
 )
 
 // catalogRecord is one raw K0 catalog row before manifest decoding.

@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/claw-works/agentmate/internal/auth"
 	"github.com/gin-gonic/gin"
-	"github.com/wellxie/agentmate/internal/auth"
 )
 
 // ─── K3: wiki compilation ───

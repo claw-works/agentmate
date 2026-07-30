@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/claw-works/agentmate/internal/ownership"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/wellxie/agentmate/internal/ownership"
 )
 
 type Repo struct {

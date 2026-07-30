@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/claw-works/agentmate/internal/auth"
 	"github.com/gin-gonic/gin"
-	"github.com/wellxie/agentmate/internal/auth"
 )
 
 type Handler struct {

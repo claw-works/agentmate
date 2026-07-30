@@ -10,7 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/wellxie/agentmate/internal/ownership"
+	"github.com/claw-works/agentmate/internal/ownership"
 )
 
 // ─── profiles ───
@@ -164,6 +164,11 @@ func (r *Repo) CreateBuild(ctx context.Context, owner ownership.Owner, in create
 // Input identity, not content identity: LLM output is not reproducible, so a
 // content hash can neither confirm nor deny that a rebuild is needed. The inputs
 // are what a caller can reason about.
+//
+// mode and parent are part of the identity. A full build and an incremental build
+// off the same revision are different operations producing different page sets, and
+// an incremental build's output is defined relative to its parent — so two
+// incremental builds off different parents must not be treated as the same work.
 func (r *Repo) FindBuildByInputIdentity(ctx context.Context, accountID string, in createBuildInput) (*BuildRevision, error) {
 	var build BuildRevision
 	err := r.pool.QueryRow(ctx,
@@ -175,12 +180,14 @@ func (r *Repo) FindBuildByInputIdentity(ctx context.Context, accountID string, i
 		    AND compiler_version = $4
 		    AND model = $5
 		    AND prompt_version = $6
+		    AND mode = $8
 		    AND status = 'succeeded'
-		    AND ($7::uuid IS NULL AND parent_build_id IS NULL OR parent_build_id = $7::uuid)
+		    AND (($7::uuid IS NULL AND parent_build_id IS NULL)
+		         OR ($7::uuid IS NOT NULL AND parent_build_id = $7::uuid))
 		  ORDER BY created_at DESC
 		  LIMIT 1`,
 		accountID, in.SourceRevisionID, in.ProfileVersionID, CompilerVersion, in.Model, PromptVersion,
-		in.ParentBuildID,
+		in.ParentBuildID, in.Mode,
 	).Scan(scanBuild(&build)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

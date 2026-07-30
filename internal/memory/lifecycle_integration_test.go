@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wellxie/agentmate/internal/ownership"
+	"github.com/claw-works/agentmate/internal/ownership"
 )
 
 func newEntry(t *testing.T, ctx context.Context, service *Service, owner ownership.Owner, content string) *EntryDetail {

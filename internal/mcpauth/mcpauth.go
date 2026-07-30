@@ -11,10 +11,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/claw-works/agentmate/internal/auth"
+	"github.com/claw-works/agentmate/internal/ownership"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/wellxie/agentmate/internal/auth"
-	"github.com/wellxie/agentmate/internal/ownership"
 )
 
 type accountIDKeyType struct{}

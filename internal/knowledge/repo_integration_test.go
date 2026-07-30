@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/claw-works/agentmate/internal/ownership"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/wellxie/agentmate/internal/ownership"
 )
 
 // createKnowledgeIntegrationOwner mirrors the skills integration helper: it
