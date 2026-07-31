@@ -198,7 +198,7 @@ func registerWikiTools(s *server.MCPServer, svc *Service) {
 func registerWikiRetrievalTools(s *server.MCPServer, svc *Service) {
 	// knowledge_wiki_search
 	s.AddTool(mcp.NewTool("knowledge_wiki_search",
-		mcp.WithDescription("Search compiled wiki pages — the synthesised, cross-referenced layer above raw documents. Start here rather than with knowledge_search: a wiki page already combines what several documents say and records where each claim came from. Each hit carries the page's citations and typed links. The page text is model-generated, so treat only the cited source documents as authoritative: follow a citation with knowledge_document_get to verify a claim, and check contradicts links before relying on one. Only the currently active wiki build of each source is searchable."),
+		mcp.WithDescription("Search compiled wiki pages — the synthesised, cross-referenced layer above raw documents. Start here rather than with knowledge_search: a wiki page already combines what several documents say and records where each claim came from. Each hit carries the page's citations and typed links. The page text is model-generated, so treat only the cited source documents as authoritative: follow a citation with knowledge_document_get to verify a claim, and check contradicts links before relying on one. Only the currently active wiki build of each source is searchable. The response carries query_id — pass it to knowledge_validation_report afterwards, because without it the platform cannot tell a retrieval miss from a synthesis error."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("Natural-language query; Chinese and identifier queries both work")),
 		mcp.WithNumber("top_k", mcp.Description("Number of pages to return (default 10, max 50)")),
 		mcp.WithString("domain", mcp.Description("Optional owning domain filter, for example \"platform\"")),
@@ -354,6 +354,90 @@ func registerWikiReviewTools(s *server.MCPServer, svc *Service) {
 			return mcpauth.ErrResult("unauthorized"), nil
 		}
 		response, err := svc.GetBuildReview(ctx, owner.Account(), mcpauth.StrArg(req.GetArguments(), "build_id"))
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+}
+
+// ─── K3.9: validation signals ───
+//
+// The descriptions have to make two things impossible to miss: signals never gate anything,
+// and silence is not success. An agent that only reports when it complains produces a series
+// where every entry is negative, which reads as a failing knowledge base rather than as a
+// reporting habit.
+func registerWikiValidationTools(s *server.MCPServer, svc *Service) {
+	// knowledge_validation_report
+	s.AddTool(mcp.NewTool("knowledge_validation_report",
+		mcp.WithDescription("Report what happened after using a wiki answer. This is how the platform learns whether the wiki actually worked; it gates nothing and changes no page. Positive signals matter as much as negative ones — report answer_adopted and citation_verified when things went well, because a series containing only complaints looks like a failing knowledge base rather than a reporting habit. Signals: answer_adopted, citation_verified, reused_for_similar (positive); question_repeated, query_rephrased, citation_abandoned, answer_rewritten (negative). Pass query_id from the search result and page_path when the signal is about one page: without them the platform cannot tell a retrieval miss from a synthesis error and records the cause as unattributed rather than guessing."),
+		mcp.WithString("source_id", mcp.Required(), mcp.Description("Knowledge source the signal is about")),
+		mcp.WithString("signal", mcp.Required(), mcp.Description("One of the signal names listed above")),
+		mcp.WithString("page_path", mcp.Description("Wiki page the signal concerns, when it concerns one")),
+		mcp.WithString("query_id", mcp.Description("The retrieval query this followed; needed for attribution")),
+		mcp.WithString("build_id", mcp.Description("Optional; defaults to the build serving now. Pass it for a late report about a wiki that has since been recompiled")),
+		mcp.WithString("detail", mcp.Description("What happened, in a sentence")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		signal, err := svc.RecordSignal(ctx, owner, RecordSignalRequest{
+			SourceID: mcpauth.StrArg(args, "source_id"),
+			Signal:   mcpauth.StrArg(args, "signal"),
+			PagePath: mcpauth.StrArg(args, "page_path"),
+			QueryID:  mcpauth.StrArg(args, "query_id"),
+			BuildID:  mcpauth.StrArg(args, "build_id"),
+			Detail:   mcpauth.StrArg(args, "detail"),
+		})
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(signal)
+	})
+
+	// knowledge_validation_summary
+	s.AddTool(mcp.NewTool("knowledge_validation_summary",
+		mcp.WithDescription("Summarise validation signals for a source: totals, per-page counts, and counts per attributed cause (wiki_synthesis, retrieval_miss, source_gap, skill_approach, unattributed). Reported and derived counts are separate because reported signals depend on callers choosing to speak, so an absence of complaints is not evidence of success. This returns counts and never a verdict: signals are sparse and lagging by construction, so a handful of them cannot establish that a wiki is good or bad."),
+		mcp.WithString("source_id", mcp.Required(), mcp.Description("Knowledge source ID")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		response, err := svc.SignalSummary(ctx, owner.Account(), mcpauth.StrArg(req.GetArguments(), "source_id"))
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	// knowledge_validation_signals
+	s.AddTool(mcp.NewTool("knowledge_validation_signals",
+		mcp.WithDescription("List individual validation signals, newest first, with the attributed cause and the basis for that attribution. Each signal records the build that was serving when it happened, so a complaint about a wiki that has since been recompiled is not read as a complaint about its replacement. Filter by source_id, page_path, direction or cause."),
+		mcp.WithString("source_id", mcp.Description("Optional source filter")),
+		mcp.WithString("page_path", mcp.Description("Optional page filter")),
+		mcp.WithString("direction", mcp.Description("Optional: positive or negative")),
+		mcp.WithString("cause", mcp.Description("Optional: unattributed, wiki_synthesis, retrieval_miss, source_gap, skill_approach")),
+		mcp.WithNumber("limit", mcp.Description("Page size (default 20, max 100)")),
+		mcp.WithNumber("offset", mcp.Description("Non-negative page offset")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		limit, offset, paginationErr := strictMCPPagination(args)
+		if paginationErr != nil {
+			return mcpauth.ErrResult(paginationErr.Error()), nil
+		}
+		response, err := svc.ListSignals(ctx, owner.Account(), SignalFilter{
+			SourceID:  mcpauth.StrArg(args, "source_id"),
+			PagePath:  mcpauth.StrArg(args, "page_path"),
+			Direction: mcpauth.StrArg(args, "direction"),
+			Cause:     mcpauth.StrArg(args, "cause"),
+		}, limit, offset)
 		if err != nil {
 			return mcpauth.ErrResult(err.Error()), nil
 		}

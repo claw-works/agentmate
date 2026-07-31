@@ -241,15 +241,26 @@ func (s *Service) Search(ctx context.Context, owner ownership.Owner, req SearchR
 	return results, nil
 }
 
+// SearchHybrid runs a hybrid search and discards the query log id.
+//
+// Kept for callers that only want results. Anything that needs to correlate later evidence
+// with this query — validation signals, above all — must use SearchHybridLogged: without the
+// id, attribution can never do better than "unattributed", which makes the whole attribution
+// step decorative.
 func (s *Service) SearchHybrid(ctx context.Context, owner ownership.Owner, req SearchRequest) ([]SearchResult, error) {
+	results, _, err := s.SearchHybridLogged(ctx, owner, req)
+	return results, err
+}
+
+func (s *Service) SearchHybridLogged(ctx context.Context, owner ownership.Owner, req SearchRequest) ([]SearchResult, string, error) {
 	if owner.Account() == "" {
-		return nil, fmt.Errorf("account id required")
+		return nil, "", fmt.Errorf("account id required")
 	}
 	if req.Namespace == "" {
-		return nil, fmt.Errorf("namespace required")
+		return nil, "", fmt.Errorf("namespace required")
 	}
 	if strings.TrimSpace(req.Query) == "" {
-		return nil, fmt.Errorf("query required")
+		return nil, "", fmt.Errorf("query required")
 	}
 	if req.TopK <= 0 || req.TopK > 50 {
 		req.TopK = DefaultTopK
@@ -257,7 +268,7 @@ func (s *Service) SearchHybrid(ctx context.Context, owner ownership.Owner, req S
 
 	textFilters, err := textFiltersFromSearch(req.Filters)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	candidateLimit := req.TopK * 4
 	if candidateLimit < 20 {
@@ -302,7 +313,7 @@ func (s *Service) SearchHybrid(ctx context.Context, owner ownership.Owner, req S
 		docsByPointID, vectorErr = s.repo.DocumentsByPointIDs(ctx, owner.Account(), s.store.Collection(), pointIDs)
 	}
 	if textErr != nil && vectorErr != nil {
-		return nil, fmt.Errorf("hybrid search failed: lexical: %v; vector: %v", textErr, vectorErr)
+		return nil, "", fmt.Errorf("hybrid search failed: lexical: %v; vector: %v", textErr, vectorErr)
 	}
 
 	results, queryResults := fuseSearchCandidates(vectorResults, docsByPointID, textResults, req.TopK)
@@ -328,12 +339,12 @@ func (s *Service) SearchHybrid(ctx context.Context, owner ownership.Owner, req S
 		Metadata:       logMetadata,
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if err := s.repo.AddQueryResults(ctx, queryLog.ID, queryResults); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return results, nil
+	return results, queryLog.ID, nil
 }
 
 type fusedCandidate struct {

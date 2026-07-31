@@ -276,6 +276,11 @@ func main() {
 	// it still cannot change a page or block a build.
 	protected.POST("/knowledge/builds/:build_id/review", auth.RequireScope("knowledge:rw"), knowledgeHandler.ReviewBuild)
 	protected.GET("/knowledge/builds/:build_id/review", auth.RequireScope("knowledge:r"), knowledgeHandler.GetBuildReview)
+	// K3.9 validation signals. Recording evidence is a write; it gates nothing.
+	protected.POST("/knowledge/validation/signals", auth.RequireScope("knowledge:rw"), knowledgeHandler.RecordSignal)
+	protected.GET("/knowledge/validation/signals", auth.RequireScope("knowledge:r"), knowledgeHandler.ListSignals)
+	protected.GET("/knowledge/validation/summary", auth.RequireScope("knowledge:r"), knowledgeHandler.SignalSummary)
+	protected.POST("/knowledge/validation/sweep", auth.RequireScope("knowledge:rw"), knowledgeHandler.SweepNeverRetrieved)
 	protected.POST("/knowledge/builds/:build_id/activate", auth.RequireScope("knowledge:rw"), knowledgeHandler.ActivateBuild)
 
 	// Admin

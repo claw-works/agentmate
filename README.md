@@ -348,7 +348,13 @@ each page's claims against the raw documents it cites, judging against the sourc
 rather than the compiler's own excerpts. A same-model reviewer is refused rather than run,
 because a model cannot find the mistakes its own priors produced. Review never gates, and
 its status distinguishes "clean" from "partial" so a capped review never claims coverage it
-did not have. Still planned: validation signals (see
+did not have. K3.9 adds validation signals and attribution: an agent reports what happened after using an
+answer, and the platform places the fault on one of four layers — or records it as
+unattributed, which it usually is. A cause it cannot establish is never invented, because a
+wrong one sends someone to fix the wrong layer and then the real fix looks like it failed.
+Signals record whether they were reported or derived, since an agent that never reports is
+indistinguishable from one that had no trouble. Still planned: proposal generation and
+disposition, which waits on a process decision rather than a technical one (see
 `docs/knowledge-wiki-compiler-k3-v0.1.md` §13 for exactly what is and is not
 implemented).
 

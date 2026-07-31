@@ -296,3 +296,80 @@ func (h *Handler) GetBuildReview(c *gin.Context) {
 	c.Header("Cache-Control", "private, no-store")
 	c.JSON(http.StatusOK, response)
 }
+
+// ─── K3.9: validation signals ───
+
+// RecordSignal stores one reported validation signal.
+//
+// Write scope: it records evidence. It changes no wiki and gates nothing — §7.3 is explicit
+// that validation measures long-term quality and can never be a build gate, because it is
+// biased, lagging and sparse by construction.
+func (h *Handler) RecordSignal(c *gin.Context) {
+	var req RecordSignalRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	signal, err := h.svc.RecordSignal(c.Request.Context(), owner, req)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "source not found"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusCreated, signal)
+}
+
+func (h *Handler) ListSignals(c *gin.Context) {
+	limit, offset, err := strictPagination(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, listErr := h.svc.ListSignals(c.Request.Context(), owner.Account(), SignalFilter{
+		SourceID:  c.Query("source_id"),
+		PagePath:  c.Query("page_path"),
+		Direction: c.Query("direction"),
+		Cause:     c.Query("cause"),
+	}, limit, offset)
+	if listErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": listErr.Error()})
+		return
+	}
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) SignalSummary(c *gin.Context) {
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.SignalSummary(c.Request.Context(), owner.Account(), c.Query("source_id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusOK, response)
+}
+
+// SweepNeverRetrieved records the one signal that carries no reporting bias.
+func (h *Handler) SweepNeverRetrieved(c *gin.Context) {
+	var req struct {
+		IdleDays int `json:"idle_days"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.SweepNeverRetrieved(c.Request.Context(), owner, req.IdleDays)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}

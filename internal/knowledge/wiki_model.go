@@ -539,9 +539,13 @@ type WikiSearchHit struct {
 }
 
 type SearchWikiResponse struct {
-	Query string          `json:"query"`
-	TopK  int             `json:"top_k"`
-	Items []WikiSearchHit `json:"items"`
+	Query string `json:"query"`
+	// QueryID identifies this search in the retrieval log. It is returned so a caller can
+	// hand it back when reporting what happened next: a validation signal without it cannot
+	// be tied to what was actually returned, and attribution then has nothing to work with.
+	QueryID string          `json:"query_id,omitempty"`
+	TopK    int             `json:"top_k"`
+	Items   []WikiSearchHit `json:"items"`
 	// Note explains an empty result that is a normal state rather than a fault — most
 	// often that nothing has been compiled yet.
 	Note string `json:"note,omitempty"`

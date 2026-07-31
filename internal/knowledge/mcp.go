@@ -46,6 +46,11 @@ var toolScopes = map[string]string{
 	// is write scope even though it cannot change a page.
 	"knowledge_build_review":     "knowledge:rw",
 	"knowledge_build_review_get": "knowledge:r",
+
+	// K3.9 validation. Reporting a signal records evidence; it gates nothing.
+	"knowledge_validation_report":  "knowledge:rw",
+	"knowledge_validation_summary": "knowledge:r",
+	"knowledge_validation_signals": "knowledge:r",
 }
 
 func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
@@ -241,6 +246,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 	registerWikiRetrievalTools(s, svc)
 	registerWikiLintTools(s, svc)
 	registerWikiReviewTools(s, svc)
+	registerWikiValidationTools(s, svc)
 
 	return server.NewStreamableHTTPServer(s, server.WithHTTPContextFunc(mcpauth.HTTPContextFunc(authSvc)))
 }

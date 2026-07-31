@@ -232,7 +232,11 @@ func (s *Service) SearchWiki(ctx context.Context, owner ownership.Owner, req Sea
 	// Over-fetch, because hits are filtered by build afterwards and several chunks of one
 	// page can occupy the top of the list. Asking for exactly TopK would let a single
 	// long page crowd out every other answer.
-	hits, err := s.retrieval.SearchHybrid(ctx, owner, retrieval.SearchRequest{
+	// The logged variant, so the caller gets the query id back. Without it a later
+	// validation signal cannot be tied to what this search actually returned, and
+	// attribution degrades to "unattributed" for every signal that needs evidence — which
+	// makes the attribution step decorative rather than useful.
+	hits, queryID, err := s.retrieval.SearchHybridLogged(ctx, owner, retrieval.SearchRequest{
 		Namespace: retrieval.NamespaceKnowledgeWiki,
 		Query:     req.Query,
 		TopK:      req.TopK * wikiSearchOverFetch,
@@ -306,6 +310,7 @@ func (s *Service) SearchWiki(ctx context.Context, owner ownership.Owner, req Sea
 		}
 		response.Items = append(response.Items, *item)
 	}
+	response.QueryID = queryID
 	return response, nil
 }
 

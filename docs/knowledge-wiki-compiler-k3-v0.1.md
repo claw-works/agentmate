@@ -1,7 +1,8 @@
 # Knowledge Wiki Compiler（K3）设计 v0.1
 
-**状态**：K3.1–K3.8 已实现并在真实环境验证（migration 000027–000031，
-`internal/llm`、`internal/knowledge/wiki_*.go`）。K3.9 仍是 DESIGN。
+**状态**：K3.1–K3.8 已实现并在真实环境验证；K3.9 的信号与归因已实现（§19），
+proposal 生成与处置待产品输入。migration 000027–000032，
+`internal/llm`、`internal/knowledge/wiki_*.go`。
 **前置**：K1（source/revision/document）、K2（catalog/chunk/link/hybrid 检索）均已实现
 **上层背景**：`skill-knowledge-architecture-v0.1.md` §13–§15 与其中的 K3 里程碑清单
 **实现状态明细**：见 §13
@@ -524,7 +525,7 @@ K3.4  ✅ 增量编译（raw diff → 影响面 → 复用）
 K3.6  ✅ wiki page 进检索（新 namespace）+ 两级 query
 K3.7  ✅ lint（只读、不阻塞；七条规则全走 PostgreSQL，cascade 用 recursive CTE）
 K3.8  ✅ review（异构模型忠实性审阅，只标记；同模型直接拒跑）
-K3.9  ⬜ validation 信号上报 + 归因 + proposal 生成与处置
+K3.9  🟡 validation 信号上报 ✅ + 归因 ✅ + proposal 生成与处置 ⬜（待产品输入：谁批/在哪批/多久过期）
 ```
 
 **K3.5 实际随 K3.2 一起落地，不是提前抢跑，而是 check 逼出来的。** check 有一条
@@ -583,7 +584,11 @@ migration `000030` 建两张表。
 K3.8（review）见 §18，位置在 `internal/knowledge/wiki_review.go`，migration `000031`
 建 findings 表并给 build 行加覆盖计数与 note。
 
-未实现：K3.9（validation 与 proposal）。
+K3.9 的信号与归因见 §19，位置在 `internal/knowledge/wiki_validation.go`，
+migration `000032`。
+
+未实现：K3.9 的 proposal 生成与处置——它取决于"谁批、在哪批、多久不处理过期"，
+是流程设计而非技术取舍，见 `docs/open-decisions.md` 第 3 项。
 
 需要说清楚哪些是"字段在但路径不通"，否则很容易把已声明的类型误读成已实现的功能。
 K3.8 落地后 `review_status` 已是真实判定，`RunBuild` 会在 commit 与激活之后调用
@@ -1245,3 +1250,122 @@ K3.8 之前有一条**无条件**警告"review 未实现"。现在 review 会跑
 所以即使是最好的配置（cross_provider + 已配 reviewer），仍然会告知**页数上限**，
 因为"被上限约束的 clean"是一个比它看起来更弱的断言。对应测试
 `TestEnqueueAlwaysDisclosesReviewLimits` 覆盖四种配置，断言没有任何一种配置好到可以沉默。
+
+
+## 19. K3.9（第一部分）：validation 信号与归因
+
+位置：`internal/knowledge/wiki_validation.go`（词表、归因）、`wiki_validation_repo.go`、
+`wiki_validation_model.go`，migration `000032` 建 `knowledge_validation_signals`。
+
+**proposal 生成与处置尚未实现**，它卡在一个需要产品输入的问题上（谁批、在哪批、多久过期），
+记在 `docs/open-decisions.md` 第 3 项。信号与归因不依赖那个答案，所以先落地。
+
+### 19.1 设计没预料到的事：使用者是 agent，采纳无法被动观测
+
+§7.3 把 validation 定义为"人不做审批动作，人的**行为**定义成功标准"，并点出三个固有缺陷
+（有偏、滞后、稀疏）。那个设定假设的是"人在界面上点"。
+
+这里的使用者是**调用 MCP 的 agent**，这改变了什么是可观测的：**agent 采纳了一个答案，
+我们看不见——它必须自己说**。于是大部分信号是自报的，这让"有偏"这个缺陷变得更尖锐而非更缓和：
+**一个从不上报的 agent，和一个从没遇到问题的 agent，长得一模一样。**
+
+因此每条信号记 `origin`：
+
+- `reported`：调用方报的。带上报偏差。
+- `derived`：平台自己算出来的。目前只有 `never_retrieved`（长期没有任何检索触碰过的 source）。
+
+**只有 derived 信号没有上报偏差**，把两者混成一个数字会把这件事藏起来，所以 summary 分开报。
+代价是 derived 信号最可信也最不具体：它说的是"这个知识库没被用"，不是"它是错的"。
+
+### 19.2 信号词表是封闭的，方向由词表决定
+
+八个信号：正向 `answer_adopted` / `citation_verified` / `reused_for_similar`；
+负向 `question_repeated` / `query_rephrased` / `citation_abandoned` / `answer_rewritten`；
+派生 `never_retrieved`。
+
+**`direction` 是信号的属性，不是调用方可以声明的字段。** 允许调用方把
+`answer_rewritten` 报成 positive，所有聚合数字立刻失去意义。自由文本的信号名同理——
+每个调用方发明自己的一套，跨调用方就没法比。
+
+`never_retrieved` **拒绝被上报**：它是唯一没有上报偏差的序列，接受调用方写入会把有偏的数据
+灌进去。
+
+### 19.3 归因：归不了就必须说归不了
+
+§7.4 说得很清楚：同一个"追问了同一个问题"可以出自四种原因（wiki 页综合错了 / 检索没召回 /
+skill 做法不对 / raw 里根本没这个事实），四种修法完全不同；**归因不了，就只能得到"这个账号
+不太满意"这类没有行动价值的结论**。
+
+诱惑是让每条信号都得到一个 cause。**那更糟**：错的 cause 会把人送去修错的层，然后正确的修法
+看起来像没生效。所以归因跑在证据上，证据分不开候选时就返回 `unattributed`，并且
+**每条归因都记 `attribution_basis`（哪条规则生效了）**——一个无法审计的归因，和没有归因是
+同一个死胡同。
+
+| 证据 | cause |
+|---|---|
+| 正向信号 | `unattributed`（没有过错要归） |
+| 没报 query_id | `unattributed`（什么都分不开） |
+| wiki 与 raw 都没返回任何东西 | `source_gap` |
+| raw 有候选、wiki 没返回页 | `retrieval_miss` |
+| 返回了页、且指名了是哪页 | `wiki_synthesis` |
+| 返回了页但没说是哪页 | `unattributed` |
+| `citation_abandoned` 且指名了页 | `wiki_synthesis`（读了原文却没解决问题） |
+| `never_retrieved` | `unattributed`（没人问过，不说明任何层的质量） |
+
+`skill_approach` 在词表里但目前没有规则产出它：判断"skill 的做法本身不对"需要 skill 执行的
+上下文，那不在 knowledge 这一侧。**列出而不产出，比假装能判断好**。
+
+### 19.4 实测暴露的硬伤：归因依赖一个 API 从不返回的 id
+
+第一次真实验证时，带着 `query_id` 报信号，归因仍然是
+`unattributed / no query was reported`。原因：**wiki 检索的响应里根本没有 `query_id` 字段**,
+agent 无从取得它。也就是说我建了一套依赖 query_id 的归因，而 API 从不吐出这个 id——
+归因在构造上永远只能是 `unattributed`，整个步骤是装饰性的。
+
+底层其实已经在记：`SearchHybrid` 内部会写 `retrieval_queries`（namespace `knowledge_wiki`），
+只是把 `queryLog.ID` 丢掉了。修法：新增 `SearchHybridLogged` 返回 query id，
+`SearchHybrid` 委托给它（只要结果的调用方不受影响），`SearchWikiResponse` 增加 `query_id`，
+并在 MCP 工具描述里把这条链说明白：**搜索拿到 query_id → 报信号时带回来**，
+否则平台分不清 retrieval miss 与 synthesis error。
+
+修完后的实测：同一个查询拿到 `query_id`，报 `question_repeated` 并指名命中页，
+归因得到 `wiki_synthesis`，basis 为 "a wiki page was returned for this query and the
+question recurred"；报 `answer_adopted` 得到 `unattributed / positive signals name no fault
+to attribute`。summary 报 `total=2 +1 -1 reported=2 derived=0`，按页与按 cause 的分组都对。
+
+**这个缺陷的形态与 K3.8 那个（reviewer 拿不到源文档）是同一类**：功能本身跑得通、返回值也合理，
+但输入被无声地掐断了，于是它稳定地给出一个看起来合法的错误答案。两次都只有真实环境验证能发现，
+测试发现不了——因为测试提供了输入。
+
+### 19.5 sweep 的幂等由 schema 保证
+
+`never_retrieved` 由 `POST /api/knowledge/validation/sweep` 计算。它陈述的是一个不变的事实，
+**定时跑它必须不能把一个不变的事实变成一条上升的趋势**——所以有一个按
+`(account, source, signal, 日期)` 的唯一索引，`ON CONFLICT DO NOTHING`，返回体里
+`already_recorded` 明确区分"没新增"与"失败"。
+
+日期取 `(created_at AT TIME ZONE 'UTC')::date`：`created_at::date` 依赖会话 TimeZone、
+不是 IMMUTABLE，PostgreSQL 拒绝把它用在索引表达式里（实测报
+`functions in index expression must be marked IMMUTABLE`）。
+
+### 19.6 summary 只报计数，不给结论
+
+`SignalSummaryResponse` 里**没有任何放结论的位置**。§7.3 的稀疏缺陷意味着小知识库永远攒不出
+足以确信的信号量；一个从四条正向信号推出"这个 wiki 没问题"的 summary 是在**发明置信度**。
+所以它报 total / positive / negative、reported 与 derived 的拆分、按页、按 cause、按 signal
+的计数——然后停在那里。按页分组时**负向多的排前面**，因为要行动的人需要不翻页就看到它。
+
+### 19.7 接口
+
+| | 路径 | scope |
+|---|---|---|
+| REST | `POST /api/knowledge/validation/signals` | `knowledge:rw` |
+| | `GET /api/knowledge/validation/signals` | `knowledge:r` |
+| | `GET /api/knowledge/validation/summary` | `knowledge:r` |
+| | `POST /api/knowledge/validation/sweep` | `knowledge:rw` |
+| MCP | `knowledge_validation_report` | `knowledge:rw` |
+| | `knowledge_validation_summary` | `knowledge:r` |
+| | `knowledge_validation_signals` | `knowledge:r` |
+
+MCP 描述里明确要求 **正向信号也要报**：只在抱怨时才上报，会产出一条条目全是负向的序列，
+那读起来像一个失败的知识库，而不是像一种上报习惯。
