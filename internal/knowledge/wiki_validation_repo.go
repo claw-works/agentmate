@@ -14,12 +14,15 @@ func (r *Repo) InsertValidationSignal(ctx context.Context, owner ownership.Owner
 	err := r.pool.QueryRow(ctx,
 		`INSERT INTO knowledge_validation_signals
 		   (account_id, user_id, key_id, source_id, build_id, page_path, query_id,
+		    session_id, skill_version_id,
 		    signal, direction, origin, cause, attribution_basis, detail)
 		 VALUES ($1, $2, $3, $4, NULLIF($5, '')::uuid, $6, NULLIF($7, '')::uuid,
-		         $8, $9, $10, $11, $12, $13)
+		         NULLIF($8, '')::uuid, NULLIF($9, '')::uuid,
+		         $10, $11, $12, $13, $14, $15)
 		 RETURNING `+validationSignalColumns,
 		owner.Account(), nullableString(owner.UserID), owner.KeyID, in.SourceID,
-		in.BuildID, in.PagePath, in.QueryID, in.Signal, in.Direction, in.Origin,
+		in.BuildID, in.PagePath, in.QueryID, in.SessionID, in.SkillVersionID,
+		in.Signal, in.Direction, in.Origin,
 		in.Cause, in.AttributionBasis, in.Detail,
 	).Scan(scanValidationSignal(&signal)...)
 	if err != nil {
@@ -251,4 +254,67 @@ func (r *Repo) SummariseValidationSignals(ctx context.Context, accountID, source
 		}
 	}
 	return summary, nil
+}
+
+// SkillSignalPatterns groups negative signals by the skill version that was running.
+//
+// This is where skill_approach becomes visible, and it can only be here. Per signal the
+// cause is about the page: one page failing points at the page. What points at the skill is
+// the same version accumulating negatives across several distinct pages and sources, because
+// then the page has stopped being the common factor. Storing that conclusion on individual
+// signals would be wrong twice over — it is not knowable when the first signal arrives, and
+// a later signal would silently change the meaning of an earlier one.
+func (r *Repo) SkillSignalPatterns(ctx context.Context, accountID string, limit int) ([]SkillSignalPattern, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT skill_version_id::text,
+		        count(*) FILTER (WHERE direction = 'negative'),
+		        count(*) FILTER (WHERE direction = 'positive'),
+		        count(DISTINCT page_path) FILTER (WHERE direction = 'negative' AND page_path <> ''),
+		        count(DISTINCT source_id) FILTER (WHERE direction = 'negative')
+		   FROM knowledge_validation_signals
+		  WHERE account_id = $1 AND skill_version_id IS NOT NULL
+		  GROUP BY skill_version_id
+		 HAVING count(*) FILTER (WHERE direction = 'negative') > 0
+		  ORDER BY count(DISTINCT source_id) FILTER (WHERE direction = 'negative') DESC,
+		           count(*) FILTER (WHERE direction = 'negative') DESC
+		  LIMIT $2`,
+		accountID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]SkillSignalPattern, 0)
+	for rows.Next() {
+		var pattern SkillSignalPattern
+		if err := rows.Scan(&pattern.SkillVersionID, &pattern.Negative, &pattern.Positive,
+			&pattern.DistinctPages, &pattern.DistinctSource); err != nil {
+			return nil, err
+		}
+		pattern.Interpretation = interpretSkillPattern(pattern)
+		items = append(items, pattern)
+	}
+	return items, rows.Err()
+}
+
+// interpretSkillPattern says what the counts support, and refuses to overclaim.
+//
+// The thresholds are deliberately unimpressive: two sources or three pages is enough to say
+// "the page is no longer the common factor", and nothing here is enough to say a skill is
+// wrong. Naming the weaker readings explicitly is what stops a two-page coincidence from
+// being read as a verdict.
+func interpretSkillPattern(pattern SkillSignalPattern) string {
+	switch {
+	case pattern.DistinctSource >= 2:
+		return "negatives span more than one knowledge source, so the page is not the common factor; " +
+			"this is where to look for a skill_approach problem, not proof of one"
+	case pattern.DistinctPages >= 3:
+		return "negatives span several pages of one source; the source or the skill's use of it is " +
+			"a better suspect than any single page"
+	default:
+		return "too few pages to separate a skill problem from a page problem"
+	}
 }

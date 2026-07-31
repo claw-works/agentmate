@@ -295,3 +295,124 @@ func TestSweepNeverRetrievedIsIdempotentPerDay(t *testing.T) {
 		t.Fatalf("never_retrieved is about a source, not a page: %q", signals.Items[0].PagePath)
 	}
 }
+
+// TestSignalCarriesAttributionAnchors: the architecture calls skill_version_id and session_id
+// necessary conditions for the evolution loop, because without them a negative signal cannot
+// be separated from "this account seems unhappy". The signals table shipped without them,
+// which left skill_approach permanently unreachable.
+func TestSignalCarriesAttributionAnchors(t *testing.T) {
+	ctx := context.Background()
+	service, worker := newWikiService(t, ctx, &scriptedClient{replies: []string{twoPageReply()}})
+	pool := integrationPool(t, ctx)
+	owner, cleanup := createKnowledgeIntegrationOwner(t, ctx, pool, "validation-anchors")
+	defer cleanup()
+	source := seedWikiSource(t, ctx, service, owner, "validation-anchors", "Retention is usually 30 days.")
+	compileNow(t, ctx, service, worker, owner, CompileRequest{SourceID: source.ID})
+
+	session := "11111111-1111-1111-1111-111111111111"
+	skill := "22222222-2222-2222-2222-222222222222"
+	signal, err := service.RecordSignal(ctx, owner, RecordSignalRequest{
+		SourceID: source.ID, Signal: signalQuestionRepeated, PagePath: "wiki/overview.md",
+		SessionID: session, SkillVersionID: skill,
+	})
+	if err != nil {
+		t.Fatalf("record signal: %v", err)
+	}
+	if signal.SessionID == nil || *signal.SessionID != session {
+		t.Fatalf("session anchor lost: %v", signal.SessionID)
+	}
+	if signal.SkillVersionID == nil || *signal.SkillVersionID != skill {
+		t.Fatalf("skill anchor lost: %v", signal.SkillVersionID)
+	}
+
+	// Both must stay optional. A signal reported outside any skill execution is legitimate,
+	// and requiring them would push callers into inventing values — an invented anchor looks
+	// like evidence.
+	anchorless, err := service.RecordSignal(ctx, owner, RecordSignalRequest{
+		SourceID: source.ID, Signal: signalAnswerAdopted, PagePath: "wiki/overview.md",
+	})
+	if err != nil {
+		t.Fatalf("a signal without anchors must still be accepted: %v", err)
+	}
+	if anchorless.SessionID != nil || anchorless.SkillVersionID != nil {
+		t.Fatalf("absent anchors must stay absent, not be filled in")
+	}
+}
+
+// TestSkillPatternsRefuseToConcludeFromOnePage: a single page's failures point at the page.
+// Only negatives spreading across pages and sources move the suspicion to the skill, and even
+// then the view must offer suspects rather than verdicts.
+func TestSkillPatternsRefuseToConcludeFromOnePage(t *testing.T) {
+	ctx := context.Background()
+	service, worker := newWikiService(t, ctx, &scriptedClient{replies: []string{twoPageReply(), twoPageReply()}})
+	pool := integrationPool(t, ctx)
+	owner, cleanup := createKnowledgeIntegrationOwner(t, ctx, pool, "validation-skillpattern")
+	defer cleanup()
+
+	first := seedWikiSource(t, ctx, service, owner, "skillpattern-one", "Retention is usually 30 days.")
+	compileNow(t, ctx, service, worker, owner, CompileRequest{SourceID: first.ID})
+	second := seedWikiSource(t, ctx, service, owner, "skillpattern-two", "Retention is usually 30 days.")
+	compileNow(t, ctx, service, worker, owner, CompileRequest{SourceID: second.ID})
+
+	narrow := "33333333-3333-3333-3333-333333333333"
+	wide := "44444444-4444-4444-4444-444444444444"
+
+	// One skill fails twice on one page of one source.
+	for i := 0; i < 2; i++ {
+		if _, err := service.RecordSignal(ctx, owner, RecordSignalRequest{
+			SourceID: first.ID, Signal: signalQuestionRepeated, PagePath: "wiki/overview.md",
+			SkillVersionID: narrow,
+		}); err != nil {
+			t.Fatalf("record narrow signal: %v", err)
+		}
+	}
+	// The other fails across two sources.
+	for _, spec := range []struct{ source, page string }{
+		{first.ID, "wiki/details.md"},
+		{second.ID, "wiki/overview.md"},
+	} {
+		if _, err := service.RecordSignal(ctx, owner, RecordSignalRequest{
+			SourceID: spec.source, Signal: signalAnswerRewritten, PagePath: spec.page,
+			SkillVersionID: wide,
+		}); err != nil {
+			t.Fatalf("record wide signal: %v", err)
+		}
+	}
+
+	response, err := service.SkillPatterns(ctx, owner.Account(), 10)
+	if err != nil {
+		t.Fatalf("skill patterns: %v", err)
+	}
+	if response.Note == "" {
+		t.Fatalf("this view must always state that it suggests rather than concludes")
+	}
+	bySkill := make(map[string]SkillSignalPattern, len(response.Items))
+	for _, item := range response.Items {
+		bySkill[item.SkillVersionID] = item
+	}
+
+	// The wide one leads, because spread across sources is what makes the skill the suspect.
+	if len(response.Items) == 0 || response.Items[0].SkillVersionID != wide {
+		t.Fatalf("the skill spanning sources must lead: %+v", response.Items)
+	}
+	if bySkill[wide].DistinctSource != 2 {
+		t.Fatalf("want 2 distinct sources for the wide skill, got %d", bySkill[wide].DistinctSource)
+	}
+	if !strings.Contains(bySkill[wide].Interpretation, "not the common factor") {
+		t.Fatalf("wide interpretation should say the page is not the common factor: %q",
+			bySkill[wide].Interpretation)
+	}
+	if strings.Contains(bySkill[wide].Interpretation, "proof") &&
+		!strings.Contains(bySkill[wide].Interpretation, "not proof") {
+		t.Fatalf("the interpretation must not claim proof: %q", bySkill[wide].Interpretation)
+	}
+
+	// The narrow one must say plainly that it cannot separate skill from page.
+	if bySkill[narrow].Negative != 2 {
+		t.Fatalf("want 2 negatives for the narrow skill, got %d", bySkill[narrow].Negative)
+	}
+	if !strings.Contains(bySkill[narrow].Interpretation, "too few pages") {
+		t.Fatalf("narrow interpretation must refuse to separate the two: %q",
+			bySkill[narrow].Interpretation)
+	}
+}

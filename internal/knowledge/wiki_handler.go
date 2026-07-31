@@ -356,6 +356,23 @@ func (h *Handler) SignalSummary(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+// SkillPatterns surfaces which skill version accumulates negatives across pages and sources.
+func (h *Handler) SkillPatterns(c *gin.Context) {
+	limit, _, err := strictPagination(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, patternErr := h.svc.SkillPatterns(c.Request.Context(), owner.Account(), limit)
+	if patternErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": patternErr.Error()})
+		return
+	}
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusOK, response)
+}
+
 // SweepNeverRetrieved records the one signal that carries no reporting bias.
 func (h *Handler) SweepNeverRetrieved(c *gin.Context) {
 	var req struct {

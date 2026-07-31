@@ -281,6 +281,7 @@ func main() {
 	protected.GET("/knowledge/validation/signals", auth.RequireScope("knowledge:r"), knowledgeHandler.ListSignals)
 	protected.GET("/knowledge/validation/summary", auth.RequireScope("knowledge:r"), knowledgeHandler.SignalSummary)
 	protected.POST("/knowledge/validation/sweep", auth.RequireScope("knowledge:rw"), knowledgeHandler.SweepNeverRetrieved)
+	protected.GET("/knowledge/validation/skill-patterns", auth.RequireScope("knowledge:r"), knowledgeHandler.SkillPatterns)
 	protected.POST("/knowledge/builds/:build_id/activate", auth.RequireScope("knowledge:rw"), knowledgeHandler.ActivateBuild)
 
 	// Admin

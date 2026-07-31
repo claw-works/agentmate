@@ -48,9 +48,10 @@ var toolScopes = map[string]string{
 	"knowledge_build_review_get": "knowledge:r",
 
 	// K3.9 validation. Reporting a signal records evidence; it gates nothing.
-	"knowledge_validation_report":  "knowledge:rw",
-	"knowledge_validation_summary": "knowledge:r",
-	"knowledge_validation_signals": "knowledge:r",
+	"knowledge_validation_report":         "knowledge:rw",
+	"knowledge_validation_summary":        "knowledge:r",
+	"knowledge_validation_signals":        "knowledge:r",
+	"knowledge_validation_skill_patterns": "knowledge:r",
 }
 
 func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {

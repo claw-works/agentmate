@@ -377,6 +377,8 @@ func registerWikiValidationTools(s *server.MCPServer, svc *Service) {
 		mcp.WithString("query_id", mcp.Description("The retrieval query this followed; needed for attribution")),
 		mcp.WithString("build_id", mcp.Description("Optional; defaults to the build serving now. Pass it for a late report about a wiki that has since been recompiled")),
 		mcp.WithString("detail", mcp.Description("What happened, in a sentence")),
+		mcp.WithString("session_id", mcp.Description("Session this happened in; lets negatives be grouped across pages")),
+		mcp.WithString("skill_version_id", mcp.Description("Skill version that was running; without it a skill-wide problem is indistinguishable from a page problem")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		owner, ok := mcpauth.OwnerFromContext(ctx)
 		if !ok {
@@ -384,12 +386,14 @@ func registerWikiValidationTools(s *server.MCPServer, svc *Service) {
 		}
 		args := req.GetArguments()
 		signal, err := svc.RecordSignal(ctx, owner, RecordSignalRequest{
-			SourceID: mcpauth.StrArg(args, "source_id"),
-			Signal:   mcpauth.StrArg(args, "signal"),
-			PagePath: mcpauth.StrArg(args, "page_path"),
-			QueryID:  mcpauth.StrArg(args, "query_id"),
-			BuildID:  mcpauth.StrArg(args, "build_id"),
-			Detail:   mcpauth.StrArg(args, "detail"),
+			SourceID:       mcpauth.StrArg(args, "source_id"),
+			Signal:         mcpauth.StrArg(args, "signal"),
+			PagePath:       mcpauth.StrArg(args, "page_path"),
+			QueryID:        mcpauth.StrArg(args, "query_id"),
+			BuildID:        mcpauth.StrArg(args, "build_id"),
+			Detail:         mcpauth.StrArg(args, "detail"),
+			SessionID:      mcpauth.StrArg(args, "session_id"),
+			SkillVersionID: mcpauth.StrArg(args, "skill_version_id"),
 		})
 		if err != nil {
 			return mcpauth.ErrResult(err.Error()), nil
@@ -407,6 +411,26 @@ func registerWikiValidationTools(s *server.MCPServer, svc *Service) {
 			return mcpauth.ErrResult("unauthorized"), nil
 		}
 		response, err := svc.SignalSummary(ctx, owner.Account(), mcpauth.StrArg(req.GetArguments(), "source_id"))
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	// knowledge_validation_skill_patterns
+	s.AddTool(mcp.NewTool("knowledge_validation_skill_patterns",
+		mcp.WithDescription("Show which skill versions accumulate negative validation signals, and how widely those negatives spread across pages and knowledge sources. This is the only place a skill_approach problem can be suspected: a single signal always points at the page it names, while the same skill failing across several pages and sources means the page has stopped being the common factor. It returns suspects, never verdicts — signal counts cannot establish that a skill's method is wrong, and each row states what its numbers do and do not support."),
+		mcp.WithNumber("limit", mcp.Description("Rows to return (default 20, max 100)")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		limit, _, paginationErr := strictMCPPagination(req.GetArguments())
+		if paginationErr != nil {
+			return mcpauth.ErrResult(paginationErr.Error()), nil
+		}
+		response, err := svc.SkillPatterns(ctx, owner.Account(), limit)
 		if err != nil {
 			return mcpauth.ErrResult(err.Error()), nil
 		}

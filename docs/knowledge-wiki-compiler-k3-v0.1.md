@@ -1,7 +1,7 @@
 # Knowledge Wiki Compiler（K3）设计 v0.1
 
 **状态**：K3.1–K3.8 已实现并在真实环境验证；K3.9 的信号与归因已实现（§19），
-proposal 生成与处置待产品输入。migration 000027–000032，
+proposal 生成与处置待产品输入。migration 000027–000033，
 `internal/llm`、`internal/knowledge/wiki_*.go`。
 **前置**：K1（source/revision/document）、K2（catalog/chunk/link/hybrid 检索）均已实现
 **上层背景**：`skill-knowledge-architecture-v0.1.md` §13–§15 与其中的 K3 里程碑清单
@@ -1312,8 +1312,7 @@ skill 做法不对 / raw 里根本没这个事实），四种修法完全不同�
 | `citation_abandoned` 且指名了页 | `wiki_synthesis`（读了原文却没解决问题） |
 | `never_retrieved` | `unattributed`（没人问过，不说明任何层的质量） |
 
-`skill_approach` 在词表里但目前没有规则产出它：判断"skill 的做法本身不对"需要 skill 执行的
-上下文，那不在 knowledge 这一侧。**列出而不产出，比假装能判断好**。
+`skill_approach` **不由任何单条信号的归因产出**，理由见 §19.8——它只能在聚合层被怀疑。
 
 ### 19.4 实测暴露的硬伤：归因依赖一个 API 从不返回的 id
 
@@ -1336,6 +1335,42 @@ to attribute`。summary 报 `total=2 +1 -1 reported=2 derived=0`，按页与按 
 **这个缺陷的形态与 K3.8 那个（reviewer 拿不到源文档）是同一类**：功能本身跑得通、返回值也合理，
 但输入被无声地掐断了，于是它稳定地给出一个看起来合法的错误答案。两次都只有真实环境验证能发现，
 测试发现不了——因为测试提供了输入。
+
+### 19.8 补上两个归因锚点，以及 skill_approach 唯一诚实的到达方式
+
+架构文档 §11 有一句我第一版漏掉了：**"ResolutionRun 与 `skill_version_id` + `session_id`
+关联不只是审计与遥测能力，它们是演进闭环的必要条件"**——缺这两个锚点，validation 信号
+"无法定位到具体 build/page/citation，只能得到'这个账号不太满意'这类没有行动价值的结论"。
+它还写明 **K3.9 实际排在 K4 与 M1 之后**，正是因为这个依赖。
+
+第一版的 `knowledge_validation_signals` 没有这两列（migration `000033` 补上，可空）。
+后果不只是少了两个字段：M1（migration `000024`）已经在 `skill_logs`、`memory_events`、
+`memory_feedback` 上带着这两个锚点做关联，而 knowledge 侧的信号被切在这个关联之外；
+并且 `skill_approach` 这个 cause **永远不可达**。
+
+**两列可空是刻意的。** 一个在任何 skill 执行之外报上来的信号是合法的（有人直接查 wiki，
+没有 skill version）。强制要求会把调用方推向编一个值，而**编出来的锚点比缺失更糟——它看起来
+像证据**。
+
+**skill_approach 只能在聚合层被怀疑，不能由单条信号断定。** 单条信号总是指向它命名的那一页：
+一页反复出问题，说明的是那一页。让怀疑转向 skill 的，是**同一个 skill version 的负向信号
+跨多个页、多个 source 累积**——那时页面已经不再是共同因子。这是个聚合观察，所以它住在
+`knowledge_validation_skill_patterns` 里，而不是塞进某条信号的 `cause` 字段。
+
+把它写到单条信号上会错两次：第一条信号到达时这件事还不可知；而后来的信号会**悄悄改变前一条
+的含义**。
+
+阈值刻意定得不起眼（跨 2 个 source，或跨 3 个页），并且每一行都带 `interpretation` 说明
+这些数字支持什么、不支持什么：
+
+| 情形 | interpretation |
+|---|---|
+| 负向跨 ≥2 个 source | 页面不再是共同因子，**这是该往哪看，不是问题的证明** |
+| 负向跨 ≥3 个页（同一 source） | source 或 skill 对它的用法比任何单页更可疑 |
+| 少于以上 | **分不开是 skill 问题还是页面问题** |
+
+响应体上还有一条无条件的 `note`：这个视图给的是怀疑对象，不是判决。实测（单页单源）确实
+返回"too few pages to separate a skill problem from a page problem"——它拒绝了顺水推舟。
 
 ### 19.5 sweep 的幂等由 schema 保证
 
@@ -1363,9 +1398,11 @@ to attribute`。summary 报 `total=2 +1 -1 reported=2 derived=0`，按页与按 
 | | `GET /api/knowledge/validation/signals` | `knowledge:r` |
 | | `GET /api/knowledge/validation/summary` | `knowledge:r` |
 | | `POST /api/knowledge/validation/sweep` | `knowledge:rw` |
+| | `GET /api/knowledge/validation/skill-patterns` | `knowledge:r` |
 | MCP | `knowledge_validation_report` | `knowledge:rw` |
 | | `knowledge_validation_summary` | `knowledge:r` |
 | | `knowledge_validation_signals` | `knowledge:r` |
+| | `knowledge_validation_skill_patterns` | `knowledge:r` |
 
 MCP 描述里明确要求 **正向信号也要报**：只在抱怨时才上报，会产出一条条目全是负向的序列，
 那读起来像一个失败的知识库，而不是像一种上报习惯。

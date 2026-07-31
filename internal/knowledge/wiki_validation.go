@@ -146,6 +146,8 @@ func (s *Service) RecordSignal(ctx context.Context, owner ownership.Owner, req R
 	req.Signal = strings.ToLower(strings.TrimSpace(req.Signal))
 	req.PagePath = strings.TrimSpace(req.PagePath)
 	req.QueryID = strings.TrimSpace(req.QueryID)
+	req.SessionID = strings.TrimSpace(req.SessionID)
+	req.SkillVersionID = strings.TrimSpace(req.SkillVersionID)
 
 	if req.SourceID == "" {
 		return nil, fmt.Errorf("source_id required")
@@ -177,7 +179,8 @@ func (s *Service) RecordSignal(ctx context.Context, owner ownership.Owner, req R
 	}
 	return s.repo.InsertValidationSignal(ctx, owner, insertSignalInput{
 		SourceID: source.ID, BuildID: strings.TrimSpace(buildID), PagePath: req.PagePath,
-		QueryID: req.QueryID, Signal: req.Signal, Direction: direction,
+		QueryID: req.QueryID, SessionID: req.SessionID, SkillVersionID: req.SkillVersionID,
+		Signal: req.Signal, Direction: direction,
 		Origin: signalOriginReported, Cause: cause, AttributionBasis: basis, Detail: req.Detail,
 	})
 }
@@ -241,4 +244,23 @@ func (s *Service) SignalSummary(ctx context.Context, accountID, sourceID string)
 		return nil, fmt.Errorf("source_id required")
 	}
 	return s.repo.SummariseValidationSignals(ctx, accountID, sourceID)
+}
+
+// SkillPatterns surfaces where a skill, rather than a page, is the better suspect.
+//
+// It returns suggestions and never a verdict, and the note says so unconditionally. The
+// architecture names skill_version_id and session_id as necessary conditions for the
+// evolution loop precisely because without them a negative signal cannot be separated from
+// "this account seems unhappy" — but having them does not turn a handful of signals into
+// proof about a skill.
+func (s *Service) SkillPatterns(ctx context.Context, accountID string, limit int) (*SkillPatternResponse, error) {
+	items, err := s.repo.SkillSignalPatterns(ctx, accountID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return &SkillPatternResponse{
+		Items: items,
+		Note: "this view says where to look, not what is wrong: skill_approach cannot be " +
+			"established from signal counts, only suspected from negatives that span pages and sources",
+	}, nil
 }

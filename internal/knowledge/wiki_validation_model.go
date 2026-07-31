@@ -11,6 +11,12 @@ type ValidationSignal struct {
 	BuildID  *string `json:"build_id,omitempty"`
 	PagePath string  `json:"page_path,omitempty"`
 	QueryID  *string `json:"query_id,omitempty"`
+	// The two attribution anchors the architecture calls a necessary condition for the
+	// evolution loop. Nullable: a signal reported outside any skill execution is
+	// legitimate, and forcing a value would make callers invent one — an invented anchor
+	// is worse than an absent one because it looks like evidence.
+	SessionID      *string `json:"session_id,omitempty"`
+	SkillVersionID *string `json:"skill_version_id,omitempty"`
 
 	Signal    string `json:"signal"`
 	Direction string `json:"direction"`
@@ -36,6 +42,10 @@ type RecordSignalRequest struct {
 	QueryID  string `json:"query_id,omitempty"`
 	Signal   string `json:"signal"`
 	Detail   string `json:"detail,omitempty"`
+	// SessionID and SkillVersionID tie the signal to the execution that produced it, which
+	// is what lets a pattern across pages be told apart from a fault in one page.
+	SessionID      string `json:"session_id,omitempty"`
+	SkillVersionID string `json:"skill_version_id,omitempty"`
 }
 
 type SignalFilter struct {
@@ -79,6 +89,29 @@ type SignalSummaryResponse struct {
 	BySignal []SignalCount `json:"by_signal"`
 }
 
+// SkillSignalPattern is the only honest route to the skill_approach cause.
+//
+// A single signal can never establish it: one page failing points at the page. What points
+// at the skill is the same skill version accumulating negatives across several different
+// pages and sources, because then the page is no longer the common factor. That is an
+// aggregate observation, so it lives here rather than in any one signal's cause field.
+type SkillSignalPattern struct {
+	SkillVersionID string `json:"skill_version_id"`
+	Negative       int    `json:"negative"`
+	Positive       int    `json:"positive"`
+	DistinctPages  int    `json:"distinct_pages"`
+	DistinctSource int    `json:"distinct_sources"`
+	// Interpretation states what the numbers do and do not support, so a reader does not
+	// turn a two-page coincidence into a verdict about a skill.
+	Interpretation string `json:"interpretation"`
+}
+
+type SkillPatternResponse struct {
+	Items []SkillSignalPattern `json:"items"`
+	// Note is unconditional: this view suggests where to look, never what is wrong.
+	Note string `json:"note"`
+}
+
 type SignalSweepResponse struct {
 	Recorded int `json:"recorded"`
 	// AlreadyRecorded is not an error. The sweep is idempotent per day, and a caller running
@@ -90,6 +123,8 @@ type SignalSweepResponse struct {
 type insertSignalInput struct {
 	SourceID         string
 	BuildID          string
+	SessionID        string
+	SkillVersionID   string
 	PagePath         string
 	QueryID          string
 	Signal           string
@@ -101,11 +136,13 @@ type insertSignalInput struct {
 }
 
 const validationSignalColumns = `id, source_id, build_id, page_path, query_id,
+	session_id, skill_version_id,
 	signal, direction, origin, cause, attribution_basis, detail, created_at`
 
 func scanValidationSignal(signal *ValidationSignal) []any {
 	return []any{
 		&signal.ID, &signal.SourceID, &signal.BuildID, &signal.PagePath, &signal.QueryID,
+		&signal.SessionID, &signal.SkillVersionID,
 		&signal.Signal, &signal.Direction, &signal.Origin, &signal.Cause,
 		&signal.AttributionBasis, &signal.Detail, &signal.CreatedAt,
 	}
