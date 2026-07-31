@@ -301,8 +301,19 @@ type CompiledSkillCatalog struct {
 	Constraints      []string                    `json:"constraints"`
 	Dependencies     []string                    `json:"dependencies"`
 	ResourceManifest []SkillResourceManifestItem `json:"resources"`
-	CompiledAt       time.Time                   `json:"compiled_at"`
-	PublishedAt      time.Time                   `json:"published_at"`
+	// KnowledgeContract is the machine-readable half of "find relevant knowledge". It is
+	// nil for Skills that consult none, which is most of them. Carried on the compiled
+	// catalog because discovery reads it at runtime and must not re-parse SKILL.md: the
+	// contract that governs a resolution has to be the one compiled into this version, not
+	// whatever the file says now.
+	KnowledgeContract *KnowledgeContract `json:"knowledge_contract,omitempty"`
+	// KnowledgeContractIdentity answers a question the package hash cannot: did what this
+	// Skill would discover change. The package hash moves when any byte moves, including a
+	// typo fix in prose; this string is normalised for ordering and excludes the human-facing
+	// purpose text, so it moves only when discovery semantics do.
+	KnowledgeContractIdentity string    `json:"knowledge_contract_identity,omitempty"`
+	CompiledAt                time.Time `json:"compiled_at"`
+	PublishedAt               time.Time `json:"published_at"`
 }
 
 type SkillCatalogItem struct {

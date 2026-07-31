@@ -80,6 +80,39 @@ func evaluatePackage(pkg QualityPackage) ([]QualityCheck, []QualityCheck) {
 
 	hasFrontmatter := strings.HasPrefix(strings.TrimSpace(strings.ReplaceAll(version.Content, "\r\n", "\n")), "---\n")
 	metadata, frontmatterErr := parseSkillFrontmatter(version.Content)
+	// The knowledge contract is checked separately from the rest of the frontmatter because
+	// the two answer different questions: whether the block parses and can be executed, and
+	// then whether what it says is a good idea. Only the first can fail a compile.
+	contractErr := ValidateKnowledgeContract(metadata.Knowledge)
+	contractApplicable := metadata.Knowledge != nil
+	contractEvidence := map[string]any{"contract_present": contractApplicable}
+	if contractApplicable {
+		contractEvidence["mode"] = metadata.Knowledge.Mode
+		contractEvidence["requirement_count"] = len(metadata.Knowledge.Requirements)
+		contractEvidence["identity"] = ContractIdentity(metadata.Knowledge)
+	}
+	if contractErr != nil {
+		contractEvidence["error"] = contractErr.Error()
+	}
+	contractFindings := LintKnowledgeContract(metadata.Knowledge)
+	// One quality check per advisory rule, so a report says which concern fired rather than
+	// only that something did. A single aggregate check would make every finding look alike.
+	contractAdvisory := map[string][]map[string]any{}
+	for _, finding := range contractFindings {
+		contractAdvisory[finding.Rule] = append(contractAdvisory[finding.Rule], map[string]any{
+			"requirement_id": finding.RequirementID, "detail": finding.Detail,
+		})
+	}
+	advisoryCheck := func(rule string) QualityCheck {
+		hits := contractAdvisory[rule]
+		evidence := map[string]any{"findings": len(hits)}
+		if len(hits) > 0 {
+			evidence["details"] = hits
+		}
+		// Not applicable without a contract: a Skill that consults no knowledge has not
+		// passed this rule, it simply has no opinion to hold.
+		return qualityCheck(rule, len(hits) == 0, contractApplicable && contractErr == nil, evidence)
+	}
 	if frontmatterErr == nil {
 		frontmatterErr = validateSkillFrontmatter(metadata)
 	}
@@ -127,6 +160,13 @@ func evaluatePackage(pkg QualityPackage) ([]QualityCheck, []QualityCheck) {
 		qualityCheck("canonical_package_hash_matches", canonicalPassed, canonicalApplicable, canonicalEvidence),
 		qualityCheck("text_snapshot_hash_size_matches", textPassed, textApplicable, map[string]any{"checked_snapshots": textChecked}),
 		qualityCheck("frontmatter_valid", frontmatterPassed, frontmatterApplicable, frontmatterEvidence),
+		qualityCheck("knowledge_contract_valid", contractErr == nil, contractApplicable, contractEvidence),
+		advisoryCheck(lintContractCitationsOnRequired),
+		advisoryCheck(lintContractFreshness),
+		advisoryCheck(lintContractBudgetHeadroom),
+		advisoryCheck(lintContractMatchDiscriminates),
+		advisoryCheck(lintContractPinNamesBuild),
+		advisoryCheck(lintContractPurposeDocumented),
 		qualityCheck("frontmatter_name_matches", namePassed, nameApplicable, map[string]any{"frontmatter_name": metadata.Name, "registry_name": version.SkillName}),
 		qualityCheck("description_present", descriptionPassed, descriptionApplicable, map[string]any{"present": strings.TrimSpace(metadata.Description) != ""}),
 		qualityCheck("routing_metadata_present", routingPassed, routingApplicable, map[string]any{"trigger_count": len(metadata.Triggers), "capability_count": len(metadata.Capabilities)}),
@@ -200,6 +240,17 @@ func qualityCheckSeverity(checkID string) QualitySeverity {
 		"resource_manifest_exact_and_stable", "selected_resource_isolation_and_bounds":
 		return QualitySeverityError
 	case "description_present", "routing_metadata_present", "routing_metadata_no_duplicates", "compiled_artifact_current":
+		return QualitySeverityWarning
+	case "knowledge_contract_valid":
+		// Error, matching frontmatter_valid: an unexecutable contract is not advice, it is a
+		// Skill that will not compile.
+		return QualitySeverityError
+	case lintContractCitationsOnRequired, lintContractFreshness, lintContractPinNamesBuild,
+		lintContractMatchDiscriminates:
+		return QualitySeverityWarning
+	case lintContractBudgetHeadroom, lintContractPurposeDocumented:
+		// Info-level concerns. There is no info severity here, and warning is the closest
+		// honest level: both are worth knowing and neither is worth blocking on.
 		return QualitySeverityWarning
 	default:
 		return QualitySeverityError

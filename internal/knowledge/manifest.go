@@ -13,25 +13,41 @@ import (
 const ManifestFileName = "KNOWLEDGE.yaml"
 
 const (
-	maxManifestBytes          = 64 * 1024
-	maxManifestNameRunes      = 100
-	maxDescriptionRunes       = 2000
-	maxProfileRunes           = 100
-	maxLanguageRunes          = 50
-	maxGlobListItems          = 64
-	maxGlobItemRunes          = 500
-	citationPolicyRequired    = "required"
-	citationPolicyOptional    = "optional"
-	citationPolicyUnspecified = ""
+	maxManifestBytes     = 64 * 1024
+	maxManifestNameRunes = 100
+	maxDescriptionRunes  = 2000
+	maxProfileRunes      = 100
+	maxLanguageRunes     = 50
+	// Declaration lists are what Skill contracts match against, so they are bounded: a
+	// manifest claiming forty capabilities matches every contract and stops discriminating.
+	maxManifestDeclarationItems = 16
+	maxManifestDeclarationRunes = 100
+	maxGlobListItems            = 64
+	maxGlobItemRunes            = 500
+	citationPolicyRequired      = "required"
+	citationPolicyOptional      = "optional"
+	citationPolicyUnspecified   = ""
 )
 
 // Manifest is the parsed root KNOWLEDGE.yaml. It describes package identity
 // metadata and the include/exclude document selection rules.
 type Manifest struct {
-	Name           string   `json:"name" yaml:"name"`
-	Description    string   `json:"description,omitempty" yaml:"description"`
-	Profile        string   `json:"profile,omitempty" yaml:"profile"`
-	Language       string   `json:"language,omitempty" yaml:"language"`
+	Name        string `json:"name" yaml:"name"`
+	Description string `json:"description,omitempty" yaml:"description"`
+	Profile     string `json:"profile,omitempty" yaml:"profile"`
+	Language    string `json:"language,omitempty" yaml:"language"`
+	// Capabilities and Languages are what a Skill's knowledge contract matches against.
+	//
+	// They belong here rather than on KnowledgeProfileVersion because a profile is
+	// compilation policy — allowed page kinds, citation rules, budgets — and says nothing
+	// about what the knowledge is good for. Without a declaration on this side, a contract
+	// asking for "factual-reference in zh-CN" has nothing to compare with, and discovery
+	// would silently fall back to matching on nothing.
+	//
+	// Languages is the plural form; the older singular Language is folded into it so a
+	// manifest written before this field keeps working.
+	Capabilities   []string `json:"capabilities,omitempty" yaml:"capabilities"`
+	Languages      []string `json:"languages,omitempty" yaml:"languages"`
 	Include        []string `json:"include,omitempty" yaml:"include"`
 	Exclude        []string `json:"exclude,omitempty" yaml:"exclude"`
 	CitationPolicy string   `json:"citation_policy,omitempty" yaml:"citation_policy"`
@@ -55,6 +71,12 @@ func ParseManifest(content string) (Manifest, error) {
 	manifest.Description = strings.TrimSpace(manifest.Description)
 	manifest.Profile = strings.TrimSpace(manifest.Profile)
 	manifest.Language = strings.TrimSpace(manifest.Language)
+	manifest.Capabilities = trimStrings(manifest.Capabilities)
+	manifest.Languages = trimStrings(manifest.Languages)
+	if manifest.Language != "" && len(manifest.Languages) == 0 {
+		// Fold the singular into the plural so everything downstream reads one field.
+		manifest.Languages = []string{manifest.Language}
+	}
 	manifest.CitationPolicy = strings.TrimSpace(strings.ToLower(manifest.CitationPolicy))
 	manifest.Include = trimStrings(manifest.Include)
 	manifest.Exclude = trimStrings(manifest.Exclude)
@@ -79,6 +101,23 @@ func validateManifest(manifest Manifest) error {
 	}
 	if utf8.RuneCountInString(manifest.Language) > maxLanguageRunes {
 		return fmt.Errorf("language exceeds %d Unicode code points", maxLanguageRunes)
+	}
+	for _, group := range []struct {
+		name   string
+		values []string
+	}{
+		{name: "capabilities", values: manifest.Capabilities},
+		{name: "languages", values: manifest.Languages},
+	} {
+		if len(group.values) > maxManifestDeclarationItems {
+			return fmt.Errorf("%s has more than %d entries", group.name, maxManifestDeclarationItems)
+		}
+		for _, value := range group.values {
+			if utf8.RuneCountInString(value) > maxManifestDeclarationRunes {
+				return fmt.Errorf("%s entry %q exceeds %d Unicode code points",
+					group.name, value, maxManifestDeclarationRunes)
+			}
+		}
 	}
 	switch manifest.CitationPolicy {
 	case citationPolicyUnspecified, citationPolicyRequired, citationPolicyOptional:

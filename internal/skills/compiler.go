@@ -30,6 +30,9 @@ type skillFrontmatter struct {
 	Capabilities []string
 	Constraints  []string
 	Dependencies []string
+	// Knowledge is parsed separately by a real YAML parser: the scanner below is flat and
+	// would silently drop a nested block.
+	Knowledge *KnowledgeContract
 }
 
 func CompileSkillVersion(version SkillVersion, files []SkillVersionFile, compiledAt time.Time) (CompiledSkillCatalog, error) {
@@ -39,6 +42,13 @@ func CompileSkillVersion(version SkillVersion, files []SkillVersionFile, compile
 	}
 	if err := validateSkillFrontmatter(metadata); err != nil {
 		return CompiledSkillCatalog{}, err
+	}
+	// A malformed contract fails the compile rather than being dropped. Discovery, budgets
+	// and authorisation all read this block, so a Skill that ships with an unparseable one
+	// would look like a Skill that needs no knowledge — and would then quietly answer from
+	// nothing.
+	if err := ValidateKnowledgeContract(metadata.Knowledge); err != nil {
+		return CompiledSkillCatalog{}, fmt.Errorf("knowledge contract: %w", err)
 	}
 	if err := validateCompiledFiles(files); err != nil {
 		return CompiledSkillCatalog{}, err
@@ -56,27 +66,39 @@ func CompileSkillVersion(version SkillVersion, files []SkillVersionFile, compile
 	}
 
 	return CompiledSkillCatalog{
-		AccountID:        valueOrEmpty(version.AccountID),
-		SkillVersionID:   version.ID,
-		SourceID:         version.SourceID,
-		SkillName:        name,
-		Version:          version.Version,
-		CompilerName:     SkillCompilerName,
-		CompilerVersion:  SkillCompilerVersion,
-		InputPackageHash: packageHash,
-		Description:      metadata.Description,
-		Triggers:         nonNilStrings(metadata.Triggers),
-		Capabilities:     nonNilStrings(metadata.Capabilities),
-		Constraints:      nonNilStrings(metadata.Constraints),
-		Dependencies:     nonNilStrings(metadata.Dependencies),
-		ResourceManifest: resourceManifestFromFiles(files),
-		CompiledAt:       compiledAt.UTC(),
-		PublishedAt:      version.PublishedAt,
+		AccountID:         valueOrEmpty(version.AccountID),
+		SkillVersionID:    version.ID,
+		SourceID:          version.SourceID,
+		SkillName:         name,
+		Version:           version.Version,
+		CompilerName:      SkillCompilerName,
+		CompilerVersion:   SkillCompilerVersion,
+		InputPackageHash:  packageHash,
+		Description:       metadata.Description,
+		Triggers:          nonNilStrings(metadata.Triggers),
+		Capabilities:      nonNilStrings(metadata.Capabilities),
+		Constraints:       nonNilStrings(metadata.Constraints),
+		Dependencies:      nonNilStrings(metadata.Dependencies),
+		ResourceManifest:  resourceManifestFromFiles(files),
+		KnowledgeContract: metadata.Knowledge,
+		KnowledgeContractIdentity: func() string {
+			if metadata.Knowledge == nil {
+				return ""
+			}
+			return ContractIdentity(metadata.Knowledge)
+		}(),
+		CompiledAt:  compiledAt.UTC(),
+		PublishedAt: version.PublishedAt,
 	}, nil
 }
 
 func parseSkillFrontmatter(content string) (skillFrontmatter, error) {
 	var result skillFrontmatter
+	contract, contractErr := ParseKnowledgeContract(content)
+	if contractErr != nil {
+		return result, contractErr
+	}
+	result.Knowledge = contract
 	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
 	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
 		return result, nil

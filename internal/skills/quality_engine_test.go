@@ -201,6 +201,9 @@ func qualityTestPackage(t *testing.T, versionID, label, resourceContent string) 
 	t.Helper()
 	accountID := "account-quality"
 	versionIDCopy := versionID
+	// The knowledge contract here deliberately passes every advisory lint rule, so the
+	// deterministic test's "every check applicable and passed" assertion exercises the
+	// contract checks on a healthy package instead of skipping them as non-applicable.
 	content := `---
 name: quality-skill
 description: Deterministic quality package
@@ -208,6 +211,17 @@ triggers: [quality check]
 capabilities: [lint package]
 constraints: [offline only]
 dependencies: [shared-runtime]
+knowledge:
+  mode: discover
+  requirements:
+    - id: primary-domain
+      purpose: Ground quality answers in the product knowledge base
+      required: true
+      match:
+        capabilities: [factual-reference]
+      retrieval:
+        max_knowledge_bases: 3
+        top_k_per_base: 8
 ---
 
 # Quality test instructions

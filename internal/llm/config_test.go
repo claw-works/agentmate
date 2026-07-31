@@ -67,10 +67,26 @@ func TestRoleConfiguredRequiresAllThree(t *testing.T) {
 	}
 }
 
+// clearRoleOverrides blanks every role-specific override that ConfigFromEnv reads.
+// The env helper treats an empty value as unset, and t.Setenv restores the original
+// after the test — without this, a developer shell that exports REVIEWER_* (the
+// documented way to get a cross-provider reviewer) leaks into the test and flips
+// the expected independence classification.
+func clearRoleOverrides(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"COMPILER_BASE_URL", "COMPILER_API_KEY", "COMPILER_MODEL",
+		"REVIEWER_BASE_URL", "REVIEWER_API_KEY", "REVIEWER_MODEL",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
 // The default deployment has one credential, so both roles fall back to the
 // embedding endpoint. That must still yield a working compiler and an honest
 // same_provider label rather than a silently self-reviewing setup.
 func TestConfigFromEnvFallsBackToSharedCredential(t *testing.T) {
+	clearRoleOverrides(t)
 	t.Setenv("EMBEDDING_BASE_URL", "https://dashscope.example/compatible-mode/v1")
 	t.Setenv("EMBEDDING_API_KEY", "shared-key")
 
@@ -87,6 +103,7 @@ func TestConfigFromEnvFallsBackToSharedCredential(t *testing.T) {
 }
 
 func TestConfigFromEnvRoleOverridesWin(t *testing.T) {
+	clearRoleOverrides(t)
 	t.Setenv("EMBEDDING_BASE_URL", "https://shared.example/v1")
 	t.Setenv("EMBEDDING_API_KEY", "shared-key")
 	t.Setenv("REVIEWER_BASE_URL", "https://other-vendor.example/v1")
