@@ -258,3 +258,41 @@ func (h *Handler) GetLintRun(c *gin.Context) {
 	c.Header("Cache-Control", "private, no-store")
 	c.JSON(http.StatusOK, response)
 }
+
+// ─── K3.8: review ───
+
+// ReviewBuild runs, or re-runs, faithfulness review on a committed build.
+//
+// Synchronous and possibly slow: one reviewer call per page, bounded by the page cap. It is
+// not queued because, unlike compilation, nothing depends on it finishing — a caller that
+// gives up loses only the verdict, and the wiki keeps serving either way.
+func (h *Handler) ReviewBuild(c *gin.Context) {
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.ReviewBuild(c.Request.Context(), owner, c.Param("build_id"))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Findings quote page text and source content: tenant content.
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) GetBuildReview(c *gin.Context) {
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.GetBuildReview(c.Request.Context(), owner.Account(), c.Param("build_id"))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "review lookup failed"})
+		return
+	}
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusOK, response)
+}

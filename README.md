@@ -343,7 +343,12 @@ pages in their own retrieval namespace as the entry layer above raw documents, a
 advisory lint over a serving wiki — orphan pages, citations whose source was removed or
 rewritten, the pages resting on those, recorded contradictions, and uncited documents.
 Lint blocks nothing: a rule that could stop a wiki from serving belongs in the check gate.
-Still planned: LLM review and validation signals (see
+K3.8 adds faithfulness review: a model from a different provider than the compiler checks
+each page's claims against the raw documents it cites, judging against the source text
+rather than the compiler's own excerpts. A same-model reviewer is refused rather than run,
+because a model cannot find the mistakes its own priors produced. Review never gates, and
+its status distinguishes "clean" from "partial" so a capped review never claims coverage it
+did not have. Still planned: validation signals (see
 `docs/knowledge-wiki-compiler-k3-v0.1.md` §13 for exactly what is and is not
 implemented).
 

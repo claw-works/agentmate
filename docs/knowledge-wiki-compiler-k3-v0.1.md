@@ -1,7 +1,7 @@
 # Knowledge Wiki Compiler（K3）设计 v0.1
 
-**状态**：K3.1 / K3.2 / K3.3 / K3.4 / K3.5 / K3.6 / K3.7 已实现并在真实环境验证
-（migration 000027–000030，`internal/llm`、`internal/knowledge/wiki_*.go`）。K3.8–K3.9 仍是 DESIGN。
+**状态**：K3.1–K3.8 已实现并在真实环境验证（migration 000027–000031，
+`internal/llm`、`internal/knowledge/wiki_*.go`）。K3.9 仍是 DESIGN。
 **前置**：K1（source/revision/document）、K2（catalog/chunk/link/hybrid 检索）均已实现
 **上层背景**：`skill-knowledge-architecture-v0.1.md` §13–§15 与其中的 K3 里程碑清单
 **实现状态明细**：见 §13
@@ -523,7 +523,7 @@ K3.5  ✅ index / log 生成 —— 与 K3.2 一同落地，见下
 K3.4  ✅ 增量编译（raw diff → 影响面 → 复用）
 K3.6  ✅ wiki page 进检索（新 namespace）+ 两级 query
 K3.7  ✅ lint（只读、不阻塞；七条规则全走 PostgreSQL，cascade 用 recursive CTE）
-K3.8  ⬜ review（异构模型忠实性审阅，只标记）
+K3.8  ✅ review（异构模型忠实性审阅，只标记；同模型直接拒跑）
 K3.9  ⬜ validation 信号上报 + 归因 + proposal 生成与处置
 ```
 
@@ -580,11 +580,14 @@ migration `000029` 增加 `indexed_build_id`。
 K3.7（lint）见 §17，位置在 `internal/knowledge/wiki_lint.go` 与 `wiki_lint_repo.go`，
 migration `000030` 建两张表。
 
-未实现：K3.8（review 实际调用）、K3.9（validation 与 proposal）。
+K3.8（review）见 §18，位置在 `internal/knowledge/wiki_review.go`，migration `000031`
+建 findings 表并给 build 行加覆盖计数与 note。
 
-需要说清楚哪些是"字段在但路径不通"，否则很容易把已声明的类型误读成已实现的功能：
-`review_status` 恒为 `skipped`，`RunBuild` 从不调用 `s.reviewer`，`reviewer_model` 与
-`reviewer_independence` 只记配置不记判定。
+未实现：K3.9（validation 与 proposal）。
+
+需要说清楚哪些是"字段在但路径不通"，否则很容易把已声明的类型误读成已实现的功能。
+K3.8 落地后 `review_status` 已是真实判定，`RunBuild` 会在 commit 与激活之后调用
+`s.reviewer`（同模型时拒跑），`reviewer_model` 记的是实际发起调用的模型。
 
 ### 13.2 真实环境验证（本地 Docker + DashScope qwen3.7-plus + GitHub demo repo）
 
@@ -1072,3 +1075,173 @@ run 结束时活儿已经干完了，没有队列。
 
 MCP 工具描述里明说"这不阻塞任何东西"。把 findings 当失败读的 agent 会拒绝使用一个运行良好的
 wiki；永远不知道页面已过期的 agent 会把它当现状引用。两种错来自同一句缺失的话。
+
+
+## 18. K3.8：review
+
+位置：`internal/knowledge/wiki_review.go`（prompt、编排、状态判定）、`wiki_review_repo.go`、
+`wiki_review_model.go`，migration `000031` 建 `knowledge_review_findings`，并给 build 行加
+`review_pages_examined` / `review_pages_total` / `review_note`。
+
+### 18.1 三条硬性要求各自怎么落地
+
+§7.2 定了三条。逐条说明实现，以及**哪一条被加强了**。
+
+**一、必须异构 —— 实现里从"警告"升级为"拒跑"。** 设计说"必须用异构模型"。实现中
+`independence == same_model` 时 review **根本不发起调用**，`review_status` 记 `skipped`，
+note 写明"self-review would collude"。理由：一个模型找不出自己先验造成的错，跑了也只会
+产出"已审阅"的**外观**。没有验证比假的验证好——后者会让人停止查看。
+`same_provider` 仍然跑，但保留警告：同一家的不同模型确实有不同失败模式，只是语料重叠导致
+先验重叠。**降低相关性不等于公正。**
+
+**二、只审这次写的页。** 全量 build 审全部内容页；增量 build 只审 `RecompiledPaths`——
+复用页在被写出来时已经审过，花钱把没变的文本对着没变的原文再判一次，什么也买不到。
+`ReviewBuild` 手动接口是例外，它审全部内容页：调用方要的是"wiki 现在这样如何"，对增量
+build 而言复用页也是它正在服务的一部分。
+
+**三、不阻塞 —— 并且这决定了它跑在哪一步。** review 在 commit **与激活之后**才跑。
+如果它在激活前跑，激活就会等它，一个慢的或不可达的 reviewer 会拖住 check 已经放行的 wiki。
+它标注的是**正在服务的东西**，与 lint 同一个位置。reviewer 全部调用失败也只是
+`review_status=failed`，build 保持 check 给它的状态。
+
+### 18.2 reviewer 必须看原文，不能看 citation 的 excerpt
+
+这是实现中最重要的一个判断，设计文档没写。
+
+citation 上的 `excerpt` 是**编译器自己摘的**。用它来审编译器写的页是循环论证：一个选择性
+引用的页，恰好会被那个让它出错的选择所验证。所以 review prompt 里给的是 raw document 的
+正文（每篇上限 8000 字符）。
+
+编译器记的 claim 清单也给了，但**明确标注为"其自述，非证据"**（prompt 里就是这句
+`its own account, not evidence`）。给阅读顺序有用，当证据不行。
+
+### 18.3 clean 不能覆盖没人看过的页：新增 `partial` 状态
+
+review 有页数上限（默认 20/build，`AGENTMATE_WIKI_REVIEW_MAX_PAGES`）。一个审了 143 页
+里的 20 页然后报 `clean` 的结果，是**关于没人读过的页的断言**。
+
+因此 `review_status` 加了 `partial`，优先级 `failed > flagged > partial > clean`，编码一条
+规则：**状态永远不能声称比 review 实际达到的覆盖更多**。
+
+| 状态 | 含义 |
+|---|---|
+| `clean` | 全部合格页都审了，没有 findings |
+| `partial` | 审得比合格页少（撞上限或个别页失败），审过的里面没 findings |
+| `flagged` | 有 findings（findings 比覆盖缺口更值得先看，覆盖仍记在两个计数里） |
+| `failed` | 一页都没审成 |
+| `skipped` | reviewer 未配置、同模型被拒、或这个 build 没有可审的页 |
+
+`review_pages_examined` / `review_pages_total` / `review_note` 三个字段让状态可读。
+只看 `review_status` 的调用方会被误导，所以 MCP 工具描述里明说要读覆盖数。
+
+页数上限内按 **citation 数从多到少** 排序：预算优先花在最有可能出错的地方。代价是大知识库上
+citation 少的页永远排不到——这就是上限可配、且覆盖必须记录的原因。
+
+### 18.4 findings 的四个 kind，以及为什么没有 severity
+
+kind 直接取自 review 被要求寻找的失败模式：`unsupported`（原文没这么说）、
+`overstated`（原文的"通常"被写成绝对）、`fabricated_causality`（原文从未建立的因果）、
+`conflated`（两个来源的结论被并成谁都没说过的一条）。
+
+**没有 severity 字段**：kind 已经说清了错在哪，再让模型评一个严重度，是让它标定一个自己
+没有依据的量纲——一条 `overstated` 标着 "low" 并没有比 kind 多告诉读者任何东西。
+
+无法识别的 kind、以及没有引文的 finding，**丢弃而不归并**。归到 reviewer 没选的类别里
+是误报它的发现；定位不到页面上的 finding 没人能处理。
+
+重复 review 会**替换**该 build 的 findings 而非累加：build 不可变，同一个 build 上两套判定
+不可能都是当前的；累加还会让一次 provider 抖动导致的重试把 finding 数刷上去。
+但 token 与费用是**累加**的——第一次失败的尝试真的花了钱，藏起来账就对不上。
+
+### 18.5 实测：一个真实缺陷，一条真实 finding
+
+**跑之前必须先证明 reviewer 会判别。** 生产上第一次 review 回来 `clean/0 findings`——
+这单独看什么也证明不了：**一个永远说 clean 的 reviewer 和一个忠实的 wiki 无法区分**。
+所以做了一次性正向对照：给真实 reviewer（`deepseek-v4-pro`）一个植入三处缺陷的页
+（"通常 30 天"写成"永远恰好 30 天、无例外"、把夜间备份与不可延长编成因果、
+编一条"2024 年全部迁移完成"），并给它对应原文。结果三处全被抓到、kind 全部正确；
+同一原文配一个忠实的页，findings 为 0。**它在判别，不是橡皮章。**
+
+**发现并修掉一个真实缺陷。** 第一次审 platform-registry 报出 5 条 `unsupported`，
+detail 全是"没有源文档可用"。这不是 wiki 质量问题，是 plumbing bug：`ListPages` 不返回
+citations（对列表接口是对的），于是 reviewer 一个源文档都没拿到，却老老实实把每条 claim
+判成 unsupported——**把我们自己的加载失败算成编译器的错，是 review 能产出的最有害的一类
+误报**。修法是新增 `ListPagesWithCitations`，并加一道防线：页面有 citation 却一个源都解析
+不出来时**不去问 reviewer**，直接把这页记为未审（落进覆盖缺口），因为那种情况下的
+"unsupported" 是关于 plumbing 的判决披着关于 wiki 的判决的外衣。
+
+原有的 re-review 测试抓不到它：脚本 reviewer 按页路径应答，看不见有没有源文档。已补测试。
+
+**修完之后的三个真实 build：**
+
+| source | 覆盖 | 状态 | 结果 |
+|---|---|---|---|
+| platform-retrieval | 5/5 | `clean` | 无 |
+| platform-registry | 13/14 | `partial` | 无 findings；1 页 provider 失败 |
+| product-support | 18/18 | `flagged` | **1 条真实 `unsupported`** |
+
+那条真实 finding 的第一次形态：`wiki/package.md` 声称"Package 是 **AgentMate** 中知识库和
+Skill 的基本组织单元"，reviewer 指出源文档讨论了 package，但 **"AgentMate" 这个词在任何源
+文档里都没出现过**。编译器把自己的世界知识注入了一条声称有出处的断言——这正是 review 存在
+的理由。
+
+**同一个 build 重审两次，报出的是不同的页——这是"review 不可有阻塞权"的实测证据。**
+第一次报 `wiki/package.md`，修完缺陷后重审（同一个不可变 build、同一个 reviewer
+`deepseek-v4-pro`）报的是 `wiki/chunk.md`："Chunk 是知识库内容被索引后的最小检索单元"。
+两条性质相同（都是源文档没有那样定义的定义式断言），但**不是同一条**。§7.2 说"若让它有权
+阻塞，同一个 build 重试两次会得到不同结果"——这不再是推理，是观测到的事实。
+
+覆盖也从 17/18 变成 18/18：之前撞 token 上限那页在 `REVIEWER_MAX_TOKENS` 提到 4096 后
+拿到了判定。
+
+**由实测直接改掉的两处配置**：`REVIEWER_MAX_TOKENS` 默认 2048 → 4096（一次 review 因回复
+被截断而整页丢失判定；review 的输出只是一个 findings 数组，不是编译器那种开放式预算问题，
+但截断会丢掉整页，代价大于多留的余量）；prompt 增加"detail 控制在一两句"的要求，理由同样
+写在 prompt 里——超限的回复会被整个丢弃，简短是在保护判定本身。
+
+覆盖不足时 note 会**点明原因**（如"hit the token limit"），否则运维只知道有页没审、不知道
+该做什么。**review 内部不重试**：re-review 只是一次调用，而为了掩盖一次 provider 抖动就把
+最坏情况的账单翻倍，不该替调用方做这个决定——把原因说清、让他决定。
+
+### 18.6 接口
+
+| | 路径 | scope |
+|---|---|---|
+| REST | `POST /api/knowledge/builds/:build_id/review` | `knowledge:rw` |
+| | `GET /api/knowledge/builds/:build_id/review` | `knowledge:r` |
+| MCP | `knowledge_build_review` | `knowledge:rw` |
+| | `knowledge_build_review_get` | `knowledge:r` |
+
+写 scope 是因为它花模型的钱并记录判定，**不是因为它能改页面——它不能**。
+同步返回而不排队：与编译不同，没有任何东西依赖它完成，调用方放弃只损失这次判定。
+
+### 18.7 评审提出的问题，以及其中一条被拒的理由
+
+K3.8 走了一轮代码评审，提出 8 条，接受 7 条。被真实数据或评审逮到的都记在这里，
+因为它们都是"实现比设计更细"的地方：
+
+| 问题 | 修法 |
+|---|---|
+| 并发 re-review 会把两套 findings 合并 | `RecordReviewResult` 先 `SELECT ... FOR UPDATE` 锁 build 行再删插 |
+| `{}` / `{"findings":null}` 被当成 clean | `Findings` 改指针类型，键缺失即判契约违反、该页记为未审 |
+| reviewer 返回了 findings 但一条都不可用，仍算 clean | 同样判该页失败——报 clean 等于把它说的反过来讲 |
+| 同模型拒跑只信配置，BaseURL 不同即绕过 | 改为与 **build 记录的编译模型**比对；这同时修好了重审历史 build 时"用今天的配置判昨天的 build" |
+| re-review 不更新 reviewer 归因 | 归因随 findings 一起写；实测确认：旧记录是 `qwen-max`（入队时配置），真实执行者是 `deepseek-v4-pro` |
+| 成本只在最后一次性落库，进程死了就丢账 | 每页调用后立即累加 `review_tokens`/`review_cost_micros` |
+| prompt 声称给的是全文，实际每篇截断到 8000 rune | 截断处显式标注，并要求 reviewer 对被截断的文档**不得**因看不见就判 unsupported |
+| 回滚遇到 `partial` 行会失败 | down migration 先把 `partial` 映射为 `skipped`（不是 `clean`——那会是对没人读过的页的断言）|
+
+**被拒的一条**：评审认为手动 `ReviewBuild` 审复用页违反"只审这次 build 写的页"。
+拒绝的理由：那条约束的目的是**自动路径的成本控制**。一个明确要求"审这个 build"的调用方，
+要的是它现在服务的整个 wiki 的判定；复用页是被拷进这个 build 的（`derived_from_build_id`
+记着来处），所以判定归属没有错。但评审指出的覆盖数字歧义是对的——已在注释与 note 里写明
+手动路径的分母是全部内容页，避免 "17/18" 被读成"这个 build 写的 18 页里的 17 页"。
+
+### 18.8 `reviewWarnings` 的措辞必须跟着实现改，但规则没变
+
+K3.8 之前有一条**无条件**警告"review 未实现"。现在 review 会跑了，那条必须改——但它守护的
+规则不变：**改进配置不得减少调用方得到的关于"验证了什么"的信息**。
+
+所以即使是最好的配置（cross_provider + 已配 reviewer），仍然会告知**页数上限**，
+因为"被上限约束的 clean"是一个比它看起来更弱的断言。对应测试
+`TestEnqueueAlwaysDisclosesReviewLimits` 覆盖四种配置，断言没有任何一种配置好到可以沉默。

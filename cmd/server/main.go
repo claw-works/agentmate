@@ -272,6 +272,10 @@ func main() {
 	protected.POST("/knowledge/wiki/lint", auth.RequireScope("knowledge:rw"), knowledgeHandler.LintWiki)
 	protected.GET("/knowledge/wiki/lint/runs", auth.RequireScope("knowledge:r"), knowledgeHandler.ListLintRuns)
 	protected.GET("/knowledge/wiki/lint/runs/:run_id", auth.RequireScope("knowledge:r"), knowledgeHandler.GetLintRun)
+	// K3.8 review. Write scope because it spends money on a model and records a verdict;
+	// it still cannot change a page or block a build.
+	protected.POST("/knowledge/builds/:build_id/review", auth.RequireScope("knowledge:rw"), knowledgeHandler.ReviewBuild)
+	protected.GET("/knowledge/builds/:build_id/review", auth.RequireScope("knowledge:r"), knowledgeHandler.GetBuildReview)
 	protected.POST("/knowledge/builds/:build_id/activate", auth.RequireScope("knowledge:rw"), knowledgeHandler.ActivateBuild)
 
 	// Admin

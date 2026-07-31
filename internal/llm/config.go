@@ -147,8 +147,13 @@ func ConfigFromEnv() Config {
 		// Judgement should be near-deterministic: the same claim and the same
 		// source ought to get the same verdict.
 		Temperature: envFloat("REVIEWER_TEMPERATURE", 0),
-		MaxTokens:   envInt("REVIEWER_MAX_TOKENS", 2048),
-		Timeout:     time.Duration(envInt("REVIEWER_TIMEOUT_SECONDS", 120)) * time.Second,
+		// 4096, raised from 2048 after a real review lost a page's verdict to a
+		// truncated response. Review output is only a findings array, so this is not the
+		// compiler's open-ended budget problem — but a truncated reply loses the whole
+		// page, and a page with several findings plus their explanations does not fit in
+		// 2048. Losing a verdict costs more than the extra headroom.
+		MaxTokens: envInt("REVIEWER_MAX_TOKENS", 4096),
+		Timeout:   time.Duration(envInt("REVIEWER_TIMEOUT_SECONDS", 120)) * time.Second,
 		Pricing: Pricing{
 			InputMicrosPer1KTokens:  int64(envInt("REVIEWER_INPUT_MICROS_PER_1K_TOKENS", 0)),
 			OutputMicrosPer1KTokens: int64(envInt("REVIEWER_OUTPUT_MICROS_PER_1K_TOKENS", 0)),

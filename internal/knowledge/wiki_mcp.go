@@ -320,3 +320,43 @@ func registerWikiLintTools(s *server.MCPServer, svc *Service) {
 		return mcpauth.JSONResult(response)
 	})
 }
+
+// ─── K3.8: review ───
+//
+// The descriptions have to be explicit that review never gates, and equally explicit that
+// its silence is bounded. An agent that reads "clean" as "verified" will trust pages nobody
+// examined; an agent that reads "flagged" as "broken" will refuse a wiki that is serving
+// correctly. Both come from omitting how much was looked at.
+func registerWikiReviewTools(s *server.MCPServer, svc *Service) {
+	// knowledge_build_review
+	s.AddTool(mcp.NewTool("knowledge_build_review",
+		mcp.WithDescription("Run faithfulness review on a committed wiki build: for each page, a model from a different provider than the compiler checks whether the page's claims are supported by the raw documents it cites, judging against the source text rather than the compiler's own excerpts. Findings are one of unsupported, overstated, fabricated_causality or conflated. This never blocks and never changes a page — check is the only gate. Review is capped at a number of pages per build, so read review_pages_examined against review_pages_total: \"clean\" means nothing was found among the pages examined, not that the whole wiki was verified. Re-running replaces the previous findings for that build."),
+		mcp.WithString("build_id", mcp.Required(), mcp.Description("Build to review; must have succeeded")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		response, err := svc.ReviewBuild(ctx, owner, mcpauth.StrArg(req.GetArguments(), "build_id"))
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	// knowledge_build_review_get
+	s.AddTool(mcp.NewTool("knowledge_build_review_get",
+		mcp.WithDescription("Fetch the recorded faithfulness verdict for a build and the findings behind it, without running a review. review_status is skipped, clean, partial, flagged or failed; review_note says why review did not run or did not finish, and reviewer_independence records how separated the reviewer was from the compiler. A same-model reviewer is refused outright rather than run, because a model cannot find the mistakes its own priors produced."),
+		mcp.WithString("build_id", mcp.Required(), mcp.Description("Build ID")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		response, err := svc.GetBuildReview(ctx, owner.Account(), mcpauth.StrArg(req.GetArguments(), "build_id"))
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+}

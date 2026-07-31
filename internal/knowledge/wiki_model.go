@@ -50,6 +50,11 @@ const (
 
 	ReviewStatusSkipped = "skipped"
 	ReviewStatusClean   = "clean"
+	// ReviewStatusPartial means fewer pages were examined than were eligible and nothing
+	// was found among them. It exists because "clean" would be a claim about pages nobody
+	// read: a review capped at 20 of 143 pages that reports clean is worse than one that
+	// reports nothing, since it invites the reader to stop looking.
+	ReviewStatusPartial = "partial"
 	ReviewStatusFlagged = "flagged"
 	ReviewStatusFailed  = "failed"
 
@@ -136,6 +141,14 @@ type BuildRevision struct {
 	CheckStatus   string          `json:"check_status"`
 	CheckFailures json.RawMessage `json:"check_failures,omitempty"`
 	ReviewStatus  string          `json:"review_status"`
+	// ReviewPagesExamined against ReviewPagesTotal is what makes ReviewStatus readable.
+	// "clean" over 4 of 40 pages and "clean" over 40 of 40 are different claims, and a
+	// caller that sees only the status cannot tell them apart.
+	ReviewPagesExamined int `json:"review_pages_examined"`
+	ReviewPagesTotal    int `json:"review_pages_total"`
+	// ReviewNote says why review did not run or did not finish. A status without a reason
+	// sends whoever reads it to go read the source code.
+	ReviewNote string `json:"review_note,omitempty"`
 
 	PagesWritten     int   `json:"pages_written"`
 	PagesReused      int   `json:"pages_reused"`

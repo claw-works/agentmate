@@ -839,38 +839,62 @@ func containsString(values []string, target string) bool {
 	return false
 }
 
-// TestEnqueueAlwaysSaysReviewDidNotRun guards a signal that a configuration
-// improvement can silently delete.
+// TestEnqueueAlwaysDisclosesReviewLimits guards a signal that a configuration improvement
+// can silently delete.
 //
-// The warning about review used to fire only when the reviewer shared the
-// compiler's provider. Pointing the reviewer at a second vendor therefore removed
-// the only thing telling an operator that nothing had been reviewed — while review
-// remained unimplemented and review_status remained skipped. Better configuration
-// must not reduce what the caller is told about what was verified.
-func TestEnqueueAlwaysSaysReviewDidNotRun(t *testing.T) {
+// Before K3.8 the warning about review fired only when the reviewer shared the compiler's
+// provider. Pointing the reviewer at a second vendor therefore removed the only thing
+// telling an operator that nothing had been reviewed — while review remained unimplemented
+// and review_status remained skipped.
+//
+// Review now runs, so the wording had to change, but the rule did not: in every
+// configuration the caller must be told a real limitation of what was verified. Even the
+// best possible setup discloses that review is capped, because "clean" bounded by a cap is a
+// weaker claim than it looks.
+func TestEnqueueAlwaysDisclosesReviewLimits(t *testing.T) {
 	ctx := context.Background()
 	pool := integrationPool(t, ctx)
 	owner, cleanup := createKnowledgeIntegrationOwner(t, ctx, pool, "wiki-reviewwarn")
 	defer cleanup()
 
-	for _, independence := range []string{
-		llm.IndependenceCrossProvider, llm.IndependenceSameProvider, llm.IndependenceUnavailable,
-	} {
+	cases := []struct {
+		name         string
+		withReviewer bool
+		independence string
+		wantPhrase   string
+		wantCaveat   bool
+	}{
+		{"no reviewer", false, llm.IndependenceUnavailable, "no reviewer is configured", false},
+		{"cross provider", true, llm.IndependenceCrossProvider, "review examines at most", false},
+		{"same provider", true, llm.IndependenceSameProvider, "review examines at most", true},
+		{"same model", true, llm.IndependenceSameModel, "collude", false},
+	}
+	for _, testCase := range cases {
 		service, _ := newWikiService(t, ctx, &scriptedClient{replies: []string{goodReply()}})
-		service.WithLLM(LLMSetup{Compiler: &scriptedClient{replies: []string{goodReply()}}, Independence: independence})
-		source := seedWikiSource(t, ctx, service, owner, "wiki-reviewwarn-"+independence, "Overview body.\n")
+		setup := LLMSetup{
+			Compiler:     &scriptedClient{replies: []string{goodReply()}},
+			Independence: testCase.independence,
+		}
+		if testCase.withReviewer {
+			setup.Reviewer = &scriptedReviewer{}
+		}
+		service.WithLLM(setup)
+		source := seedWikiSource(t, ctx, service, owner, "wiki-reviewwarn-"+testCase.independence, "Overview body.\n")
 
 		response := enqueue(t, ctx, service, owner, CompileRequest{SourceID: source.ID})
 		joined := strings.Join(response.Warnings, " | ")
-		if !strings.Contains(joined, "review is not implemented") {
-			t.Errorf("independence=%s: the caller must be told review did not run, got %q", independence, joined)
+		if joined == "" {
+			t.Errorf("%s: no configuration is good enough to warrant silence", testCase.name)
+			continue
 		}
-		// The independence warning is additional information, not a replacement for
-		// the one above.
-		wantIndependence := independence == llm.IndependenceSameProvider
-		if got := strings.Contains(joined, "reviewer independence is"); got != wantIndependence {
-			t.Errorf("independence=%s: independence warning present=%v, want %v (%q)",
-				independence, got, wantIndependence, joined)
+		if !strings.Contains(joined, testCase.wantPhrase) {
+			t.Errorf("%s: want %q in warnings, got %q", testCase.name, testCase.wantPhrase, joined)
+		}
+		// The independence caveat is additional information, never a replacement for the
+		// coverage disclosure.
+		if got := strings.Contains(joined, "reviewer independence is"); got != testCase.wantCaveat {
+			t.Errorf("%s: independence caveat present=%v, want %v (%q)",
+				testCase.name, got, testCase.wantCaveat, joined)
 		}
 	}
 }

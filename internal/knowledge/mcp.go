@@ -41,6 +41,11 @@ var toolScopes = map[string]string{
 	"knowledge_wiki_lint":         "knowledge:rw",
 	"knowledge_wiki_lint_runs":    "knowledge:r",
 	"knowledge_wiki_lint_run_get": "knowledge:r",
+
+	// K3.8 review. Running a review writes the verdict and spends money on a model, so it
+	// is write scope even though it cannot change a page.
+	"knowledge_build_review":     "knowledge:rw",
+	"knowledge_build_review_get": "knowledge:r",
 }
 
 func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
@@ -235,6 +240,7 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 	registerWikiTools(s, svc)
 	registerWikiRetrievalTools(s, svc)
 	registerWikiLintTools(s, svc)
+	registerWikiReviewTools(s, svc)
 
 	return server.NewStreamableHTTPServer(s, server.WithHTTPContextFunc(mcpauth.HTTPContextFunc(authSvc)))
 }

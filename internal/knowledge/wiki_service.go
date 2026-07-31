@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -356,7 +357,51 @@ func (s *Service) RunBuild(ctx context.Context, build *BuildRevision) error {
 			return nil
 		}
 	}
+
+	// K3.8 review runs last, after the build is committed and possibly already serving.
+	//
+	// That ordering is forced by review not being a gate: if it ran before activation,
+	// activation would wait on it, and a slow or unreachable reviewer would delay a wiki
+	// that check already cleared. Its verdict annotates what is serving, which is the same
+	// position lint occupies.
+	//
+	// Only the pages this build wrote are reviewed. On an incremental build the reused
+	// pages were reviewed when they were written, and paying to re-judge unchanged text
+	// against unchanged sources buys nothing.
+	//
+	// A detached context is used deliberately: review writes what it learned, and the
+	// moment that write matters most is when the job's context has just died.
+	if _, reviewErr := s.runReview(detachedContext(ctx), owner, succeeded.ID, build.Model,
+		pages, writtenPagePaths(pages, plan), documents); reviewErr != nil {
+		// Recording the verdict failed, which is not the build's problem: the wiki is
+		// committed and valid. review_status stays whatever it was, and a caller can ask
+		// for a re-review. Failing the build here would let an advisory step undo a
+		// compile that passed the only gate there is.
+		//
+		// Logged rather than swallowed: without this line a review that never recorded
+		// anything is indistinguishable from one that was never attempted, and the
+		// build's review_status would be the only clue.
+		log.Printf("wiki review of build %s could not be recorded: %v", shortID(succeeded.ID), reviewErr)
+		return nil
+	}
 	return nil
+}
+
+// writtenPagePaths returns the paths this build actually compiled, or nil when that is
+// every content page.
+//
+// nil rather than a full set on purpose: nil means "no restriction", and building a set
+// containing everything would make the reviewer's page selection depend on a set that says
+// nothing.
+func writtenPagePaths(pages []WikiPage, plan *IncrementalPlan) map[string]struct{} {
+	if plan == nil {
+		return nil
+	}
+	written := make(map[string]struct{}, len(plan.RecompiledPaths))
+	for _, path := range plan.RecompiledPaths {
+		written[path] = struct{}{}
+	}
+	return written
 }
 
 // costMicros prices one compilation.
@@ -367,30 +412,39 @@ func (s *Service) costMicros(usage llm.Usage) int64 {
 	return s.compilerPricing.Cost(usage)
 }
 
-// reviewWarnings states what review did and did not contribute to a build.
+// reviewWarnings states what review can and cannot contribute to a build.
 //
-// The first warning is unconditional while review is unimplemented, and that is
-// the point: it used to be the same_provider warning that told an operator not to
-// lean on review, so configuring a genuinely cross-provider reviewer would have
-// made the only signal disappear while review still never ran. An improvement to
-// the configuration must not quietly remove information about what was verified.
+// The rule this function exists to obey: improving the configuration must never remove
+// information about what was actually verified. Before K3.8 landed, the first warning was
+// unconditional because review never ran at all — so configuring a genuinely cross-provider
+// reviewer would have made the only warning disappear while nothing had changed. Now review
+// does run, and each warning below is conditional on a real limitation.
 //
-// The independence warning stays for the case where a reviewer shares the
-// compiler's priors, because a reviewer drawing on the same training data misses
-// the same things — reduced correlation is not impartiality.
+// These describe configuration, which is knowable before a build starts. What actually
+// happened to a specific build is on the build row: review_status with
+// review_pages_examined, review_pages_total and review_note.
 func (s *Service) reviewWarnings() []string {
 	warnings := make([]string, 0, 2)
-	// K3.8 has not landed: RunBuild never calls s.reviewer, so review_status stays
-	// skipped on every build. Say so where the result is consumed rather than only
-	// in the design document.
-	warnings = append(warnings,
-		"review is not implemented yet: review_status stays \"skipped\" and no faithfulness check ran on this build; "+
-			"check is the only verification it received")
-	if s.reviewerIndependence == llm.IndependenceSameProvider || s.reviewerIndependence == llm.IndependenceSameModel {
+	if reason := s.reviewSkipReason(""); reason != "" {
+		warnings = append(warnings, reason+
+			"; check is the only verification these builds receive")
+		return warnings
+	}
+	if s.reviewerIndependence == llm.IndependenceSameProvider {
+		// Not refused, unlike same_model: a different model from one supplier does have
+		// different failure modes. But training corpora overlap heavily, so the priors
+		// overlap too, and a reviewer drawing on the same data misses the same things.
+		// Reduced correlation is not impartiality.
 		warnings = append(warnings,
 			"reviewer independence is "+s.reviewerIndependence+
-				"; once review runs, its verdicts will share the compiler's blind spots")
+				"; its verdicts share some of the compiler's blind spots")
 	}
+	// Coverage is capped, and a caller comparing review_status across builds needs to know
+	// that "clean" is bounded by it before reading too much into a clean result.
+	warnings = append(warnings, fmt.Sprintf(
+		"review examines at most %d pages per build, most-cited first; review_pages_examined "+
+			"against review_pages_total says how much of a build was actually judged",
+		s.reviewPageLimit()))
 	return warnings
 }
 
