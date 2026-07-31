@@ -72,13 +72,14 @@ The target model is specified in
 [Skill + Knowledge Architecture v0.3](docs/skill-knowledge-architecture-v0.1.md).
 K1 (knowledge sources, immutable revisions, document snapshots), K2 (K0 catalog cards,
 deterministic Markdown chunking, document link graph, account-scoped hybrid retrieval),
-and the K3 wiki compiler are implemented. K4 is partially implemented: Skills declare a
+and the K3 wiki compiler are implemented. K4 is implemented in three parts: Skills declare a
 `knowledge:` contract in SKILL.md frontmatter (parsed, validated and linted at compile
 time, persisted on the compiled artifact, and part of Skill identity via a normalised
-contract identity string), and `POST /api/knowledge/discover` resolves that contract
-against the account's K0 catalog with classified failure statuses. The runtime
-KnowledgeResolutionRun record — freezing which bases, pages and citations an execution
-actually used — remains unimplemented.
+contract identity string), `POST /api/knowledge/discover` resolves that contract
+against the account's K0 catalog with classified failure statuses, and
+`POST /api/knowledge/resolutions` freezes what an execution actually selected, retrieved
+and cited as an append-only KnowledgeResolutionRun — the anchor for permission audit,
+reproduction and attribution.
 
 The official [AgentMate Memory skill](integrations/skills/agentmate-memory/SKILL.md)
 teaches compatible agents to recall scoped context, journal meaningful events,
@@ -389,6 +390,9 @@ explicit distinct `name`.
 - `POST /api/knowledge/search` — Hybrid lexical + semantic search over indexed chunks (body `query`/`top_k`/`domain`/`source_ids`/`include_content`; `domain` resolves to that domain's sources and intersects with `source_ids`, so it can only narrow the search); hits carry document/source/revision provenance, heading path, score, snippet, and 1-hop link neighbors (metadata only, capped at 16); the snippet is the first 240 runes of the chunk body (a chunk shorter than that is fully visible in its snippet), and the full chunk body is returned only with `include_content=true`; served `Cache-Control: private, no-store` (scope: `knowledge:r`)
 - `GET /api/knowledge/documents/:doc_id/links?limit=&offset=` — Both directions of one document's package-internal links: outgoing links keep the target path (with a NULL document ID when dangling), incoming links carry the linking document's path (scope: `knowledge:r`)
 - `POST /api/knowledge/discover` — Resolve a skill version's compiled knowledge contract against the account's K0 catalog (body `skill_version_id`, optional `requirement_id`). Per requirement it returns ranked candidate collections with the matched capabilities/languages/domain spelled out, the contract's retrieval budgets echoed, and a classified status — `matched`, `ambiguous` (more candidates than the contract's `max_knowledge_bases`, with the contract's own `on_ambiguous` guidance), `no_metadata_match` (the note distinguishes "nothing fits" from "no manifest declares capabilities at all"), `no_authorized_knowledge`, `pinned_resolved`, or `pinned_missing`. Failure classes are never flattened into an empty list. The response carries a deterministic discovery `fingerprint` over the contract identity and the catalog state, the future anchor for KnowledgeResolutionRun. `scoped_discover` contracts are refused with `501` rather than silently widened, because workspaces/tags/approved state do not exist in the knowledge domain yet. Discovery reads the compiled contract from the skills domain, so the route requires both `knowledge:r` and `skills:r`; served `Cache-Control: private, no-store`
+- `POST /api/knowledge/resolutions` — Freeze one runtime resolution as an append-only KnowledgeResolutionRun: which discovery it followed (`discovery_fingerprint` + `discovery_status`), which bases the execution selected, what it retrieved and cited (references only, never bodies), plus the agent's `selection_reason` and `confidence`. The trust boundary is per field: `contract_identity` is filled by the server from the compiled contract and the `requirement_id` must exist in it, every `selected` base (and its optional `revision_id`/`build_id`) is verified against the account, while `candidates`/`retrieved`/`citations` are bounded client-reported echoes tied to a served discovery by the fingerprint. `selected` may be empty — "discovery found nothing and the skill proceeded per its fallback" is exactly the run worth recording. Optional `idempotency_key`: a byte-identical replay returns the original row with `200`, a disagreeing replay is `409`. Deleting a skill version referenced by a run is rejected (audit targets stay append-only); account deletion cascades. Requires `knowledge:rw` and `skills:r`
+- `GET /api/knowledge/resolutions?skill_version_id=&session_id=&source_id=&limit=&offset=` — Resolution run summaries, newest first, with selected/retrieved/citation counts instead of the evidence arrays. `source_id` filters to runs whose selected set contains that base — "which executions rested on this knowledge base" is the audit question this table answers (scope: `knowledge:r`)
+- `GET /api/knowledge/resolutions/:run_id` — One run in full: contract identity, discovery anchor, candidates, verified selections, retrieved references and citations; served `Cache-Control: private, no-store` (scope: `knowledge:r`)
 
 #### Wiki retrieval (K3.6)
 
@@ -656,7 +660,7 @@ integration opt into only the modules it needs.
 | `POST /mcp/memory` | `memory_record`, `memory_store`, `memory_search`, `memory_get`, `memory_timeline`, `memory_attribution`, `memory_supersede`, `memory_feedback`, `memory_feedback_list`, `memory_checkpoint_save`, `memory_resume` |
 | `POST /mcp/skills` | `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_source_sync`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active`, `skill_catalog_list`, `skill_compile`, `skill_version_instructions`, `skill_version_resources`, `skill_resource_get`, `skill_quality_run`, `skill_quality_get` |
 | `POST /mcp/context` | `context_pack` |
-| `POST /mcp/knowledge` | `knowledge_sources_list`, `knowledge_source_sync`, `knowledge_documents_list`, `knowledge_document_get`, `knowledge_catalog_list`, `knowledge_search`, `knowledge_discover`, `knowledge_index_active`, `knowledge_document_links`, `knowledge_compile`, `knowledge_builds_list`, `knowledge_build_get`, `knowledge_build_pages`, `knowledge_page_get`, `knowledge_build_diff`, `knowledge_build_events`, `knowledge_build_activate`, `knowledge_queue_stats`, `knowledge_wiki_search`, `knowledge_wiki_index`, `knowledge_wiki_status` |
+| `POST /mcp/knowledge` | `knowledge_sources_list`, `knowledge_source_sync`, `knowledge_documents_list`, `knowledge_document_get`, `knowledge_catalog_list`, `knowledge_search`, `knowledge_discover`, `knowledge_resolution_record`, `knowledge_resolutions_list`, `knowledge_resolution_get`, `knowledge_index_active`, `knowledge_document_links`, `knowledge_compile`, `knowledge_builds_list`, `knowledge_build_get`, `knowledge_build_pages`, `knowledge_page_get`, `knowledge_build_diff`, `knowledge_build_events`, `knowledge_build_activate`, `knowledge_queue_stats`, `knowledge_wiki_search`, `knowledge_wiki_index`, `knowledge_wiki_status` |
 
 Authenticate with a valid API key via `X-Api-Key` header, `Authorization: Bearer ak_xxx`,
 or `?api_key=ak_xxx` query param. MCP tool calls enforce the same API key scopes as REST

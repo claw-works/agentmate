@@ -252,6 +252,11 @@ func main() {
 	// (knowledge domain); both scopes are required, matching the context pack's
 	// per-domain authorisation stance.
 	protected.POST("/knowledge/discover", auth.RequireScope("knowledge:r"), auth.RequireScope("skills:r"), knowledgeHandler.Discover)
+	// K4 resolution runs: recording validates the requirement against the compiled
+	// contract (skills data), so the write route needs skills:r on top of knowledge:rw.
+	protected.POST("/knowledge/resolutions", auth.RequireScope("knowledge:rw"), auth.RequireScope("skills:r"), knowledgeHandler.RecordResolution)
+	protected.GET("/knowledge/resolutions", auth.RequireScope("knowledge:r"), knowledgeHandler.ListResolutions)
+	protected.GET("/knowledge/resolutions/:run_id", auth.RequireScope("knowledge:r"), knowledgeHandler.GetResolution)
 
 	// K3 wiki reads. Builds are immutable, so these are all safe to cache-bust
 	// on id alone.

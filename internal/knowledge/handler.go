@@ -149,6 +149,66 @@ func (h *Handler) Discover(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+// RecordResolution freezes one runtime resolution as execution evidence. Route-gated on
+// knowledge:rw plus skills:r: it writes knowledge-domain evidence but validates the
+// requirement against the compiled contract, which is skills data.
+func (h *Handler) RecordResolution(c *gin.Context) {
+	var req RecordResolutionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.RecordResolution(c.Request.Context(), owner, req)
+	if err != nil {
+		if errors.Is(err, ErrResolutionConflict) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	status := http.StatusCreated
+	if !response.Created {
+		// An idempotent replay: the original evidence, not a new row.
+		status = http.StatusOK
+	}
+	c.JSON(status, response)
+}
+
+func (h *Handler) ListResolutions(c *gin.Context) {
+	limit, offset, err := strictPagination(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, listErr := h.svc.ListResolutions(c.Request.Context(), owner.Account(), ResolutionListParams{
+		SkillVersionID: c.Query("skill_version_id"),
+		SessionID:      c.Query("session_id"),
+		SourceID:       c.Query("source_id"),
+		Limit:          limit,
+		Offset:         offset,
+	})
+	if listErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": listErr.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) GetResolution(c *gin.Context) {
+	owner := auth.OwnerFromContext(c)
+	run, err := h.svc.GetResolution(c.Request.Context(), owner.Account(), c.Param("run_id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	// Evidence references and the selection reason are tenant content.
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusOK, run)
+}
+
 func (h *Handler) Search(c *gin.Context) {
 	var req SearchKnowledgeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

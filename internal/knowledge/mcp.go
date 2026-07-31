@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
@@ -22,9 +23,15 @@ var toolScopes = map[string]string{
 	// K4 discovery spans two domains. The middleware gates the knowledge half; the
 	// skills:r half is enforced inside the tool handler because ScopeMiddleware
 	// carries one scope per tool (context pack sets the same precedent).
-	"knowledge_discover":       "knowledge:r",
-	"knowledge_index_active":   "knowledge:rw",
-	"knowledge_document_links": "knowledge:r",
+	"knowledge_discover": "knowledge:r",
+	// K4 resolution runs. Recording writes execution evidence and validates the
+	// requirement against the compiled contract, so it additionally enforces
+	// skills:r in-handler.
+	"knowledge_resolution_record": "knowledge:rw",
+	"knowledge_resolutions_list":  "knowledge:r",
+	"knowledge_resolution_get":    "knowledge:r",
+	"knowledge_index_active":      "knowledge:rw",
+	"knowledge_document_links":    "knowledge:r",
 
 	// K3 wiki layer.
 	"knowledge_compile":        "knowledge:rw",
@@ -231,6 +238,93 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 			return mcpauth.ErrResult(err.Error()), nil
 		}
 		return mcpauth.JSONResult(response)
+	})
+
+	// knowledge_resolution_record
+	s.AddTool(mcp.NewTool("knowledge_resolution_record",
+		mcp.WithDescription("Freeze one runtime knowledge resolution as execution evidence: which discovery it followed (fingerprint + status), which bases were selected (verified against the account), what was retrieved and cited (references only, never bodies), and why. Selected may be empty when the skill proceeded per its fallback. Supports idempotent replay via idempotency_key; a replay with different content is a conflict. Requires knowledge:rw and skills:r."),
+		mcp.WithString("skill_version_id", mcp.Required(), mcp.Description("Skill version whose contract requirement this run satisfied")),
+		mcp.WithString("requirement_id", mcp.Required(), mcp.Description("Contract requirement id this resolution answers")),
+		mcp.WithString("discovery_fingerprint", mcp.Required(), mcp.Description("The fingerprint returned by knowledge_discover")),
+		mcp.WithString("discovery_status", mcp.Required(), mcp.Description("The discovery status this resolution followed")),
+		mcp.WithString("session_id", mcp.Description("Optional session anchor")),
+		mcp.WithArray("candidates", mcp.Description("Candidate summaries seen: [{source_id, name, score, rank}] (max 20)")),
+		mcp.WithArray("selected", mcp.Description("Bases actually used: [{source_id, revision_id?, build_id?}] (max 10, ownership verified)")),
+		mcp.WithArray("retrieved", mcp.Description("Retrieved references: [{source_id?, document_id?, page_path?, chunk_key?}] (max 200)")),
+		mcp.WithArray("citations", mcp.Description("Citations carried by the answer: [{source_id?, document_id?, path?}] (max 100)")),
+		mcp.WithString("selection_reason", mcp.Description("Why these bases were chosen (max 2000 code points)")),
+		mcp.WithNumber("confidence", mcp.Description("Selection confidence 0..1")),
+		mcp.WithString("idempotency_key", mcp.Description("Stable retry key; replay the exact same content with the same key")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		if !auth.HasScope(&auth.APIKey{Scopes: mcpauth.ScopesFromContext(ctx)}, "skills:r") {
+			return mcpauth.ErrResult("insufficient scope: skills:r"), nil
+		}
+		// The argument shape mirrors RecordResolutionRequest's JSON exactly, so decode
+		// through JSON instead of hand-walking nested maps.
+		encoded, err := json.Marshal(req.GetArguments())
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		var recordReq RecordResolutionRequest
+		if err := json.Unmarshal(encoded, &recordReq); err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		response, err := svc.RecordResolution(ctx, owner, recordReq)
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	// knowledge_resolutions_list
+	s.AddTool(mcp.NewTool("knowledge_resolutions_list",
+		mcp.WithDescription("List resolution run summaries, newest first: discovery status, fingerprint, and selected/retrieved/citation counts without the evidence arrays. Filter by skill_version_id, session_id, or source_id (runs whose selected set contains that base)."),
+		mcp.WithString("skill_version_id", mcp.Description("Filter by skill version")),
+		mcp.WithString("session_id", mcp.Description("Filter by session")),
+		mcp.WithString("source_id", mcp.Description("Filter to runs that selected this knowledge base")),
+		mcp.WithNumber("limit", mcp.Description("Page size (default 20, max 100)")),
+		mcp.WithNumber("offset", mcp.Description("Non-negative page offset")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		args := req.GetArguments()
+		limit, offset, paginationErr := strictMCPPagination(args)
+		if paginationErr != nil {
+			return mcpauth.ErrResult(paginationErr.Error()), nil
+		}
+		response, err := svc.ListResolutions(ctx, owner.Account(), ResolutionListParams{
+			SkillVersionID: mcpauth.StrArg(args, "skill_version_id"),
+			SessionID:      mcpauth.StrArg(args, "session_id"),
+			SourceID:       mcpauth.StrArg(args, "source_id"),
+			Limit:          limit,
+			Offset:         offset,
+		})
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	// knowledge_resolution_get
+	s.AddTool(mcp.NewTool("knowledge_resolution_get",
+		mcp.WithDescription("Load one resolution run in full: contract identity, discovery fingerprint and status, candidate summaries, verified selected bases, retrieved references, citations, and the recorded selection reason."),
+		mcp.WithString("run_id", mcp.Required(), mcp.Description("Resolution run ID")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		run, err := svc.GetResolution(ctx, owner.Account(), mcpauth.StrArg(req.GetArguments(), "run_id"))
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(run)
 	})
 
 	// knowledge_index_active
