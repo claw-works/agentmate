@@ -71,6 +71,68 @@ func (s *Service) bestEffortCompile(ctx context.Context, accountID, versionID st
 	_, _ = s.compileVersion(ctx, accountID, versionID)
 }
 
+// CompiledContractResult carries a version's knowledge contract together with the
+// skill identity a resolution run needs to record.
+type CompiledContractResult struct {
+	SkillVersionID   string
+	SkillName        string
+	Version          string
+	IsActive         bool
+	Contract         *KnowledgeContract
+	ContractIdentity string
+}
+
+// CompiledContract returns the knowledge contract governing one skill version.
+//
+// It prefers the stored compiled artifact — the contract that governs a resolution
+// must be the one compiled into the version — and falls back to parsing the
+// version's immutable content when the artifact is missing or predates migration
+// 000034. The fallback is not a weaker answer: the contract is derived
+// deterministically from content that cannot change after publish, so both paths
+// yield the same contract. A missing artifact blocks catalog cards but must not
+// block discovery.
+//
+// Contract == nil with a nil error means the version genuinely consults no
+// knowledge; a malformed block in a pre-compiler version surfaces as an error
+// rather than being read as "needs nothing".
+func (s *Service) CompiledContract(ctx context.Context, accountID, versionID string) (*CompiledContractResult, error) {
+	version, err := s.repo.GetVersion(ctx, accountID, versionID)
+	if err != nil {
+		return nil, err
+	}
+	result := &CompiledContractResult{
+		SkillVersionID: version.ID,
+		SkillName:      version.SkillName,
+		Version:        version.Version,
+		IsActive:       version.IsActive,
+	}
+	artifact, err := s.repo.GetCompiledCatalog(ctx, accountID, versionID)
+	if err == nil && artifact.KnowledgeContract != nil {
+		result.Contract = artifact.KnowledgeContract
+		result.ContractIdentity = artifact.KnowledgeContractIdentity
+		return result, nil
+	}
+	if err != nil && !isNotFound(err) {
+		return nil, err
+	}
+	// Artifact absent, or present without a stored contract. The second case is
+	// ambiguous between "no contract" and "compiled before 000034", so the
+	// immutable content is the authority for both.
+	contract, parseErr := ParseKnowledgeContract(version.Content)
+	if parseErr != nil {
+		return nil, fmt.Errorf("knowledge contract: %w", parseErr)
+	}
+	if contract == nil {
+		return result, nil
+	}
+	if validateErr := ValidateKnowledgeContract(contract); validateErr != nil {
+		return nil, fmt.Errorf("knowledge contract: %w", validateErr)
+	}
+	result.Contract = contract
+	result.ContractIdentity = ContractIdentity(contract)
+	return result, nil
+}
+
 func (s *Service) ListCatalog(ctx context.Context, accountID string, params SkillCatalogListParams) (*SkillCatalogListResponse, error) {
 	if params.Limit == 0 {
 		params.Limit = 20

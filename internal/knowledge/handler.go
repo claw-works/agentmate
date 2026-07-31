@@ -122,6 +122,33 @@ func (h *Handler) ListCatalog(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+// Discover resolves a skill version's knowledge contract against the account's K0
+// catalog. Route-gated on both knowledge:r and skills:r — it reads the compiled
+// contract from the skills domain and the catalog from the knowledge domain, and a
+// key holding only one of the two must not get the other through this endpoint.
+func (h *Handler) Discover(c *gin.Context) {
+	var req DiscoverKnowledgeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	owner := auth.OwnerFromContext(c)
+	response, err := h.svc.DiscoverForSkill(c.Request.Context(), owner, req)
+	if err != nil {
+		if errors.Is(err, ErrScopedDiscoveryUnsupported) {
+			// An operator/feature gap, not a bad request: the contract is valid, the
+			// platform just cannot execute this mode yet.
+			c.JSON(http.StatusNotImplemented, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Candidate cards carry tenant manifest metadata.
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusOK, response)
+}
+
 func (h *Handler) Search(c *gin.Context) {
 	var req SearchKnowledgeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

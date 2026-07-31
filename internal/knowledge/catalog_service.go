@@ -72,6 +72,14 @@ func catalogItemFromRecord(record catalogRecord) KnowledgeCatalogItem {
 	if name == "" {
 		name = record.Name
 	}
+	// Stored manifests are the struct as parsed at ingest time, so a revision
+	// ingested before the plural languages field carries only the singular. Fold
+	// it here the way ParseManifest does for fresh YAML, so the card and the
+	// discovery matcher read one field regardless of revision age.
+	languages := manifest.Languages
+	if len(languages) == 0 && manifest.Language != "" {
+		languages = []string{manifest.Language}
+	}
 	return KnowledgeCatalogItem{
 		SourceID:         record.SourceID,
 		Name:             name,
@@ -80,6 +88,8 @@ func catalogItemFromRecord(record catalogRecord) KnowledgeCatalogItem {
 		Profile:          manifest.Profile,
 		Language:         manifest.Language,
 		CitationPolicy:   manifest.CitationPolicy,
+		Capabilities:     manifest.Capabilities,
+		Languages:        languages,
 		Type:             record.Type,
 		ActiveRevisionID: record.ActiveRevisionID,
 		PackageHash:      record.PackageHash,

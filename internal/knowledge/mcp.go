@@ -19,6 +19,10 @@ var toolScopes = map[string]string{
 	"knowledge_document_get":   "knowledge:r",
 	"knowledge_catalog_list":   "knowledge:r",
 	"knowledge_search":         "knowledge:r",
+	// K4 discovery spans two domains. The middleware gates the knowledge half; the
+	// skills:r half is enforced inside the tool handler because ScopeMiddleware
+	// carries one scope per tool (context pack sets the same precedent).
+	"knowledge_discover":       "knowledge:r",
 	"knowledge_index_active":   "knowledge:rw",
 	"knowledge_document_links": "knowledge:r",
 
@@ -196,6 +200,32 @@ func NewMCPServer(svc *Service, authSvc *auth.Service) http.Handler {
 			Domain:         mcpauth.StrArg(args, "domain"),
 			SourceIDs:      mcpauth.StrSliceArg(args, "source_ids"),
 			IncludeContent: mcpauth.BoolArg(args, "include_content"),
+		})
+		if err != nil {
+			return mcpauth.ErrResult(err.Error()), nil
+		}
+		return mcpauth.JSONResult(response)
+	})
+
+	// knowledge_discover
+	s.AddTool(mcp.NewTool("knowledge_discover",
+		mcp.WithDescription("Resolve a skill version's knowledge discovery contract against the account's K0 catalog. Returns per-requirement candidate collections with matched capabilities/languages/domain and a classified status (matched, ambiguous, no_metadata_match, no_authorized_knowledge, pinned_resolved, pinned_missing) plus the contract's fallback guidance. Read-only: selection stays with the caller. Requires both knowledge:r and skills:r."),
+		mcp.WithString("skill_version_id", mcp.Required(), mcp.Description("Skill version whose compiled knowledge contract drives discovery")),
+		mcp.WithString("requirement_id", mcp.Description("Optional: narrow discovery to one contract requirement")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		owner, ok := mcpauth.OwnerFromContext(ctx)
+		if !ok {
+			return mcpauth.ErrResult("unauthorized"), nil
+		}
+		// Second-domain check: the middleware verified knowledge:r, but the contract
+		// is skills data and a knowledge-only key must not read it.
+		if !auth.HasScope(&auth.APIKey{Scopes: mcpauth.ScopesFromContext(ctx)}, "skills:r") {
+			return mcpauth.ErrResult("insufficient scope: skills:r"), nil
+		}
+		args := req.GetArguments()
+		response, err := svc.DiscoverForSkill(ctx, owner, DiscoverKnowledgeRequest{
+			SkillVersionID: mcpauth.StrArg(args, "skill_version_id"),
+			RequirementID:  mcpauth.StrArg(args, "requirement_id"),
 		})
 		if err != nil {
 			return mcpauth.ErrResult(err.Error()), nil

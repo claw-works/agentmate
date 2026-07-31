@@ -123,12 +123,13 @@ func loadQualityPackageTx(ctx context.Context, tx pgx.Tx, accountID string, vers
 
 func getQualityCompiledCatalogTx(ctx context.Context, tx pgx.Tx, accountID, versionID string) (*CompiledSkillCatalog, error) {
 	var artifact CompiledSkillCatalog
-	var rawTriggers, rawCapabilities, rawConstraints, rawDependencies, rawManifest []byte
+	var rawTriggers, rawCapabilities, rawConstraints, rawDependencies, rawManifest, rawContract []byte
 	err := tx.QueryRow(ctx,
 		`SELECT catalog.id, catalog.account_id, catalog.skill_version_id, catalog.skill_name,
 		        version.version, version.source_id, catalog.compiler_name, catalog.compiler_version, catalog.input_package_hash,
 		        catalog.description, catalog.triggers, catalog.capabilities, catalog.constraints,
-		        catalog.dependencies, catalog.resource_manifest, catalog.compiled_at, version.published_at
+		        catalog.dependencies, catalog.resource_manifest, catalog.knowledge_contract,
+		        catalog.knowledge_contract_identity, catalog.compiled_at, version.published_at
 		 FROM skill_compiled_catalogs AS catalog
 		 JOIN skill_versions AS version
 		   ON version.id = catalog.skill_version_id AND version.account_id = catalog.account_id
@@ -138,12 +139,13 @@ func getQualityCompiledCatalogTx(ctx context.Context, tx pgx.Tx, accountID, vers
 		&artifact.ID, &artifact.AccountID, &artifact.SkillVersionID, &artifact.SkillName, &artifact.Version, &artifact.SourceID,
 		&artifact.CompilerName, &artifact.CompilerVersion, &artifact.InputPackageHash, &artifact.Description,
 		&rawTriggers, &rawCapabilities, &rawConstraints, &rawDependencies, &rawManifest,
+		&rawContract, &artifact.KnowledgeContractIdentity,
 		&artifact.CompiledAt, &artifact.PublishedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
-	if err := decodeCompiledJSON(&artifact, rawTriggers, rawCapabilities, rawConstraints, rawDependencies, rawManifest); err != nil {
+	if err := decodeCompiledJSON(&artifact, rawTriggers, rawCapabilities, rawConstraints, rawDependencies, rawManifest, rawContract); err != nil {
 		return nil, err
 	}
 	return &artifact, nil

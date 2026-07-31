@@ -70,10 +70,15 @@ assets; domain knowledge corpora belong to a standalone Knowledge Registry that
 skills discover at runtime through a Knowledge Discovery Contract instead of fixed bindings.
 The target model is specified in
 [Skill + Knowledge Architecture v0.3](docs/skill-knowledge-architecture-v0.1.md).
-The K1 milestone (knowledge sources, immutable revisions, document snapshots) and the
-K2 milestone (K0 catalog cards, deterministic Markdown chunking, document link graph,
-account-scoped hybrid retrieval) are implemented; the knowledge compiler and runtime
-KnowledgeResolutionRun remain unimplemented.
+K1 (knowledge sources, immutable revisions, document snapshots), K2 (K0 catalog cards,
+deterministic Markdown chunking, document link graph, account-scoped hybrid retrieval),
+and the K3 wiki compiler are implemented. K4 is partially implemented: Skills declare a
+`knowledge:` contract in SKILL.md frontmatter (parsed, validated and linted at compile
+time, persisted on the compiled artifact, and part of Skill identity via a normalised
+contract identity string), and `POST /api/knowledge/discover` resolves that contract
+against the account's K0 catalog with classified failure statuses. The runtime
+KnowledgeResolutionRun record — freezing which bases, pages and citations an execution
+actually used — remains unimplemented.
 
 The official [AgentMate Memory skill](integrations/skills/agentmate-memory/SKILL.md)
 teaches compatible agents to recall scoped context, journal meaningful events,
@@ -379,10 +384,11 @@ explicit distinct `name`.
 - `POST /api/knowledge/sources/:id/snapshots` — Push a local knowledge package snapshot (scope: `knowledge:rw`)
 - `GET /api/knowledge/revisions/:id/documents?limit=&offset=` — Paginated document metadata without content bodies (scope: `knowledge:r`)
 - `GET /api/knowledge/revisions/:id/documents/:doc_id` — One document including its text content snapshot, served `Cache-Control: private, no-store` (scope: `knowledge:r`)
-- `GET /api/knowledge/catalog?query=&domain=&limit=&offset=` — K0 collection cards for sources with an active revision: manifest metadata (name/description/profile/language/citation_policy), owning domain, document count, package hash, and chunk index status; stable pagination with ILIKE-style name/description filtering plus exact `domain` filtering. The response also carries `domains`, the account's domain roster with collection counts, so a domain can be chosen before reading individual cards (scope: `knowledge:r`)
+- `GET /api/knowledge/catalog?query=&domain=&limit=&offset=` — K0 collection cards for sources with an active revision: manifest metadata (name/description/profile/language/citation_policy), declared `capabilities` and `languages` (the match surface Skill knowledge contracts discover against; the older singular `language` folds into the plural), owning domain, document count, package hash, and chunk index status; stable pagination with ILIKE-style name/description filtering plus exact `domain` filtering. The response also carries `domains`, the account's domain roster with collection counts, so a domain can be chosen before reading individual cards (scope: `knowledge:r`)
 - `POST /api/knowledge/index` — Chunk-index active revisions (body `source_id` optional; empty indexes every active source) into the account-scoped `knowledge` retrieval namespace and rebuild the document link graph (scope: `knowledge:rw`)
 - `POST /api/knowledge/search` — Hybrid lexical + semantic search over indexed chunks (body `query`/`top_k`/`domain`/`source_ids`/`include_content`; `domain` resolves to that domain's sources and intersects with `source_ids`, so it can only narrow the search); hits carry document/source/revision provenance, heading path, score, snippet, and 1-hop link neighbors (metadata only, capped at 16); the snippet is the first 240 runes of the chunk body (a chunk shorter than that is fully visible in its snippet), and the full chunk body is returned only with `include_content=true`; served `Cache-Control: private, no-store` (scope: `knowledge:r`)
 - `GET /api/knowledge/documents/:doc_id/links?limit=&offset=` — Both directions of one document's package-internal links: outgoing links keep the target path (with a NULL document ID when dangling), incoming links carry the linking document's path (scope: `knowledge:r`)
+- `POST /api/knowledge/discover` — Resolve a skill version's compiled knowledge contract against the account's K0 catalog (body `skill_version_id`, optional `requirement_id`). Per requirement it returns ranked candidate collections with the matched capabilities/languages/domain spelled out, the contract's retrieval budgets echoed, and a classified status — `matched`, `ambiguous` (more candidates than the contract's `max_knowledge_bases`, with the contract's own `on_ambiguous` guidance), `no_metadata_match` (the note distinguishes "nothing fits" from "no manifest declares capabilities at all"), `no_authorized_knowledge`, `pinned_resolved`, or `pinned_missing`. Failure classes are never flattened into an empty list. The response carries a deterministic discovery `fingerprint` over the contract identity and the catalog state, the future anchor for KnowledgeResolutionRun. `scoped_discover` contracts are refused with `501` rather than silently widened, because workspaces/tags/approved state do not exist in the knowledge domain yet. Discovery reads the compiled contract from the skills domain, so the route requires both `knowledge:r` and `skills:r`; served `Cache-Control: private, no-store`
 
 #### Wiki retrieval (K3.6)
 
@@ -565,7 +571,10 @@ anchors are `check` (mechanical) and human validation, not another model.
 
 Every knowledge package must carry a root `KNOWLEDGE.yaml` manifest
 (`name` required; optional `description`, `profile`, `language`,
-`include`/`exclude` glob lists, and `citation_policy: required|optional`).
+`capabilities`/`languages` declaration lists (max 16 entries each — they are
+what Skill knowledge contracts match against, and an over-broad declaration
+stops discriminating), `include`/`exclude` glob lists, and
+`citation_policy: required|optional`).
 The manifest's include/exclude rules select which files become documents;
 `KNOWLEDGE.yaml` itself always participates in the package identity hash but
 is never returned as a document. Text files keep a stored content snapshot;
@@ -647,7 +656,7 @@ integration opt into only the modules it needs.
 | `POST /mcp/memory` | `memory_record`, `memory_store`, `memory_search`, `memory_get`, `memory_timeline`, `memory_attribution`, `memory_supersede`, `memory_feedback`, `memory_feedback_list`, `memory_checkpoint_save`, `memory_resume` |
 | `POST /mcp/skills` | `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_source_sync`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active`, `skill_catalog_list`, `skill_compile`, `skill_version_instructions`, `skill_version_resources`, `skill_resource_get`, `skill_quality_run`, `skill_quality_get` |
 | `POST /mcp/context` | `context_pack` |
-| `POST /mcp/knowledge` | `knowledge_sources_list`, `knowledge_source_sync`, `knowledge_documents_list`, `knowledge_document_get`, `knowledge_catalog_list`, `knowledge_search`, `knowledge_index_active`, `knowledge_document_links`, `knowledge_compile`, `knowledge_builds_list`, `knowledge_build_get`, `knowledge_build_pages`, `knowledge_page_get`, `knowledge_build_diff`, `knowledge_build_events`, `knowledge_build_activate`, `knowledge_queue_stats`, `knowledge_wiki_search`, `knowledge_wiki_index`, `knowledge_wiki_status` |
+| `POST /mcp/knowledge` | `knowledge_sources_list`, `knowledge_source_sync`, `knowledge_documents_list`, `knowledge_document_get`, `knowledge_catalog_list`, `knowledge_search`, `knowledge_discover`, `knowledge_index_active`, `knowledge_document_links`, `knowledge_compile`, `knowledge_builds_list`, `knowledge_build_get`, `knowledge_build_pages`, `knowledge_page_get`, `knowledge_build_diff`, `knowledge_build_events`, `knowledge_build_activate`, `knowledge_queue_stats`, `knowledge_wiki_search`, `knowledge_wiki_index`, `knowledge_wiki_status` |
 
 Authenticate with a valid API key via `X-Api-Key` header, `Authorization: Bearer ak_xxx`,
 or `?api_key=ak_xxx` query param. MCP tool calls enforce the same API key scopes as REST

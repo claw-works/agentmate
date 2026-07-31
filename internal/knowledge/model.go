@@ -186,21 +186,27 @@ type DocumentLinksResponse struct {
 // ─── K2: K0 catalog ───
 
 type KnowledgeCatalogItem struct {
-	SourceID         string `json:"source_id"`
-	Name             string `json:"name"`
-	Domain           string `json:"domain,omitempty"`
-	Description      string `json:"description,omitempty"`
-	Profile          string `json:"profile,omitempty"`
-	Language         string `json:"language,omitempty"`
-	CitationPolicy   string `json:"citation_policy,omitempty"`
-	Type             string `json:"type"`
-	ActiveRevisionID string `json:"active_revision_id"`
-	PackageHash      string `json:"package_hash"`
-	DocumentCount    int    `json:"document_count"`
-	IndexedChunks    int    `json:"indexed_chunks"`
-	FailedChunks     int    `json:"failed_chunks"`
-	PendingChunks    int    `json:"pending_chunks"`
-	IndexStatus      string `json:"index_status"`
+	SourceID       string `json:"source_id"`
+	Name           string `json:"name"`
+	Domain         string `json:"domain,omitempty"`
+	Description    string `json:"description,omitempty"`
+	Profile        string `json:"profile,omitempty"`
+	Language       string `json:"language,omitempty"`
+	CitationPolicy string `json:"citation_policy,omitempty"`
+	// Capabilities and Languages are the manifest's declared match surface — what a
+	// Skill's knowledge contract compares its requirements against. They belong on
+	// the K0 card because an agent choosing a base needs to see the same facts
+	// discovery ranked on; a card that hides them makes discovery unexplainable.
+	Capabilities     []string `json:"capabilities,omitempty"`
+	Languages        []string `json:"languages,omitempty"`
+	Type             string   `json:"type"`
+	ActiveRevisionID string   `json:"active_revision_id"`
+	PackageHash      string   `json:"package_hash"`
+	DocumentCount    int      `json:"document_count"`
+	IndexedChunks    int      `json:"indexed_chunks"`
+	FailedChunks     int      `json:"failed_chunks"`
+	PendingChunks    int      `json:"pending_chunks"`
+	IndexStatus      string   `json:"index_status"`
 }
 
 type KnowledgeCatalogListParams struct {

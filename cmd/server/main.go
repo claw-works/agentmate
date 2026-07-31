@@ -85,6 +85,9 @@ func main() {
 
 	knowledgeRepo := knowledge.NewRepo(pool)
 	knowledgeSvc := knowledge.NewService(knowledgeRepo, retrievalSvc)
+	// K4 discovery resolves Skill knowledge contracts against the K0 catalog; the
+	// contract is read through the skills domain so it stays the compiled one.
+	knowledgeSvc.WithSkillContracts(skillsSvc)
 	// The wiki compiler and its reviewer are configured independently so review
 	// can run on a different vendor. Whether it actually does is recorded on every
 	// build via Independence rather than assumed here.
@@ -245,6 +248,10 @@ func main() {
 	protected.GET("/knowledge/catalog", auth.RequireScope("knowledge:r"), knowledgeHandler.ListCatalog)
 	protected.GET("/knowledge/documents/:doc_id/links", auth.RequireScope("knowledge:r"), knowledgeHandler.ListDocumentLinks)
 	protected.POST("/knowledge/search", auth.RequireScope("knowledge:r"), knowledgeHandler.Search)
+	// K4 discovery reads the compiled contract (skills domain) and the K0 catalog
+	// (knowledge domain); both scopes are required, matching the context pack's
+	// per-domain authorisation stance.
+	protected.POST("/knowledge/discover", auth.RequireScope("knowledge:r"), auth.RequireScope("skills:r"), knowledgeHandler.Discover)
 
 	// K3 wiki reads. Builds are immutable, so these are all safe to cache-bust
 	// on id alone.

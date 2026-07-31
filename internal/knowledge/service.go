@@ -40,6 +40,10 @@ type Service struct {
 	reviewerIndependence string
 	compilerPricing      llm.Pricing
 	reviewerPricing      llm.Pricing
+
+	// skillContracts supplies compiled knowledge contracts for K4 discovery. Optional:
+	// wired from main where both domains are visible, nil in knowledge-only tests.
+	skillContracts SkillContractSource
 }
 
 // NewService keeps the retrieval dependency optional (mirroring the skills
