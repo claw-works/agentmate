@@ -421,7 +421,9 @@ func registerFrontend(r *gin.Engine) {
 }
 
 func dynamicExportCandidate(dir, reqPath string) string {
-	for _, route := range []string{"reports", "bookmarks"} {
+	// 更长的前缀在前：/reports/manage/<id> 是管理详情的动态路由，必须先于
+	// /reports/<id>（公开文章页）匹配，否则 manage 会被当成一篇报告的 id。
+	for _, route := range []string{"reports/manage", "reports", "bookmarks"} {
 		prefix := "/" + route + "/"
 		if !strings.HasPrefix(reqPath, prefix) {
 			continue
