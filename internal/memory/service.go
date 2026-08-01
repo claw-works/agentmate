@@ -145,6 +145,65 @@ func (s *Service) GetEntry(ctx context.Context, accountID, id string) (*EntryDet
 	return entry, err
 }
 
+// GetEvent 回读一个事件，用于写入方校验"存进去的到底是什么"。
+//
+// 空 payload 会附一条警告。events 的正文放在 payload 里，而顶层放错字段曾经被静默
+// 丢弃——那批事件如今回读出来就是 payload 为空，正文永久丢失。回读时明说这件事，
+// 比让调用方自己盯着一个 {} 猜要好。
+func (s *Service) GetEvent(ctx context.Context, accountID, eventID string) (*EventDetail, error) {
+	if strings.TrimSpace(accountID) == "" {
+		return nil, invalidInputf("account id required")
+	}
+	event, err := s.repo.GetEvent(ctx, accountID, strings.TrimSpace(eventID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &EventDetail{Event: *event, Warning: emptyPayloadWarning(*event)}, nil
+}
+
+func (s *Service) ListEvents(ctx context.Context, accountID string, params ListEventsParams) ([]EventDetail, int, error) {
+	if strings.TrimSpace(accountID) == "" {
+		return nil, 0, invalidInputf("account id required")
+	}
+	params.SessionID = strings.TrimSpace(params.SessionID)
+	params.ScopeType = strings.ToLower(strings.TrimSpace(params.ScopeType))
+	params.ScopeKey = strings.TrimSpace(params.ScopeKey)
+	params.EventType = strings.ToLower(strings.TrimSpace(params.EventType))
+	if params.EventType != "" && !validEventTypes[params.EventType] {
+		var errs fieldErrors
+		errs.add("event_type", fmt.Sprintf("invalid value %q", params.EventType), sortedKeys(validEventTypes)...)
+		return nil, 0, errs.err()
+	}
+	if params.Limit <= 0 || params.Limit > MaxListLimit {
+		params.Limit = DefaultListLimit
+	}
+	if params.Offset < 0 {
+		params.Offset = 0
+	}
+	events, total, err := s.repo.ListEvents(ctx, accountID, params)
+	if err != nil {
+		return nil, 0, err
+	}
+	items := make([]EventDetail, 0, len(events))
+	for _, event := range events {
+		items = append(items, EventDetail{Event: event, Warning: emptyPayloadWarning(event)})
+	}
+	return items, total, nil
+}
+
+// emptyPayloadWarning 把"正文为空"这件事说出来，而不是让调用方对着 {} 猜。
+func emptyPayloadWarning(event Event) string {
+	if len(event.Payload) > 0 && string(event.Payload) != "{}" && string(event.Payload) != "null" {
+		return ""
+	}
+	return "payload is empty: this event carries no content. Event content belongs in `payload`; " +
+		"content sent as a top-level field was silently dropped by servers older than 2026-08-01 " +
+		"and cannot be recovered. Newer servers reject that request with 400 instead."
+}
+
 // ListScopes 返回本账号已在用的 scope 组合，供调用方跟随既有约定而不是自己新编一个。
 func (s *Service) ListScopes(ctx context.Context, accountID string) ([]ScopeUsage, error) {
 	if strings.TrimSpace(accountID) == "" {
@@ -379,7 +438,74 @@ func validateEventRequest(req RecordEventRequest) error {
 	if (req.SourceType == "") != (req.SourceID == "") {
 		errs.add("source_type", "source_type and source_id must be provided together")
 	}
+	// checkpoint 事件也可以从这条通用路径写入，而这条路径的 payload 是自由格式。
+	// 不在这里校验，类型写错的 checkpoint 就会被收下、并在读取时才炸——失败点离
+	// 犯错的地方隔了一次会话，而且炸的时候正是最需要它的时候（断点恢复）。
+	// 把失败点搬到写入侧：写错立刻知道，而不是几小时后发现快照读不出来。
+	if req.EventType == checkpointEventType {
+		validateCheckpointPayload(req.Payload, &errs)
+	}
 	return errs.err()
+}
+
+// checkpointPayloadFields 是 checkpoint payload 的权威字段表。读取侧、写入校验和
+// /api/schema 共用它，所以三者不可能各说一套。
+var checkpointPayloadFields = map[string]string{
+	"label": "string",
+	"goal":  "string",
+	"notes": "string",
+	"done":  "[]string",
+	"next":  "[]string",
+	"open":  "[]string",
+}
+
+// validateCheckpointPayload 检查 checkpoint payload 的字段类型与拼写。
+//
+// 未知键一律报错而不是忽略：真实接入里 blocked_on 被静默丢弃（它不是 checkpoint 的
+// 字段），写入方以为记下了阻塞原因，实际什么都没留下。对一个用于断点恢复的东西，
+// 静默少一个字段和少一整份快照的后果一样。
+func validateCheckpointPayload(payload map[string]any, errs *fieldErrors) {
+	if len(payload) == 0 {
+		return
+	}
+	for key, value := range payload {
+		want, known := checkpointPayloadFields[key]
+		if !known {
+			errs.add("payload."+key,
+				fmt.Sprintf("unknown checkpoint field; a checkpoint payload accepts %s",
+					strings.Join(sortedKeys(checkpointPayloadKeySet()), ", ")))
+			continue
+		}
+		switch want {
+		case "string":
+			if _, ok := value.(string); !ok {
+				errs.add("payload."+key, fmt.Sprintf("expected string, got %T", value))
+			}
+		case "[]string":
+			// 两种来源形状都要认：从 JSON 解码来的是 []any，而
+			// SaveCheckpoint 在服务端内部构造 payload 时直接放 []string。
+			// 只认前者会把那条本已校验的路径挡在门外。
+			switch list := value.(type) {
+			case []string:
+			case []any:
+				for i, item := range list {
+					if _, ok := item.(string); !ok {
+						errs.add(fmt.Sprintf("payload.%s[%d]", key, i), fmt.Sprintf("expected string, got %T", item))
+					}
+				}
+			default:
+				errs.add("payload."+key, fmt.Sprintf("expected an array of strings, got %T", value))
+			}
+		}
+	}
+}
+
+func checkpointPayloadKeySet() map[string]bool {
+	set := make(map[string]bool, len(checkpointPayloadFields))
+	for key := range checkpointPayloadFields {
+		set[key] = true
+	}
+	return set
 }
 
 // InputSchema 导出写入侧的枚举与必填约束，供 GET /api/schema 使用。
@@ -397,10 +523,25 @@ func InputSchema() map[string]any {
 				"scope_key":   "required unless scope_type is " + DefaultScopeType,
 				"session_id":  "UUID; one per task, reused across retries",
 				"sequence_no": "optional — the server does not require you to keep a counter; omit it if you are not tracking one",
-				"payload":     "free-form JSON object; this is where the event content goes. Unknown top-level request fields are ignored, so content placed outside payload is silently dropped",
+				"payload":     "free-form JSON object; this is where the event content goes",
 				"occurred_at": "RFC3339; defaults to now",
 			},
+			"unknown_fields": "rejected with 400 naming the field. Content sent as a top-level field " +
+				"(for example `content`) is NOT accepted — it belongs in `payload`. Servers older than " +
+				"2026-08-01 silently dropped such fields and returned 201, so events written before then " +
+				"may have an empty payload with their content permanently lost",
+			"read_back": "GET /api/memory/events/<id> and GET /api/memory/events?session_id=… " +
+				"return what was stored, with a warning when payload is empty. Verify a write rather " +
+				"than trusting the 201",
 			"idempotency": "retries must reuse the same key with identical content; changed content under the same key returns 409",
+			"checkpoint_payload": map[string]any{
+				"note": "when event_type is \"checkpoint\" the payload is NOT free-form: it is read back as a " +
+					"structured snapshot, so its field types are validated on write. Prefer " +
+					"POST /api/memory/checkpoints, which takes these as typed top-level fields",
+				"fields": checkpointPayloadFields,
+				"degradation": "a checkpoint stored with wrong types (by an older server) is read with " +
+					"best-effort degradation and a `warning`, rather than failing the whole read",
+			},
 		},
 		"entries": map[string]any{
 			"endpoint":     "POST /api/memory/entries",
@@ -413,7 +554,19 @@ func InputSchema() map[string]any {
 				"optional": []string{"excerpt", "metadata"},
 				"note":     "writes use source_type/source_id; reads expose the same thing as `ref`. Same concept, two vocabularies — this is the write-side shape",
 			},
+			"unknown_fields": "rejected with 400 naming the field",
 		},
+		"changes": []map[string]string{{
+			"date": "2026-08-01",
+			"what": "memory write endpoints reject unknown fields instead of ignoring them",
+			"why": "silently dropping a field returned 201 for content that was never stored; " +
+				"five events in a real integration lost their bodies this way, discovered only when " +
+				"a checkpoint read back as \"Goal: \" with nothing else",
+			"breaking": "a request that previously succeeded with a misnamed field now returns 400 " +
+				"naming the field and where the content belongs. This is deliberate: the alternative " +
+				"is continuing to lose data quietly. No version negotiation exists yet — check this " +
+				"list to see what changed",
+		}},
 		"search": map[string]any{
 			"endpoint":     "POST /api/memory/search",
 			"required":     []string{"query"},
@@ -1110,34 +1263,95 @@ func (s *Service) Resume(ctx context.Context, owner ownership.Owner, sessionID s
 	return response, nil
 }
 
+// checkpointFromEvent 把一个 checkpoint 事件解成结构化快照。
+//
+// 解码失败**不**返回错误：checkpoint 事件也可以经 POST /api/memory/events 手工拼
+// payload 写入，那条路径的 payload 是自由格式，于是类型写错的 checkpoint 能被写进
+// 去、只在读取时炸。真实接入里 next 被写成字符串，结果 TASK 整层报
+// "decode checkpoint payload"，连本来能读的 goal 一起丢——一个用来断点恢复的东西，
+// 在最需要它的时候因为一个字段的类型而完全不可用。
+//
+// 所以这里逐字段尽力解码：能认的认，不能认的记在 Warning 里。降级读到一半的
+// checkpoint 也比读不到强，而写入侧的校验（validateCheckpointPayload）负责让新的
+// 坏数据根本进不来。
 func checkpointFromEvent(event *Event) (*Checkpoint, error) {
-	var payload struct {
-		Label string   `json:"label"`
-		Goal  string   `json:"goal"`
-		Done  []string `json:"done"`
-		Next  []string `json:"next"`
-		Open  []string `json:"open"`
-		Notes string   `json:"notes"`
-	}
-	if len(event.Payload) > 0 {
-		if err := json.Unmarshal(event.Payload, &payload); err != nil {
-			return nil, fmt.Errorf("decode checkpoint payload: %w", err)
-		}
-	}
-	return &Checkpoint{
+	checkpoint := &Checkpoint{
 		EventID:        event.ID,
 		SessionID:      event.SessionID,
 		ScopeType:      event.ScopeType,
 		ScopeKey:       event.ScopeKey,
-		Label:          payload.Label,
-		Goal:           payload.Goal,
-		Done:           payload.Done,
-		Next:           payload.Next,
-		Open:           payload.Open,
-		Notes:          payload.Notes,
 		SkillVersionID: event.SkillVersionID,
 		OccurredAt:     event.OccurredAt,
-	}, nil
+	}
+	if len(event.Payload) == 0 {
+		return checkpoint, nil
+	}
+
+	var loose map[string]json.RawMessage
+	if err := json.Unmarshal(event.Payload, &loose); err != nil {
+		// 连对象都不是。此时没有任何字段可救，但仍然返回一个带 EventID 的 checkpoint，
+		// 让调用方知道"这里有一个 checkpoint，只是读不出内容"。
+		checkpoint.Warning = "checkpoint payload is not a JSON object and could not be read"
+		return checkpoint, nil
+	}
+
+	var malformed []string
+	decodeString := func(key string, into *string) {
+		raw, ok := loose[key]
+		if !ok {
+			return
+		}
+		if err := json.Unmarshal(raw, into); err != nil {
+			malformed = append(malformed, key+" (expected string)")
+		}
+	}
+	decodeList := func(key string, into *[]string) {
+		raw, ok := loose[key]
+		if !ok {
+			return
+		}
+		if err := json.Unmarshal(raw, into); err != nil {
+			// 单个字符串写在了列表位置上，是最常见的写法错误。收下它，同时报出来。
+			var single string
+			if json.Unmarshal(raw, &single) == nil {
+				*into = []string{single}
+				malformed = append(malformed, key+" (expected array of strings, read a single string)")
+				return
+			}
+			malformed = append(malformed, key+" (expected array of strings)")
+		}
+	}
+
+	decodeString("label", &checkpoint.Label)
+	decodeString("goal", &checkpoint.Goal)
+	decodeString("notes", &checkpoint.Notes)
+	decodeList("done", &checkpoint.Done)
+	decodeList("next", &checkpoint.Next)
+	decodeList("open", &checkpoint.Open)
+
+	// 未知键同样报出来：checkpoint 经 events 写入时 payload 是自由格式，多写的键会被
+	// 静默忽略——真实接入里 blocked_on 就是这样消失的（它不是 checkpoint 的字段）。
+	var unknown []string
+	for key := range loose {
+		switch key {
+		case "label", "goal", "notes", "done", "next", "open":
+		default:
+			unknown = append(unknown, key)
+		}
+	}
+	sort.Strings(unknown)
+
+	var notes []string
+	if len(malformed) > 0 {
+		sort.Strings(malformed)
+		notes = append(notes, "malformed fields read with degradation: "+strings.Join(malformed, ", "))
+	}
+	if len(unknown) > 0 {
+		notes = append(notes, "unrecognised fields ignored: "+strings.Join(unknown, ", ")+
+			" (checkpoint payload accepts label, goal, notes, done[], next[], open[])")
+	}
+	checkpoint.Warning = strings.Join(notes, "; ")
+	return checkpoint, nil
 }
 
 func trimList(values []string) []string {

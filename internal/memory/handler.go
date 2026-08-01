@@ -96,6 +96,37 @@ func (h *Handler) GetEntry(c *gin.Context) {
 	c.JSON(http.StatusOK, entry)
 }
 
+// GetEvent 回读一个事件。写入方靠它校验"存进去的到底是什么"——没有回读，服务端
+// 报"已保存"就只是在复述 HTTP 200。
+func (h *Handler) GetEvent(c *gin.Context) {
+	event, err := h.svc.GetEvent(c.Request.Context(), auth.OwnerFromContext(c).Account(), c.Param("id"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusOK, event)
+}
+
+func (h *Handler) ListEvents(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", strconv.Itoa(DefaultListLimit)))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	items, total, err := h.svc.ListEvents(c.Request.Context(), auth.OwnerFromContext(c).Account(), ListEventsParams{
+		SessionID: c.Query("session_id"),
+		ScopeType: c.Query("scope_type"),
+		ScopeKey:  c.Query("scope_key"),
+		EventType: c.Query("event_type"),
+		Limit:     limit,
+		Offset:    offset,
+	})
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.Header("Cache-Control", "private, no-store")
+	c.JSON(http.StatusOK, gin.H{"items": items, "total": total, "limit": limit, "offset": offset})
+}
+
 // ListScopes 报告本账号已在用的 scope 组合，按用量降序：用得最多的那个就是这个
 // 账号事实上的约定。调用方据此跟随，而不是各编一个把同一个项目散成两半。
 func (h *Handler) ListScopes(c *gin.Context) {

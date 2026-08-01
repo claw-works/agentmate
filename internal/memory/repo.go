@@ -176,6 +176,59 @@ func (r *Repo) CountEntries(ctx context.Context, accountID string, params ListEn
 	return count, err
 }
 
+// GetEvent 按 ID 取回一个事件。
+//
+// 存在的理由很直接：一个写入系统如果调用方无法回读校验，它报"已保存"就只是在复述
+// HTTP 200。事件此前只能写不能读（REST 侧只有 POST），于是"内容有没有真的存进去"
+// 这个问题在服务端没有答案——真实接入里正是这样丢了五条事件的正文而无人发现。
+func (r *Repo) GetEvent(ctx context.Context, accountID, eventID string) (*Event, error) {
+	var event Event
+	err := r.pool.QueryRow(ctx,
+		`SELECT `+eventColumns+` FROM memory_events WHERE account_id = $1 AND id = $2`,
+		accountID, eventID,
+	).Scan(scanEvent(&event)...)
+	if err != nil {
+		return nil, err
+	}
+	return &event, nil
+}
+
+// ListEvents 按时间倒序列出事件，可按 session / scope / event_type 收窄。
+func (r *Repo) ListEvents(ctx context.Context, accountID string, params ListEventsParams) ([]Event, int, error) {
+	const filter = `
+	   AND ($2 = '' OR session_id::text = $2)
+	   AND ($3 = '' OR scope_type = $3)
+	   AND ($4 = '' OR scope_key = $4)
+	   AND ($5 = '' OR event_type = $5)`
+	var total int
+	if err := r.pool.QueryRow(ctx,
+		`SELECT count(*) FROM memory_events WHERE account_id = $1`+filter,
+		accountID, params.SessionID, params.ScopeType, params.ScopeKey, params.EventType,
+	).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT `+eventColumns+` FROM memory_events WHERE account_id = $1`+filter+`
+		 ORDER BY occurred_at DESC, created_at DESC, id DESC
+		 LIMIT $6 OFFSET $7`,
+		accountID, params.SessionID, params.ScopeType, params.ScopeKey, params.EventType,
+		params.Limit, params.Offset,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]Event, 0)
+	for rows.Next() {
+		var event Event
+		if err := rows.Scan(scanEvent(&event)...); err != nil {
+			return nil, 0, err
+		}
+		items = append(items, event)
+	}
+	return items, total, rows.Err()
+}
+
 // ScopeUsage 是一个 (scope_type, scope_key) 组合的用量。
 type ScopeUsage struct {
 	ScopeType  string `json:"scope_type"`

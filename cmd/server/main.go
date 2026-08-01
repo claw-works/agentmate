@@ -233,6 +233,9 @@ func main() {
 
 	// Memory - read
 	protected.GET("/memory/entries", auth.RequireScope("memory:r"), memoryHandler.ListEntries)
+	// 事件回读。写入方必须能核对自己写进去的是什么，否则"已保存"只是复述 HTTP 200。
+	protected.GET("/memory/events", auth.RequireScope("memory:r"), memoryHandler.ListEvents)
+	protected.GET("/memory/events/:id", auth.RequireScope("memory:r"), memoryHandler.GetEvent)
 	protected.GET("/memory/scopes", auth.RequireScope("memory:r"), memoryHandler.ListScopes)
 	protected.GET("/memory/entries/:id", auth.RequireScope("memory:r"), memoryHandler.GetEntry)
 	protected.POST("/memory/search", auth.RequireScope("memory:r"), memoryHandler.SearchEntries)
@@ -479,7 +482,21 @@ func registerFrontend(r *gin.Engine) {
 			return
 		}
 
-		c.File(filepath.Join(dir, "index.html"))
+		// 到这里说明请求的路径不对应任何导出产物，也不是已知的动态路由
+		// （动态路由在上面由 dynamicExportCandidate 显式处理）。此前这里返回
+		// index.html 且状态码 200，于是 /openapi、/docs、/randomthing 全都"存在"，
+		// 机器调用方无法回答"这个资源在不在"，人也会看到首页而不是知道自己打错了。
+		//
+		// 用 Next 导出的 404 页配 404 状态：浏览器得到一个正常页面，程序得到一个
+		// 能判断的状态码。没有 404.html 时退回 JSON，状态码仍然正确。
+		//
+		// 这里不能用 c.File：它走 http.ServeFile，而 ServeFile 会自己写 200，把
+		// 预设的状态码覆盖掉——于是页面对了、状态码还是错的，等于没修。
+		if body, readErr := os.ReadFile(filepath.Join(dir, "404.html")); readErr == nil {
+			c.Data(http.StatusNotFound, "text/html; charset=utf-8", body)
+			return
+		}
+		c.JSON(http.StatusNotFound, gin.H{"error": "no such path: " + reqPath})
 	})
 }
 

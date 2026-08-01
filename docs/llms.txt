@@ -117,6 +117,17 @@ Budgets are in characters, not tokens. `[FACTS]` is always queried live.
   `{"source_type","source_id","excerpt"}`. Note the seam: **writes use
   source_type/source_id, reads expose the same thing as `ref`**.
 - `GET /api/memory/entries`, `GET /api/memory/entries/:id`
+- `GET /api/memory/events/:id`, `GET /api/memory/events?session_id=&scope_type=&scope_key=&event_type=`
+  — read back what was stored. A `201` says the request was accepted; only a
+  read-back says what landed. An empty payload comes with a `warning`, because a
+  bare `{}` cannot be told apart from content lost on write.
+- Checkpoints (`event_type: "checkpoint"`) do **not** carry a free-form payload:
+  `goal` string (required), `label`/`notes` string, `done`/`next`/`open`
+  `[]string`. Wrong types and unknown keys are rejected on write with the field
+  named; there is no `blocked_on`. Prefer `POST /api/memory/checkpoints`, which
+  takes these as typed top-level fields. Checkpoints already stored with wrong
+  types are read with best-effort degradation plus a `warning`, so one bad field
+  no longer costs the whole snapshot.
 - `GET /api/memory/scopes` — the (scope_type, scope_key) pairs this account
   already uses, most-used first. `scope_key` is free text and unvalidated, so
   follow the existing convention instead of inventing one; two agents each making

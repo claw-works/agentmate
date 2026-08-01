@@ -58,6 +58,26 @@ type RecordEventRequest struct {
 	SkillVersionID string `json:"skill_version_id"`
 }
 
+// EventDetail 是回读一个事件时的返回形态：事件本身，加上服务端对它的判断。
+//
+// Warning 存在的理由：正文为空的事件回读出来只是一个 {}，调用方无从判断这是"本来
+// 就没内容"还是"内容在写入时丢了"。真实接入里有五条事件正是这样丢掉正文而无人发现，
+// 直到有人去看才发现 checkpoint 里只剩 "Goal: "。
+type EventDetail struct {
+	Event
+	Warning string `json:"warning,omitempty"`
+}
+
+// ListEventsParams 收窄事件回读。全部可选：都为空即本账号最近的事件。
+type ListEventsParams struct {
+	SessionID string
+	ScopeType string
+	ScopeKey  string
+	EventType string
+	Limit     int
+	Offset    int
+}
+
 type Entry struct {
 	ID               string          `json:"id"`
 	AccountID        string          `json:"account_id"`
@@ -346,6 +366,9 @@ type Checkpoint struct {
 	Notes          string    `json:"notes,omitempty"`
 	SkillVersionID *string   `json:"skill_version_id,omitempty"`
 	OccurredAt     time.Time `json:"occurred_at"`
+	// Warning 报告读取这个 checkpoint 时的降级：类型写错但被尽力读出的字段，以及
+	// 被忽略的未知键。空表示 payload 完全符合预期。
+	Warning string `json:"warning,omitempty"`
 }
 
 type SaveCheckpointRequest struct {

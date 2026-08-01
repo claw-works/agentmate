@@ -84,6 +84,39 @@ You do not have to read it up front — errors tell you the same thing:
 Read `fields` and fix everything in one pass. Do not fix one field and retry
 blind.
 
+## Verify a write instead of trusting the 201
+
+GET /api/memory/events/<id>          — read back one event
+GET /api/memory/events?session_id=…  — read back a session's events
+
+A 201 says the request was accepted; only a read-back says what was stored. If
+`payload` comes back empty the reply carries a `warning` saying so — that event
+has no content, and if it was written by a server older than 2026-08-01 the
+content is permanently gone.
+
+Do this at least once after your first write of a session, and always after
+saving a checkpoint. Anything you are going to resume from is worth confirming.
+
+## Checkpoints have a fixed payload shape
+
+Prefer POST /api/memory/checkpoints, which takes typed top-level fields:
+
+  {"session_id":"<uuid>","goal":"<required>","done":["…"],"next":["…"],
+   "open":["…"],"notes":"…","label":"…"}
+
+If you instead write a checkpoint through /api/memory/events with
+event_type="checkpoint", the payload is **not** free-form — it is read back as a
+structured snapshot:
+
+  goal   string (required)     done  []string
+  label  string                next  []string
+  notes  string                open  []string
+
+Wrong types and unrecognised keys are rejected on write with the field named.
+There is no `blocked_on` field; put blockers in `open`. Getting this wrong used
+to be accepted at write time and only surface at read time, taking the whole
+TASK layer with it — exactly when you needed the checkpoint most.
+
 ## Pick a scope before your first write, and stick to it
 
 GET /api/memory/scopes lists the (scope_type, scope_key) pairs this account is
