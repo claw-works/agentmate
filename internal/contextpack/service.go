@@ -307,7 +307,7 @@ func (s *Service) gatherMemory(ctx context.Context, owner ownership.Owner, req P
 			Layer:   LayerMemory,
 			Source:  "memory_entry",
 			Ref:     hit.Entry.ID,
-			Title:   strings.TrimSpace(hit.Entry.MemoryType + " " + hit.Entry.Title),
+			Title:   memoryLabel(hit.Entry.MemoryType, hit.Entry.Title, hit.Entry.Summary, content),
 			Content: content,
 			Score:   &score,
 		})
@@ -449,6 +449,58 @@ func (s *Service) gatherTask(ctx context.Context, owner ownership.Owner, scopes 
 
 	kept, used, dropped, truncated := fit(items, budget)
 	return LayerResult{Items: kept, CharsUsed: used, Dropped: dropped, Truncated: truncated, Note: note}
+}
+
+// memoryLabel 决定一条记忆在 pack 里显示成什么。
+//
+// 决策（open-decisions #5）：不要求写入方必填 title，而是读侧派生。理由是被强制填
+// title 的 agent 会产出"关于 X 的记忆"这类没有信息量的标题——把工作推给写入侧只会
+// 得到噪音，而"显示什么"本来就是读侧的问题。
+//
+// 派生规则确定性、无模型调用：有 title 用 title，否则取 summary 或正文的首行并截断。
+// 前缀始终带 memory_type，因为读者需要知道这是事实、经历还是方法——三者的可信方式
+// 不同，把它们显示成同一种东西会让 agent 用错。
+func memoryLabel(memoryType, title, summary, content string) string {
+	label := strings.TrimSpace(title)
+	if label == "" {
+		label = firstLine(summary)
+	}
+	if label == "" {
+		label = firstLine(content)
+	}
+	label = truncateRunes(label, maxDerivedLabelRunes)
+	if label == "" {
+		// 三处都空：只报类型，而不是编一个标题。空标题是"这条记忆没写标题"，
+		// 编出来的标题是"这条记忆的标题是假的"。
+		return memoryType
+	}
+	if memoryType == "" {
+		return label
+	}
+	return memoryType + " · " + label
+}
+
+const maxDerivedLabelRunes = 80
+
+// firstLine 取首个非空行，并去掉 Markdown 标题标记。
+func firstLine(text string) string {
+	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		return strings.TrimSpace(strings.TrimLeft(trimmed, "#>-* \t"))
+	}
+	return ""
+}
+
+// truncateRunes 按 rune 截断，避免把多字节字符切成半个。
+func truncateRunes(text string, limit int) string {
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return strings.TrimSpace(string(runes[:limit])) + "…"
 }
 
 func checkpointTitle(checkpoint *memory.Checkpoint) string {

@@ -74,7 +74,25 @@ const CompilerVersion = "wiki-compiler-2"
 // PromptVersion identifies the prompt text. Same reasoning as CompilerVersion —
 // editing a prompt silently alters every future build, so the edit must be
 // visible in provenance.
-const PromptVersion = "wiki-prompt-2"
+//
+// wiki-prompt-3 (open-decisions #7 #8) adds two rules the previous prompt lacked,
+// both from defects observed on real builds rather than from review of the prompt:
+//   - a ban on vocabulary absent from the sources, after the compiler wrote
+//     "Package 是 AgentMate 中…" into a page whose sources never contain the word
+//     "AgentMate";
+//   - an inbound-link requirement, after 8 of 13 pages in one build turned out to
+//     have no content page pointing at them.
+//
+// Neither is enforced by check, deliberately. Both are quality properties, not
+// mechanical invariants, and K3.7 draws that line for a reason: a rule that can
+// block activation must be decidable without judgement. Lint reports the orphans
+// and review flags the unsupported assertions, so both stay visible.
+//
+// Incremental builds refuse to reuse pages across a prompt version change, so the
+// next compile of each source rewrites everything under the new rules. That is
+// also why this change is not verified by forcing a paid rebuild now: the next
+// compile that happens for its own reasons is the verification.
+const PromptVersion = "wiki-prompt-3"
 
 // ReviewerPromptVersion identifies the review prompt, versioned for the same
 // reason as PromptVersion: the review standard must be explicit and auditable,
@@ -150,19 +168,18 @@ type BuildRevision struct {
 	// sends whoever reads it to go read the source code.
 	ReviewNote string `json:"review_note,omitempty"`
 
-	PagesWritten     int   `json:"pages_written"`
-	PagesReused      int   `json:"pages_reused"`
-	InputTokens      int   `json:"input_tokens"`
-	OutputTokens     int   `json:"output_tokens"`
-	CostMicros       int64 `json:"cost_micros"`
-	ReviewTokens     int   `json:"review_tokens"`
-	ReviewCostMicros int64 `json:"review_cost_micros"`
-
-	Error      string     `json:"error,omitempty"`
-	StartedAt  *time.Time `json:"started_at,omitempty"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
+	PagesWritten     int        `json:"pages_written"`
+	PagesReused      int        `json:"pages_reused"`
+	InputTokens      int        `json:"input_tokens"`
+	OutputTokens     int        `json:"output_tokens"`
+	CostMicros       int64      `json:"cost_micros"`
+	ReviewTokens     int        `json:"review_tokens"`
+	ReviewCostMicros int64      `json:"review_cost_micros"`
+	Error            string     `json:"error,omitempty"`
+	StartedAt        *time.Time `json:"started_at,omitempty"`
+	FinishedAt       *time.Time `json:"finished_at,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 
 	// ─── queue state (K3.3) ───
 	//
@@ -189,6 +206,31 @@ type BuildRevision struct {
 	// IsActive is derived from the source pointer, not stored on the build, so
 	// there is exactly one place that decides which build is current.
 	IsActive bool `json:"is_active"`
+}
+
+// MarshalJSON 附加派生字段 cost_priced。
+//
+// 决策（open-decisions #4）：单价保持默认 0，但 `cost_micros: 0` 必须能和"这次编译
+// 真的不花钱"区分开。裸的 0 会被读成"免费"，于是成本表上出现一个看起来权威的错数字——
+// 正是 Pricing 拒绝编造默认单价要避免的事，只是换了个地方发生。
+//
+// 判定不需要新列：任何被配置过的单价乘以非零 token 都必然大于 0，所以
+// "花了 token 却记成 0 成本" 唯一的解释就是没配单价。规则由存储字段唯一决定，
+// 因此每条读路径的答案一致，也不会因为漏改某个 scan 点而分叉。
+//
+// 真实单价仍然只能由运营方填（COMPILER_/REVIEWER_*_MICROS_PER_1K_TOKENS）：
+// 那是合同价格，不是能推导出来的东西。这里只保证"没填"是看得见的。
+func (b BuildRevision) MarshalJSON() ([]byte, error) {
+	type raw BuildRevision
+	return json.Marshal(struct {
+		raw
+		CostPriced       bool `json:"cost_priced"`
+		ReviewCostPriced bool `json:"review_cost_priced"`
+	}{
+		raw:              raw(b),
+		CostPriced:       !(b.CostMicros == 0 && (b.InputTokens > 0 || b.OutputTokens > 0)),
+		ReviewCostPriced: !(b.ReviewCostMicros == 0 && b.ReviewTokens > 0),
+	})
 }
 
 type WikiPage struct {

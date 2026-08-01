@@ -35,15 +35,25 @@ Rules you must follow:
 1. Every factual claim must be supported by a citation naming the source document
    path it came from. Never cite a path you were not given.
 2. Do not invent facts. If the sources do not say something, leave it out.
-3. When two sources disagree, create the pages for both positions and record a
+3. Use only vocabulary the sources use. Do not introduce a product name, system
+   name, version number, or proper noun that does not appear in the source text,
+   even when you believe you know what the sources are describing. A sentence that
+   reads as sourced but rests on your own prior knowledge is the most damaging
+   thing you can write here, because nobody downstream can tell it apart from a
+   real finding.
+4. When two sources disagree, create the pages for both positions and record a
    "contradicts" link between them with a note stating the specific disagreement.
-4. Extract a separate "entity" page for a term that the sources treat as a known
+5. Extract a separate "entity" page for a term that the sources treat as a known
    concept in two or more documents but never define in one place.
-5. Write in the language of the source documents.
-6. Page paths must start with "wiki/" and end with ".md".
-7. Do not write "wiki/index.md" or "wiki/log.md". Those two paths are reserved:
+6. Interlink the wiki, do not just fill it. Every page you write must be reachable
+   from at least one other content page: whenever a page mentions a concept that
+   has its own page, link to it. A page nothing points at will not be found by a
+   reader who did not already know it existed, so writing it was wasted.
+7. Write in the language of the source documents.
+8. Page paths must start with "wiki/" and end with ".md".
+9. Do not write "wiki/index.md" or "wiki/log.md". Those two paths are reserved:
    the platform generates the index and the build log itself. Any page you put
-   there is discarded.
+   there is discarded. The index does not count as an inbound link for rule 6.
 
 Reply with a single JSON object and nothing else:
 {
