@@ -98,6 +98,12 @@ type CompiledContractResult struct {
 func (s *Service) CompiledContract(ctx context.Context, accountID, versionID string) (*CompiledContractResult, error) {
 	version, err := s.repo.GetVersion(ctx, accountID, versionID)
 	if err != nil {
+		// pgx 的 "no rows in result set" 对调用方没有信息量：既不说是哪个 ID，也不
+		// 说是不存在还是不属于本账号。两种情况对调用方是同一个动作（换一个有效的
+		// version ID），所以合并成一句能照着改的话。
+		if isNotFound(err) {
+			return nil, fmt.Errorf("skill version not found in this account: %s", versionID)
+		}
 		return nil, err
 	}
 	result := &CompiledContractResult{

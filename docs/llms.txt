@@ -1,210 +1,173 @@
 # AgentMate — AI-native Backend as Toolset
 
-AgentMate exposes personal productivity tools (Todos, Notes, Reports) as structured APIs
-for any AI Agent to consume via REST or MCP. No UI — pure API product.
+AgentMate gives an AI agent four planes over REST or MCP: **Memory** (event journal
+plus evidence-backed durable memories), **Skills** (versioned skill packages),
+**Knowledge** (domain corpora plus platform-compiled wiki pages), and **app facts**
+(todos, notes, reports, bookmarks, expenses). Everything is account-scoped.
 
-## Base URL
+If you are an agent being connected for the first time, read
+`docs/agent-integration.md` instead — it is the step-by-step version of this file.
+
+## Base URL and prefixes
 
 ```
-http://localhost:26001
+http://localhost:26001          # deployment root
+  /api/...                      # every REST endpoint
+  /mcp/<domain>                 # one Streamable HTTP MCP server per domain
 ```
+
+`GET /api/health` needs no credential and reports the mounted MCP endpoints. Use it
+to verify a base URL before configuring anything. Unknown `/api/*` and `/mcp/*`
+paths return JSON `404`, never HTML — HTML in a reply means the URL is wrong.
 
 ## Authentication
 
-Two methods, both resolve to a `user_id`:
-
-1. **JWT** (interactive users):
-   - `POST /auth/login` → returns `{"token": "<jwt>"}`
+1. **JWT** (interactive, and required to mint keys):
+   - `POST /api/auth/register` → `{id, account_id, email, ...}`
+   - `POST /api/auth/login` → `{"token": "<jwt>"}`
    - Header: `Authorization: Bearer <jwt>`
 
-2. **API Key** (agents):
-   - Header: `X-Api-Key: ak_<key>` OR `Authorization: Bearer ak_<key>`
-   - Create keys at `POST /auth/apikeys` (requires JWT)
+2. **API key** (agents):
+   - `POST /api/auth/apikeys` with a JWT → `{"api_key": {...}, "key": "ak_..."}`
+   - The plaintext `key` is returned **once**; it is stored hashed.
+   - Header: `X-Api-Key: ak_...`, or `Authorization: Bearer ak_...`,
+     or `?api_key=ak_...` (MCP only).
+
+`GET /api/auth/me` verifies a credential. `401` = bad credential.
+`403 insufficient scope: X` = valid credential, missing scope — retrying will not
+help.
 
 ## Scopes
 
-API Keys support optional scopes: `todos:r`, `todos:rw`, `notes:r`, `notes:rw`,
-`reports:r`, `reports:rw`, `bookmarks:r`, `bookmarks:rw`, `expenses:r`,
-`expenses:rw`, `skills:r`, `skills:rw`, `manage_keys`. Empty scopes = full access.
+`todos:r|rw`, `notes:r|rw`, `reports:r|rw`, `bookmarks:r|rw`, `expenses:r|rw`,
+`memory:r|rw`, `skills:r|rw`, `knowledge:r|rw`, `manage_keys`.
 
-## Response Format
+`:rw` implies `:r`. An empty `scopes` array means **full access** — pass an explicit
+list instead. Cross-domain routes need more than one scope:
 
-All endpoints return:
-```json
-{"code": 0, "data": <payload>, "message": "ok"}
-{"code": 40001, "data": null, "message": "unauthorized"}
-{"code": 40400, "data": null, "message": "not found"}
-```
+- `POST /api/knowledge/discover` → `knowledge:r` **and** `skills:r`
+- `POST /api/knowledge/resolutions` → `knowledge:rw` **and** `skills:r`
+- `POST /api/context/pack` → authorised **per layer**; a layer you cannot read
+  returns empty with an explanatory note rather than failing the call
 
-Note: Some list endpoints return bare arrays directly (not wrapped).
+## MCP endpoints
 
----
+| Endpoint | Domain |
+|---|---|
+| `/mcp/context` | `context_pack` |
+| `/mcp/memory` | record, store, search, get, timeline, attribution, supersede, feedback, checkpoint, resume |
+| `/mcp/skills` | search, catalog, instructions, resources, logs, publish, compile, quality |
+| `/mcp/knowledge` | search, wiki search, catalog, discover, resolutions, compile, builds, validation |
+| `/mcp/todos` `/mcp/notes` `/mcp/reports` `/mcp/bookmarks` `/mcp/expenses` | CRUD plus search |
 
-## Auth Endpoints
+Streamable HTTP: send `initialize` first, then carry the returned `Mcp-Session-Id`
+header on every later request. A cold `tools/list` returns `Invalid session ID` —
+that is the protocol, not a broken endpoint. MCP tool calls enforce the same scopes
+as REST.
 
-```
-POST /auth/register        body: {email, password}
-POST /auth/login           body: {email, password} → {token}
-GET  /auth/me              → {id, email, role}
-POST /auth/apikeys         body: {name, scopes?, expires_at?} → {id, key, name}
-GET  /auth/apikeys         → [{id, name, key_prefix, created_at, scopes}]
-DELETE /auth/apikeys/:id
-```
+## Start here: one call for task context
 
----
+`POST /api/context/pack` — body: `task` (required), plus optional `query`,
+`skill_name`, `session_id`, `knowledge_domain`, `memory_scope_type`,
+`memory_scope_key`, `max_chars` (default 12000), `top_k`, `layers`, `render`.
 
-## Todos
-
-```
-POST   /todos              body: {title*, description, priority(low/medium/high), due_date, tags[]}
-GET    /todos              ?status=pending|in_progress|done &priority=low|medium|high &tag=xxx &limit=20 &offset=0
-GET    /todos/search       ?q=<text>
-GET    /todos/:id
-PATCH  /todos/:id          body: {title, description, status, priority, due_date, tags}
-DELETE /todos/:id
-```
-
-Todo status values: `pending` | `in_progress` | `done`
-
----
-
-## Notes
+Returns five labelled layers in this order, each with `char_budget`, `chars_used`,
+`dropped`, `truncated`, and a `note` when empty:
 
 ```
-POST   /notes              body: {title*, content, tags[]}
-GET    /notes              ?tag=xxx &limit=20 &offset=0
-GET    /notes/search       ?q=<text>
-GET    /notes/:id
-PATCH  /notes/:id          body: {title, content, tags}
-DELETE /notes/:id
+[SKILL]      taught procedure
+[KNOWLEDGE]  evidence with citations
+[MEMORY]     past experience
+[FACTS]      live todos and notes
+[TASK]       the goal plus recent session activity
 ```
 
----
+Budgets are in characters, not tokens. `[FACTS]` is always queried live.
 
-## Reports
+## REST surface
 
-Reports store Agent-generated content (Markdown or HTML).
+### Auth
+- `POST /api/auth/register`, `POST /api/auth/login` (public)
+- `GET /api/auth/me`
+- `POST /api/auth/apikeys`, `GET /api/auth/apikeys`, `DELETE /api/auth/apikeys/:id`
 
-```
-POST   /reports            body: {title*, content, format(md/html), tags[], source, source_key_id auto-injected}
-GET    /reports            ?source=xxx &tag=xxx &limit=20 &offset=0
-GET    /reports/sources    → [{source, count}]   ← for sidebar filtering
-GET    /reports/search     ?q=<text>              ← full-text search (title+content)
-GET    /reports/:id        ← includes full content field
-PATCH  /reports/:id        body: {title, tags, source}  ← content immutable
-DELETE /reports/:id
-```
+### Memory (`memory:r` / `memory:rw`)
+- `POST /api/memory/events` — append an immutable event. Retries **must** reuse the
+  same `idempotency_key`; same key with different content is `409`.
+- `POST /api/memory/entries` — store a durable memory. Requires `source_event_id`
+  or at least one `evidence` item.
+- `GET /api/memory/entries`, `GET /api/memory/entries/:id`
+- `POST /api/memory/search` — hybrid full-text plus vector
+- `GET /api/memory/timeline?session_id=|skill_version_id=` — requires an anchor
+- `GET /api/memory/entries/:id/attribution` — entry → source event → skill version
+- `POST /api/memory/entries/:id/supersede`, `POST|GET /api/memory/entries/:id/feedback`
+- `POST /api/memory/checkpoints`, `GET /api/memory/resume?session_id=`
 
-**source naming convention**:
-- Recurring tasks: descriptive name e.g. `github-trending-daily`, `heguan-weekly`
-- One-off reports: `adhoc`
+PostgreSQL is the source of truth: if embedding or vector indexing fails, creation
+still succeeds with `indexing.status=failed` and search continues through
+full-text.
 
-`source_key_id` is auto-injected from the calling API Key — no need to pass it.
-List responses omit `content` for performance; use GET /:id for full content.
+### Skills (`skills:r` / `skills:rw`)
+Progressive disclosure — stop as early as the task allows:
+- `GET /api/skills/catalog`, `POST /api/skills/search` → L0 cards
+- `GET /api/skills/versions/:id/instructions` → L1 body
+- `GET /api/skills/versions/:id/resources` → L2 manifest (no content)
+- `GET /api/skills/versions/:id/resources/:file_id` → one resource body
 
----
+Write side: `POST /api/skills/sources`, `/sources/:id/snapshots`, `/sources/:id/sync`,
+`POST /api/skills/compile`, `POST /api/skills/index`,
+`POST /api/skills/versions/:id/activate`, `POST /api/skills/versions/:id/quality-runs`.
+Logs: `POST|GET /api/skills/logs` — pass `skill_version_id` or the log stays
+unattributed and is excluded from version quality telemetry.
 
-## Tags
+### Knowledge (`knowledge:r` / `knowledge:rw`)
+- `POST /api/knowledge/wiki/search` → compiled pages (start here)
+- `POST /api/knowledge/search` → raw document chunks (follow citations down)
+- `GET /api/knowledge/catalog` → K0 cards with declared `capabilities`/`languages`
+- `POST /api/knowledge/discover` → resolve a skill's knowledge contract; statuses:
+  `matched`, `ambiguous`, `no_metadata_match`, `no_authorized_knowledge`,
+  `pinned_resolved`, `pinned_missing`. These are distinct problems, not "no answer".
+- `POST /api/knowledge/resolutions` → freeze what an execution selected, retrieved
+  and cited. `GET .../resolutions`, `GET .../resolutions/:run_id`
+- Sources: `POST|GET /api/knowledge/sources`, `/sources/:id/sync`,
+  `/sources/:id/snapshots`, `/sources/:id/revisions`
+- Documents: `GET /api/knowledge/revisions/:id/documents[/:doc_id]`,
+  `GET /api/knowledge/documents/:doc_id/links`
+- Wiki compile: `POST /api/knowledge/compile` (returns `202` queued),
+  `GET /api/knowledge/queue`, `GET /api/knowledge/builds[/:build_id]`,
+  `/builds/:build_id/{pages,diff,events,activate,review}`
+- Wiki index and lint: `GET|POST /api/knowledge/wiki/index`,
+  `POST /api/knowledge/wiki/lint`, `GET /api/knowledge/wiki/lint/runs[/:run_id]`
+- Validation: `POST|GET /api/knowledge/validation/signals`,
+  `GET /api/knowledge/validation/summary`, `/skill-patterns`
 
-```
-GET /tags                  ?module=todos|notes|reports|all (default: all)
-```
+Wiki pages are model-generated; a claim is checkable only by following its
+citations. `check` is the only gate that blocks a build — review never does.
 
-Returns aggregated tag counts per module:
-```json
-{
-  "todos": [{"tag": "dev", "count": 3}, ...],
-  "notes": [...],
-  "reports": [...]
-}
-```
+### App facts
+- Todos (`todos:r|rw`): `POST|GET /api/todos`, `GET /api/todos/search?q=`,
+  `GET|PATCH|DELETE /api/todos/:id`
+- Notes (`notes:r|rw`): same shape plus `POST /api/notes/:id/append`
+- Reports (`reports:r|rw`): `POST|GET /api/reports`, `GET /api/reports/sources`,
+  `GET|PATCH|DELETE /api/reports/:id`
+- Bookmarks (`bookmarks:r|rw`), Expenses (`expenses:r|rw`, plus
+  `GET /api/expenses/summary`)
+- `GET /api/tags`
+- Public, no credential: `GET /api/public/reports`, `/public/reports/sources`,
+  `/public/reports/:id`
 
-All tags are stored lowercase. Pass tags as lowercase strings when creating/updating.
+## Response and error conventions
 
----
+List endpoints return `{items, total, limit, offset}`. Endpoints serving tenant
+content set `Cache-Control: private, no-store`.
 
-## Skills
+| Status | Meaning |
+|---|---|
+| `401` | Credential missing, wrong, or deleted |
+| `403 insufficient scope: X` | Credential valid, scope missing |
+| `404 {"error":"no such endpoint"}` | Path not mounted on this build |
+| `409` | Idempotency conflict — same key, different content |
+| `501` | Operator gap (for example no compiler model configured), not a failure |
 
-```
-POST /skills/index         body: {skill_name?}      # index active skills into retrieval
-POST /skills/search        body: {query*, top_k?, include_content?}
-GET  /skills/versions/active ?skill_name=<name>
-POST /skills/versions/:id/activate
-```
-
-`/skills/search` returns ranked active skill cards from the vector retrieval store.
-Run `/skills/index` after publishing or activating skills until background indexing is added.
-
----
-
-## Typical Agent Workflow
-
-### 1. Authenticate
-```bash
-# Using API Key (recommended for agents)
-curl http://localhost:26001/todos \
-  -H "X-Api-Key: ak_your_key"
-```
-
-### 2. Create a Todo
-```bash
-curl -X POST http://localhost:26001/todos \
-  -H "X-Api-Key: ak_your_key" \
-  -H "Content-Type: application/json" \
-  -d '{"title":"Task title","priority":"medium","tags":["work"]}'
-```
-
-### 3. Save a Report
-```bash
-curl -X POST http://localhost:26001/reports \
-  -H "X-Api-Key: ak_your_key" \
-  -H "Content-Type: application/json" \
-  -d '{"title":"GitHub Trending 2026-05-20","content":"# Trending\n...","format":"md","source":"github-trending-daily","tags":["github","daily"]}'
-```
-
-### 4. Filter by Source
-```bash
-curl "http://localhost:26001/reports?source=github-trending-daily" \
-  -H "X-Api-Key: ak_your_key"
-```
-
-### 5. Search Across Content
-```bash
-curl "http://localhost:26001/reports/search?q=kubernetes" \
-  -H "X-Api-Key: ak_your_key"
-```
-
----
-
-## MCP Server
-
-AgentMate also exposes Streamable HTTP MCP servers on the main API port:
-
-```
-POST /mcp          # todos, notes, reports, bookmarks, expenses
-POST /mcp/skills   # skill logs, versions, search, and indexing
-```
-
-Authenticate with `X-Api-Key: ak_your_key`, `Authorization: Bearer ak_your_key`,
-or `?api_key=ak_your_key`. MCP tool calls enforce the same API key scopes as REST.
-
-Available MCP tools:
-- `todo_create`, `todo_list`, `todo_get`, `todo_update`, `todo_delete`, `todo_search`
-- `note_create`, `note_list`, `note_get`, `note_update`, `note_delete`, `note_search`, `note_append`
-- `report_create`, `report_list`, `report_get`, `report_update`, `report_delete`, `report_search`
-- `bookmark_save`, `bookmark_list`, `bookmark_get`, `bookmark_update`, `bookmark_mark_read`, `bookmark_delete`, `bookmark_search`
-- `expense_add`, `expense_list`, `expense_summary`, `expense_search`, `expense_update`, `expense_delete`
-- `skill_log_add`, `skill_logs_list`, `skill_version_publish`, `skill_version_get_active`, `skill_stats`, `skill_signals`, `skill_search`, `skill_index_active`
-
----
-
-## Error Codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 40001 | Unauthorized (missing or invalid credentials) |
-| 40301 | Forbidden (insufficient scope) |
-| 40400 | Not found |
-| 40000 | Bad request |
-| 50000 | Internal server error |
+Two rules for agents: never claim persistence when a write failed, and report
+degraded operation rather than working silently without recall.

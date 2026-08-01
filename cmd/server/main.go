@@ -131,6 +131,21 @@ func main() {
 	api := r.Group("/api")
 
 	// Public routes
+	//
+	// /api/health 是接入方在拿到凭证之前唯一能验证的东西：base URL 对不对。
+	// 它必须无鉴权且返回 JSON——如果只能靠受保护端点探活，一个配错的 base URL
+	// 会先表现为 401（看起来像"凭证不对"）而不是"地址不对"，把排查引向错误方向。
+	api.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "ok",
+			"service": "agentmate",
+			// 声明 MCP 挂载点，省掉接入方猜路径。
+			"mcp_endpoints": []string{
+				"/mcp/todos", "/mcp/notes", "/mcp/reports", "/mcp/bookmarks",
+				"/mcp/expenses", "/mcp/memory", "/mcp/skills", "/mcp/knowledge", "/mcp/context",
+			},
+		})
+	})
 	api.POST("/auth/register", authHandler.Register)
 	api.POST("/auth/login", authHandler.Login)
 	api.GET("/public/reports", reportsHandler.PublicList)
@@ -396,6 +411,16 @@ func registerFrontend(r *gin.Engine) {
 		}
 
 		reqPath := c.Request.URL.Path
+
+		// API 与 MCP 命名空间永不回退到前端。落到 SPA 会让拼错的端点、尚未实现的
+		// 端点都返回 200 + HTML，调用方把 HTML 当 JSON 解析，报错指向解析失败而不是
+		// 指向真正的原因（路径不存在）。这里必须给出机器可读的 404。
+		if strings.HasPrefix(reqPath, "/api/") || reqPath == "/api" ||
+			strings.HasPrefix(reqPath, "/mcp/") || reqPath == "/mcp" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "no such endpoint: " + reqPath})
+			return
+		}
+
 		if dynamicCandidate := dynamicExportCandidate(dir, reqPath); dynamicCandidate != "" && fileExists(dynamicCandidate) {
 			c.File(dynamicCandidate)
 			return

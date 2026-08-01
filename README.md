@@ -2,6 +2,10 @@
 
 AI-native tool service platform (Backend as Toolset). Pure API product, no UI. Any external Agent can integrate via REST API or MCP. Multi-tenant SaaS, designed for high concurrency.
 
+**Connecting an agent?** Start with the
+[Agent Integration Guide](docs/agent-integration.md) — written to be read by the
+agent itself, verifiable step by step. This README is the full endpoint reference.
+
 ## Architecture
 
 ```
@@ -705,13 +709,34 @@ MCP server with its own tool list):
 
 ### Quick test (JSON-RPC over HTTP)
 
+These are Streamable HTTP MCP servers, so a session is established first and its
+ID travels on every later request. Calling `tools/list` cold returns
+`Invalid session ID` — that is the protocol working, not a broken endpoint.
+
 ```bash
-curl -X POST http://localhost:26001/mcp/todos \
+BASE=http://localhost:26001
+KEY=ak_xxxx
+
+# 1. initialize — the Mcp-Session-Id response header is the session
+SID=$(curl -s -D - -o /dev/null -X POST $BASE/mcp/todos \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
-  -H "X-Api-Key: ak_xxxx" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+  -H "X-Api-Key: $KEY" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}' \
+  | grep -i '^mcp-session-id' | tr -d '\r' | cut -d' ' -f2)
+
+# 2. list tools with the session
+curl -s -X POST $BASE/mcp/todos \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "X-Api-Key: $KEY" \
+  -H "Mcp-Session-Id: $SID" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 ```
+
+A real MCP client does this handshake itself; the manual form is only for
+verifying connectivity and scopes. For agent integration start from
+[Agent Integration Guide](docs/agent-integration.md).
 
 ## Roadmap
 
