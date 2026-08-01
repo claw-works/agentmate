@@ -176,6 +176,53 @@ func (r *Repo) CountEntries(ctx context.Context, accountID string, params ListEn
 	return count, err
 }
 
+// ScopeUsage 是一个 (scope_type, scope_key) 组合的用量。
+type ScopeUsage struct {
+	ScopeType  string `json:"scope_type"`
+	ScopeKey   string `json:"scope_key"`
+	EntryCount int    `json:"entry_count"`
+	EventCount int    `json:"event_count"`
+}
+
+// ListScopes 返回本账号已经在用的 scope 组合。
+//
+// scope_key 是自由文本，服务端不该替调用方规定它该是仓库名还是路径——不同项目的
+// 惯例不同，硬编一个只会逼人绕开。但"自由"不等于"每个 agent 各编一个"：真实接入
+// 里第二个 agent 无从知道第一个用了什么，于是同一个项目散成两个 scope，互相看不见
+// 对方的记忆。这个查询让约定可被发现，从而可被跟随。
+//
+// 按用量降序：用得最多的那个就是这个账号事实上的约定。
+func (r *Repo) ListScopes(ctx context.Context, accountID string) ([]ScopeUsage, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT scope_type, scope_key,
+		        sum(entry_count)::int AS entry_count,
+		        sum(event_count)::int AS event_count
+		 FROM (
+		   SELECT scope_type, scope_key, count(*) AS entry_count, 0 AS event_count
+		   FROM memory_entries WHERE account_id = $1 GROUP BY scope_type, scope_key
+		   UNION ALL
+		   SELECT scope_type, scope_key, 0 AS entry_count, count(*) AS event_count
+		   FROM memory_events WHERE account_id = $1 GROUP BY scope_type, scope_key
+		 ) AS combined
+		 GROUP BY scope_type, scope_key
+		 ORDER BY (sum(entry_count) + sum(event_count)) DESC, scope_type, scope_key`,
+		accountID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]ScopeUsage, 0)
+	for rows.Next() {
+		var item ScopeUsage
+		if err := rows.Scan(&item.ScopeType, &item.ScopeKey, &item.EntryCount, &item.EventCount); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (r *Repo) ListEntries(ctx context.Context, accountID string, params ListEntriesParams) ([]Entry, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT `+entryColumns+`

@@ -61,6 +61,21 @@ func (h *Handler) GetEntry(c *gin.Context) {
 	c.JSON(http.StatusOK, entry)
 }
 
+// ListScopes 报告本账号已在用的 scope 组合，按用量降序：用得最多的那个就是这个
+// 账号事实上的约定。调用方据此跟随，而不是各编一个把同一个项目散成两半。
+func (h *Handler) ListScopes(c *gin.Context) {
+	items, err := h.svc.ListScopes(c.Request.Context(), auth.OwnerFromContext(c).Account())
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"items": items, "total": len(items),
+		"note": "scope_key 是自由文本，服务端不规定它该是仓库名还是路径。" +
+			"新写入请沿用这里已有的组合；列表为空说明本账号还没有任何记忆。",
+	})
+}
+
 func (h *Handler) ListEntries(c *gin.Context) {
 	owner := auth.OwnerFromContext(c)
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", strconv.Itoa(DefaultListLimit)))
@@ -106,6 +121,14 @@ func (h *Handler) SearchEntries(c *gin.Context) {
 func writeError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, ErrInvalidInput):
+		// 结构化字段错误随 400 一起返回：调用方是 agent，让它从一段自然语言里
+		// 反解合法值不如直接给 machine-readable 的 field/allowed。文本仍然保留，
+		// 老调用方不受影响。
+		var inputErr *InputError
+		if errors.As(err, &inputErr) && len(inputErr.Fields) > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "fields": inputErr.Fields})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	case errors.Is(err, ErrNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"error": ErrNotFound.Error()})

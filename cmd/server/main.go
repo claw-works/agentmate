@@ -148,6 +148,24 @@ func main() {
 	})
 	api.POST("/auth/register", authHandler.Register)
 	api.POST("/auth/login", authHandler.Login)
+
+	// /api/schema 让写入 schema 可以从 REST 侧发现。
+	//
+	// 真实接入里，唯一完整的 schema 真相源曾经只有 MCP 的 inputSchema：agent 必须
+	// 先 initialize、再 tools/list、再从 memory_store 的 inputSchema 里翻出
+	// memory_type 的合法值，在此之前一整轮 6 条写入全部 400。只走 REST 的调用方
+	// 没有等价入口，而枚举值恰恰是猜不出来的那部分。
+	//
+	// 这里只声明枚举与必填约束，不是完整的 OpenAPI：端点列表已经在 README 与
+	// llms.txt 里，而手写维护一份 OpenAPI 只会漂移成另一份过期文档。枚举值直接
+	// 从各领域的校验表导出，所以它不可能和实际校验分叉。
+	api.GET("/schema", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"memory": memory.InputSchema(),
+			"note": "枚举值由服务端校验表导出，与实际校验同源。" +
+				"400 响应体同时返回 fields[].field / fields[].allowed，可直接据此修正请求。",
+		})
+	})
 	api.GET("/public/reports", reportsHandler.PublicList)
 	api.GET("/public/reports/sources", reportsHandler.PublicSources)
 	api.GET("/public/reports/:id", reportsHandler.PublicGet)
@@ -210,6 +228,7 @@ func main() {
 
 	// Memory - read
 	protected.GET("/memory/entries", auth.RequireScope("memory:r"), memoryHandler.ListEntries)
+	protected.GET("/memory/scopes", auth.RequireScope("memory:r"), memoryHandler.ListScopes)
 	protected.GET("/memory/entries/:id", auth.RequireScope("memory:r"), memoryHandler.GetEntry)
 	protected.POST("/memory/search", auth.RequireScope("memory:r"), memoryHandler.SearchEntries)
 	protected.GET("/memory/timeline", auth.RequireScope("memory:r"), memoryHandler.SessionTimeline)

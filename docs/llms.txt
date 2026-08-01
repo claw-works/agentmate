@@ -18,7 +18,14 @@ http://localhost:26001          # deployment root
 
 `GET /api/health` needs no credential and reports the mounted MCP endpoints. Use it
 to verify a base URL before configuring anything. Unknown `/api/*` and `/mcp/*`
-paths return JSON `404`, never HTML — HTML in a reply means the URL is wrong.
+paths return JSON `404`, never HTML — HTML from `/api/health` means the URL is
+wrong. Other paths may legitimately return HTML: the same origin also hosts a
+human UI.
+
+`GET /api/schema` needs no credential and declares the write-side enums and
+required fields, exported from the server's own validators so it cannot disagree
+with what will be accepted. Enum values (`memory_type`, `scope_type`,
+`event_type`) are the part a caller cannot guess.
 
 ## Authentication
 
@@ -92,11 +99,20 @@ Budgets are in characters, not tokens. `[FACTS]` is always queried live.
 - `POST /api/auth/apikeys`, `GET /api/auth/apikeys`, `DELETE /api/auth/apikeys/:id`
 
 ### Memory (`memory:r` / `memory:rw`)
-- `POST /api/memory/events` — append an immutable event. Retries **must** reuse the
-  same `idempotency_key`; same key with different content is `409`.
-- `POST /api/memory/entries` — store a durable memory. Requires `source_event_id`
-  or at least one `evidence` item.
+- `POST /api/memory/events` — append an immutable event. Content goes in
+  `payload` (free-form JSON); unknown top-level fields are ignored, so content
+  placed elsewhere is dropped and the reply echoes `payload: {}`. Retries **must**
+  reuse the same `idempotency_key`; same key with different content is `409`.
+  `sequence_no` is optional — the server keeps no counter for you.
+- `POST /api/memory/entries` — store a durable memory. `memory_type` is a required
+  enum. Requires `source_event_id` or at least one `evidence` item, shaped
+  `{"source_type","source_id","excerpt"}`. Note the seam: **writes use
+  source_type/source_id, reads expose the same thing as `ref`**.
 - `GET /api/memory/entries`, `GET /api/memory/entries/:id`
+- `GET /api/memory/scopes` — the (scope_type, scope_key) pairs this account
+  already uses, most-used first. `scope_key` is free text and unvalidated, so
+  follow the existing convention instead of inventing one; two agents each making
+  one up split a project into scopes that cannot see each other.
 - `POST /api/memory/search` — hybrid full-text plus vector
 - `GET /api/memory/timeline?session_id=|skill_version_id=` — requires an anchor
 - `GET /api/memory/entries/:id/attribution` — entry → source event → skill version
@@ -163,6 +179,7 @@ content set `Cache-Control: private, no-store`.
 
 | Status | Meaning |
 |---|---|
+| `400` | Validation failure. The body carries `fields: [{field, message, allowed}]` listing **every** offending field at once, with enum values where applicable — fix them in one pass rather than retrying field by field |
 | `401` | Credential missing, wrong, or deleted |
 | `403 insufficient scope: X` | Credential valid, scope missing |
 | `404 {"error":"no such endpoint"}` | Path not mounted on this build |

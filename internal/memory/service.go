@@ -145,6 +145,14 @@ func (s *Service) GetEntry(ctx context.Context, accountID, id string) (*EntryDet
 	return entry, err
 }
 
+// ListScopes 返回本账号已在用的 scope 组合，供调用方跟随既有约定而不是自己新编一个。
+func (s *Service) ListScopes(ctx context.Context, accountID string) ([]ScopeUsage, error) {
+	if strings.TrimSpace(accountID) == "" {
+		return nil, invalidInputf("account id required")
+	}
+	return s.repo.ListScopes(ctx, accountID)
+}
+
 func (s *Service) ListEntries(ctx context.Context, accountID string, params ListEntriesParams) ([]Entry, int, error) {
 	if strings.TrimSpace(accountID) == "" {
 		return nil, 0, invalidInputf("account id required")
@@ -343,33 +351,76 @@ func normalizeEventRequest(req *RecordEventRequest) {
 }
 
 func validateEventRequest(req RecordEventRequest) error {
+	var errs fieldErrors
 	if !validScopeTypes[req.ScopeType] {
-		return invalidInputf("invalid scope_type %q", req.ScopeType)
-	}
-	if req.ScopeType != DefaultScopeType && req.ScopeKey == "" {
-		return invalidInputf("scope_key required for %s scope", req.ScopeType)
+		errs.add("scope_type", fmt.Sprintf("invalid value %q", req.ScopeType), sortedKeys(validScopeTypes)...)
+	} else if req.ScopeType != DefaultScopeType && req.ScopeKey == "" {
+		errs.add("scope_key", fmt.Sprintf("required for %s scope", req.ScopeType))
 	}
 	if !validEventTypes[req.EventType] {
-		return invalidInputf("invalid event_type %q", req.EventType)
+		errs.add("event_type", fmt.Sprintf("invalid value %q", req.EventType), sortedKeys(validEventTypes)...)
 	}
 	if req.IdempotencyKey == "" {
-		return invalidInputf("idempotency_key required")
+		errs.add("idempotency_key", "required; retries must reuse the same key with the same content, changed content needs a new key")
 	}
 	if len(req.IdempotencyKey) > 512 {
-		return invalidInputf("idempotency_key must be at most 512 characters")
+		errs.add("idempotency_key", "must be at most 512 characters")
 	}
 	if req.SequenceNo != nil {
+		// sequence_no 是可选的：省略即可，服务端不要求调用方自己数。跨 retry 或上下文
+		// 压缩之后 agent 未必记得数到几，强制维护它只会制造 409。
 		if req.SessionID == "" {
-			return invalidInputf("session_id required when sequence_no is set")
+			errs.add("session_id", "required when sequence_no is set (sequence_no is optional — omit it if you are not tracking one)")
 		}
 		if *req.SequenceNo < 0 {
-			return invalidInputf("sequence_no must not be negative")
+			errs.add("sequence_no", "must not be negative")
 		}
 	}
 	if (req.SourceType == "") != (req.SourceID == "") {
-		return invalidInputf("source_type and source_id must be provided together")
+		errs.add("source_type", "source_type and source_id must be provided together")
 	}
-	return nil
+	return errs.err()
+}
+
+// InputSchema 导出写入侧的枚举与必填约束，供 GET /api/schema 使用。
+//
+// 全部取自本包的校验表，不是另抄一份常量：抄一份就会漂移，而"文档说的合法值和
+// 服务端认的不一样"比没有文档更糟。
+func InputSchema() map[string]any {
+	return map[string]any{
+		"scope_types": sortedKeys(validScopeTypes),
+		"events": map[string]any{
+			"endpoint":    "POST /api/memory/events",
+			"required":    []string{"scope_type", "event_type", "idempotency_key"},
+			"event_types": sortedKeys(validEventTypes),
+			"optional": map[string]string{
+				"scope_key":   "required unless scope_type is " + DefaultScopeType,
+				"session_id":  "UUID; one per task, reused across retries",
+				"sequence_no": "optional — the server does not require you to keep a counter; omit it if you are not tracking one",
+				"payload":     "free-form JSON object; this is where the event content goes. Unknown top-level request fields are ignored, so content placed outside payload is silently dropped",
+				"occurred_at": "RFC3339; defaults to now",
+			},
+			"idempotency": "retries must reuse the same key with identical content; changed content under the same key returns 409",
+		},
+		"entries": map[string]any{
+			"endpoint":     "POST /api/memory/entries",
+			"required":     []string{"scope_type", "memory_type", "content"},
+			"memory_types": sortedKeys(validMemoryTypes),
+			"statuses":     []string{StatusActive, StatusPending},
+			"provenance":   "source_event_id or at least one evidence item is required; a memory with neither is rejected",
+			"evidence_item": map[string]any{
+				"required": []string{"source_type", "source_id"},
+				"optional": []string{"excerpt", "metadata"},
+				"note":     "writes use source_type/source_id; reads expose the same thing as `ref`. Same concept, two vocabularies — this is the write-side shape",
+			},
+		},
+		"search": map[string]any{
+			"endpoint":     "POST /api/memory/search",
+			"required":     []string{"query"},
+			"memory_types": sortedKeys(validMemoryTypes),
+			"statuses":     sortedKeys(validStatuses),
+		},
+	}
 }
 
 func normalizeEntryRequest(req *CreateEntryRequest) {
@@ -397,47 +448,114 @@ func normalizeEntryRequest(req *CreateEntryRequest) {
 	}
 }
 
-func validateEntryRequest(req CreateEntryRequest, now time.Time) error {
-	if !validScopeTypes[req.ScopeType] {
-		return invalidInputf("invalid scope_type %q", req.ScopeType)
+// ─── 字段级校验错误 ───
+//
+// 调用方是 agent，不是人。一次只报第一个错误意味着写错两个字段就要串行试错两轮，
+// 而每轮之间 agent 还可能已经压缩过上下文、忘了上一轮改过什么。所以校验累积
+// 全部字段错误后一次返回。
+//
+// 每条错误必须自带 field 与 allowed：`invalid memory_type ""` 没有告诉调用方
+// 合法值是什么，于是唯一的发现路径变成"去 MCP 的 inputSchema 里翻"——真实接入
+// 里就是这么发生的，第一轮 6 条写入全部 400。错误信息本身就该是 schema 的
+// 发现入口。
+type FieldError struct {
+	Field   string   `json:"field"`
+	Message string   `json:"message"`
+	Allowed []string `json:"allowed,omitempty"`
+}
+
+// fieldErrors 累积错误。零值可用。
+type fieldErrors struct {
+	items []FieldError
+}
+
+func (f *fieldErrors) add(field, message string, allowed ...string) {
+	f.items = append(f.items, FieldError{Field: field, Message: message, Allowed: allowed})
+}
+
+func (f *fieldErrors) err() error {
+	if len(f.items) == 0 {
+		return nil
 	}
-	if req.ScopeType != DefaultScopeType && req.ScopeKey == "" {
-		return invalidInputf("scope_key required for %s scope", req.ScopeType)
+	parts := make([]string, 0, len(f.items))
+	for _, item := range f.items {
+		part := item.Field + ": " + item.Message
+		if len(item.Allowed) > 0 {
+			part += " (allowed: " + strings.Join(item.Allowed, ", ") + ")"
+		}
+		parts = append(parts, part)
+	}
+	// 文本形式保证老调用方仍能读懂；结构化形式由 handler 从 FieldErrors 取出。
+	return &InputError{Fields: f.items, text: strings.Join(parts, "; ")}
+}
+
+// InputError 同时承载可读文本与结构化字段错误。它包装 ErrInvalidInput，所以既有的
+// errors.Is 判断和 HTTP 400 映射都不变。
+type InputError struct {
+	Fields []FieldError
+	text   string
+}
+
+func (e *InputError) Error() string { return ErrInvalidInput.Error() + ": " + e.text }
+func (e *InputError) Unwrap() error { return ErrInvalidInput }
+
+// sortedKeys 让 allowed 列表稳定，否则同一个错误两次调用顺序不同，调用方无法比对。
+func sortedKeys(set map[string]bool) []string {
+	keys := make([]string, 0, len(set))
+	for key := range set {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func validateEntryRequest(req CreateEntryRequest, now time.Time) error {
+	var errs fieldErrors
+	if !validScopeTypes[req.ScopeType] {
+		errs.add("scope_type", fmt.Sprintf("invalid value %q", req.ScopeType), sortedKeys(validScopeTypes)...)
+	} else if req.ScopeType != DefaultScopeType && req.ScopeKey == "" {
+		errs.add("scope_key", fmt.Sprintf("required for %s scope", req.ScopeType))
 	}
 	if !validMemoryTypes[req.MemoryType] {
-		return invalidInputf("invalid memory_type %q", req.MemoryType)
+		errs.add("memory_type", fmt.Sprintf("invalid value %q", req.MemoryType), sortedKeys(validMemoryTypes)...)
 	}
 	if req.Content == "" {
-		return invalidInputf("content required")
+		errs.add("content", "required")
 	}
 	if req.Confidence != nil && (*req.Confidence < 0 || *req.Confidence > 1) {
-		return invalidInputf("confidence must be between 0 and 1")
+		errs.add("confidence", "must be between 0 and 1")
 	}
 	if req.Importance != nil && (*req.Importance < 0 || *req.Importance > 1) {
-		return invalidInputf("importance must be between 0 and 1")
+		errs.add("importance", "must be between 0 and 1")
 	}
 	if req.Status != StatusActive && req.Status != StatusPending {
-		return invalidInputf("status must be active or pending when creating a memory")
+		errs.add("status", fmt.Sprintf("invalid value %q when creating a memory", req.Status),
+			StatusActive, StatusPending)
 	}
 	if req.TTLAt != nil && !req.TTLAt.After(now) {
-		return invalidInputf("ttl_at must be in the future")
+		errs.add("ttl_at", "must be in the future")
 	}
 	effectiveValidFrom := now
 	if req.ValidFrom != nil {
 		effectiveValidFrom = *req.ValidFrom
 	}
 	if req.ValidTo != nil && req.ValidTo.Before(effectiveValidFrom) {
-		return invalidInputf("valid_to must not be before valid_from")
+		errs.add("valid_to", "must not be before valid_from")
 	}
 	if req.SourceEventID != nil && *req.SourceEventID == "" {
-		return invalidInputf("source_event_id must not be empty")
+		errs.add("source_event_id", "must not be empty when present")
 	}
 	for i, item := range req.Evidence {
+		// 写入用 source_type/source_id/excerpt，而读出来的 pack item 叫 ref —— 同一个
+		// 概念两套词汇，真实接入里 agent 按 ref 的直觉写成了 {kind,ref,note}。错误信息
+		// 因此必须把写入侧的形状说全，而不只是说"缺字段"。
 		if item.SourceType == "" || item.SourceID == "" {
-			return invalidInputf("evidence[%d] source_type and source_id are required", i)
+			errs.add(fmt.Sprintf("evidence[%d]", i),
+				"requires source_type and source_id (shape: {\"source_type\":\"file|url|commit|…\",\"source_id\":\"<路径或标识>\",\"excerpt\":\"<可选摘录>\"}); "+
+					"note that reads expose this as `ref`, writes use source_type/source_id")
 		}
 	}
-	return nil
+	return errs.err()
 }
 
 func normalizeListParams(params *ListEntriesParams) {
