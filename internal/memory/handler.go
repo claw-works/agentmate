@@ -1,9 +1,11 @@
 package memory
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/claw-works/agentmate/internal/auth"
 	"github.com/gin-gonic/gin"
@@ -18,10 +20,43 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
+// bindStrict 解码请求体并拒绝未知字段。
+//
+// 默认的宽松解码会把不认识的字段静默丢掉，于是"内容放错字段"表现为 201 成功而
+// 内容消失——真实接入里 agent 把事件正文写进了 content（events 上没有这个字段，
+// 正文属于 payload），服务端回了 201，响应里 payload 是 {}，agent 由此认为服务端
+// 不回显内容。它其实回显了，只是内容从未被接收。
+//
+// 静默丢弃是最坏的一类失败：写入方拿到成功回执，却存进了别的东西，而且没有任何
+// 一侧能发现。宁可 400 吵一声。
+func bindStrict(c *gin.Context, target any) error {
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		var unknownField string
+		if _, after, found := strings.Cut(err.Error(), "unknown field "); found {
+			unknownField = strings.Trim(after, `"`)
+		}
+		if unknownField != "" {
+			hint := ""
+			// 指名去处，而不是只说"这个字段不认识"。这是 agent 唯一会读的那句话。
+			switch unknownField {
+			case "content", "text", "message", "body", "data":
+				hint = "; event content belongs in `payload` (free-form JSON object)"
+			case "kind", "ref", "note":
+				hint = "; evidence items are {\"source_type\",\"source_id\",\"excerpt\"} on writes — `ref` is the read-side name"
+			}
+			return invalidInputf("unknown field %q%s. GET /api/schema lists the accepted fields", unknownField, hint)
+		}
+		return invalidInputf("%s", err.Error())
+	}
+	return nil
+}
+
 func (h *Handler) RecordEvent(c *gin.Context) {
 	var req RecordEventRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if err := bindStrict(c, &req); err != nil {
+		writeError(c, err)
 		return
 	}
 	event, created, err := h.svc.RecordEvent(c.Request.Context(), auth.OwnerFromContext(c), req)
@@ -39,8 +74,8 @@ func (h *Handler) RecordEvent(c *gin.Context) {
 
 func (h *Handler) CreateEntry(c *gin.Context) {
 	var req CreateEntryRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if err := bindStrict(c, &req); err != nil {
+		writeError(c, err)
 		return
 	}
 	entry, err := h.svc.CreateEntry(c.Request.Context(), auth.OwnerFromContext(c), req)
@@ -106,8 +141,8 @@ func (h *Handler) ListEntries(c *gin.Context) {
 
 func (h *Handler) SearchEntries(c *gin.Context) {
 	var req SearchEntriesRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if err := bindStrict(c, &req); err != nil {
+		writeError(c, err)
 		return
 	}
 	result, err := h.svc.SearchEntries(c.Request.Context(), auth.OwnerFromContext(c), req)
@@ -187,8 +222,8 @@ func (h *Handler) EntryAttribution(c *gin.Context) {
 
 func (h *Handler) SupersedeEntry(c *gin.Context) {
 	var req SupersedeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if err := bindStrict(c, &req); err != nil {
+		writeError(c, err)
 		return
 	}
 	// The path identifies the replacement, so the body only needs to name what is
@@ -204,8 +239,8 @@ func (h *Handler) SupersedeEntry(c *gin.Context) {
 
 func (h *Handler) RecordFeedback(c *gin.Context) {
 	var req FeedbackRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if err := bindStrict(c, &req); err != nil {
+		writeError(c, err)
 		return
 	}
 	req.MemoryID = c.Param("id")
@@ -241,8 +276,8 @@ func (h *Handler) ListFeedback(c *gin.Context) {
 
 func (h *Handler) SaveCheckpoint(c *gin.Context) {
 	var req SaveCheckpointRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if err := bindStrict(c, &req); err != nil {
+		writeError(c, err)
 		return
 	}
 	response, err := h.svc.SaveCheckpoint(c.Request.Context(), auth.OwnerFromContext(c), req)

@@ -25,7 +25,15 @@ human UI.
 `GET /api/schema` needs no credential and declares the write-side enums and
 required fields, exported from the server's own validators so it cannot disagree
 with what will be accepted. Enum values (`memory_type`, `scope_type`,
-`event_type`) are the part a caller cannot guess.
+`event_type`) are the part a caller cannot guess. The `/api/health` reply carries
+a `schema` pointer to it. There is no OpenAPI document; `/openapi.json` and any
+other `*.json` path return a JSON 404 saying so rather than falling through to
+the human UI.
+
+Memory write endpoints **reject unknown fields** instead of ignoring them. Content
+placed in a field that does not exist used to return 201 with the content gone; it
+now returns 400 naming the field and where the content belongs. A successful write
+therefore means the server accepted exactly what was sent.
 
 ## Authentication
 

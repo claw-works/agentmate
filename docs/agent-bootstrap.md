@@ -51,8 +51,11 @@ GET {AGENTMATE_BASE_URL}/api/health
 The HTML rule applies to /api/health and nothing else. Other paths on the same
 host legitimately serve HTML — the deployment also hosts a human UI, so /memory
 and /skills return pages by design. Judge the address by /api/health alone.
-Any unknown path under /api/ or /mcp/ returns a JSON 404 naming the path, so a
-mistyped endpoint is distinguishable from a wrong host.
+Unknown paths under /api/ or /mcp/, and any path ending in .json, return a JSON
+404 naming the path, so a mistyped endpoint is distinguishable from a wrong host.
+
+The health reply carries a `schema` pointer. There is no OpenAPI document —
+/openapi.json returns a 404 that says where the schema actually is.
 
 Then GET /api/auth/me to confirm the key. 401 means the key is wrong — ask again
 rather than retrying it. 403 on a later call means the key is valid but lacks a
@@ -60,15 +63,20 @@ scope; report which scope, because retrying will not help.
 
 ## Discover the write schema before your first write
 
-GET {AGENTMATE_BASE_URL}/api/schema
+GET {AGENTMATE_BASE_URL}/api/schema   (the path is also in the health reply)
 
 Enum values are the part you cannot guess: memory_type is a required enum, and so
 are scope_type and event_type. This endpoint is exported from the server's own
 validators, so it cannot disagree with what will actually be accepted.
 
-You do not have to read it up front — a 400 tells you the same thing. Every
-validation failure returns all offending fields at once, each with the allowed
-values:
+You do not have to read it up front — errors tell you the same thing:
+
+- **Unknown fields are rejected, not ignored.** Putting event content in a field
+  called `content` (it belongs in `payload`) used to return 201 with the content
+  silently gone. It now returns 400 naming the field and where the content goes.
+  So a successful write means the server accepted exactly what you sent.
+- **Every validation failure lists all offending fields at once**, each with the
+  allowed values:
 
   {"error":"...","fields":[{"field":"memory_type","message":"invalid value \"\"",
                             "allowed":["episodic","procedural","semantic"]}]}

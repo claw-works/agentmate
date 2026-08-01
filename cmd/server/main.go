@@ -139,6 +139,11 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "ok",
 			"service": "agentmate",
+			// schema 指针挂在这里，因为 health 是每个接入方必访的第一个端点。
+			// 真实接入里 agent 去试了 /openapi.json 和 /api/openapi.json 都没找到，
+			// 最后靠 MCP inputSchema 才拿到枚举值——一个只有它自己知道的路径，
+			// 等于不存在。
+			"schema": "/api/schema",
 			// 声明 MCP 挂载点，省掉接入方猜路径。
 			"mcp_endpoints": []string{
 				"/mcp/todos", "/mcp/notes", "/mcp/reports", "/mcp/bookmarks",
@@ -436,7 +441,21 @@ func registerFrontend(r *gin.Engine) {
 		// 指向真正的原因（路径不存在）。这里必须给出机器可读的 404。
 		if strings.HasPrefix(reqPath, "/api/") || reqPath == "/api" ||
 			strings.HasPrefix(reqPath, "/mcp/") || reqPath == "/mcp" {
-			c.JSON(http.StatusNotFound, gin.H{"error": "no such endpoint: " + reqPath})
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "no such endpoint: " + reqPath,
+				"hint":  "GET /api/health lists what is mounted; GET /api/schema declares the write-side enums",
+			})
+			return
+		}
+
+		// 任何 .json 请求同样不回退到前端。探测 schema 的调用方会去试
+		// /openapi.json 这类约定路径，而 SPA 兜底让它拿到 200 + HTML——一个
+		// 明显是"这里没有"的情况被伪装成成功，而且和"地址填错了"无法区分。
+		if strings.HasSuffix(strings.ToLower(reqPath), ".json") {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "no such resource: " + reqPath,
+				"hint":  "AgentMate publishes no OpenAPI document; GET /api/schema declares the write-side enums and required fields",
+			})
 			return
 		}
 
