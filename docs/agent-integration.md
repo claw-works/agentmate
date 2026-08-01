@@ -322,6 +322,8 @@ So you do not spend time looking for it:
 
 ## 8. Reference
 
+- Paste-able bootstrap prompt for a fresh agent:
+  [agent-bootstrap.md](agent-bootstrap.md)
 - Full REST surface, every endpoint and scope: [README](../README.md)
 - Machine-oriented API summary: [llms.txt](llms.txt)
 - Memory protocol as an installable skill:

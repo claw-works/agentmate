@@ -2,9 +2,15 @@
 
 AI-native tool service platform (Backend as Toolset). Pure API product, no UI. Any external Agent can integrate via REST API or MCP. Multi-tenant SaaS, designed for high concurrency.
 
-**Connecting an agent?** Start with the
-[Agent Integration Guide](docs/agent-integration.md) — written to be read by the
-agent itself, verifiable step by step. This README is the full endpoint reference.
+**Connecting an agent?** Two entry points:
+
+- [Agent Bootstrap Prompt](docs/agent-bootstrap.md) — a self-contained block to
+  paste into a new agent's instructions. It asks the human for the deployment
+  address and API key rather than hardcoding them.
+- [Agent Integration Guide](docs/agent-integration.md) — the full reference,
+  written to be read by the agent itself and verifiable step by step.
+
+This README is the complete endpoint listing.
 
 ## Architecture
 
